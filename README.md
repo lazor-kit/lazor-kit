@@ -1,6 +1,6 @@
 # @lazor-kit/react-sdk
 
-A React SDK for Solana Smart Wallet Solution with passkey support and IPFS interactions.
+Onchain Passkey Solution on Solana 
 
 ## Features
 
