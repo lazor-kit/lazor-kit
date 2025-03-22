@@ -39,7 +39,7 @@ function App() {
     executeTransaction,
     addAuthenticator 
   } = useLazorKit({
-    ipfsHubUrl: 'https://bafybeief3qw667srfsovy6zspxqy3ti2bgqseicsvzd5bpkkezn2kzblb4.ipfs.w3s.link',
+    ipfsHubUrl: 'IPFS_LINK',
     rpcUrl: 'https://api.mainnet-beta.solana.com',
     popupConfig: {
       width: 600,
@@ -210,25 +210,6 @@ interface UseLazorKitReturn {
   executeTransaction: (params: ExecuteTransactionParams) => Promise<VersionedTransaction>;
   addAuthenticator: (params: AddAuthenticatorParams) => Promise<VersionedTransaction>;
 }
-```
-
-## Development
-
-```bash
-# Install dependencies
-npm install
-
-# Build the package
-npm run build
-
-# Run tests
-npm test
-
-# Lint code
-npm run lint
-
-# Format code
-npm run format
 ```
 
 ## License
