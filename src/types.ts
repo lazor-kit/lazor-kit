@@ -1,5 +1,40 @@
-import { PublicKey, TransactionInstruction } from '@solana/web3.js';
+import { Connection, PublicKey, TransactionInstruction , Transaction , VersionedTransaction } from '@solana/web3.js';
 import * as anchor from '@coral-xyz/anchor';
+import { Contract } from './services/idl/contract';
+
+
+// SDK types 
+
+export type Message = anchor.IdlTypes<Contract>['message'];
+export type VerifyParam = anchor.IdlTypes<Contract>['verifyParam'];
+export type PasskeyPubkey = anchor.IdlTypes<Contract>['passkeyPubkey'];
+export type SmartWalletAuthority =
+  anchor.IdlTypes<Contract>['smartWalletAuthority'];
+
+export type CreateVerifyAndExecuteTransactionParam = {
+  arbitraryInstruction: TransactionInstruction;
+  pubkey: Buffer<ArrayBuffer>;
+  signature: Buffer<ArrayBuffer>;
+  message: Message;
+  payer: PublicKey;
+  smartWalletPubkey: PublicKey;
+  smartWalletAuthority: PublicKey;
+};
+
+export type CreateInitSmartWalletTransactionParam = {
+  secp256r1PubkeyBytes: number[];
+  payer: PublicKey;
+};
+
+export type AddAuthenticatorsParam = {
+  pubkey: Buffer<ArrayBuffer>;
+  signature: Buffer<ArrayBuffer>;
+  message: Message;
+  payer: PublicKey;
+  newPasskey: PasskeyPubkey;
+  smartWalletPubkey: PublicKey;
+  smartWalletAuthority: PublicKey;
+};
 
 // React SDK Types
 export interface WalletConnectionData {
@@ -44,38 +79,6 @@ export interface UseLazorKitReturn {
 }
 
 // Solana SDK Types
-export interface CreateSmartWalletParams {
-  secp256r1PubkeyBytes: number[];
-  payer: PublicKey;
-}
 
-export interface ExecuteTransactionParams {
-  arbitraryInstruction: TransactionInstruction;
-  pubkey: Buffer<ArrayBuffer>;
-  signature: Buffer<ArrayBuffer>;
-  message: Message;
-  payer: PublicKey;
-  smartWalletPubkey: PublicKey;
-  smartWalletAuthority: PublicKey;
-}
 
-export interface AddAuthenticatorParams {
-  pubkey: Buffer<ArrayBuffer>;
-  signature: Buffer<ArrayBuffer>;
-  message: Message;
-  payer: PublicKey;
-  smartWalletPubkey: PublicKey;
-  smartWalletAuthority: PublicKey;
-}
 
-export interface Message {
-  nonce: number;
-  timestamp: anchor.BN;
-  payload: Buffer<ArrayBufferLike>;
-}
-
-export interface VerifyParam {
-  pubkey: { data: number[] };
-  msg: Message;
-  sig: number[];
-} 

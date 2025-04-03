@@ -15,7 +15,6 @@ import {
   DEFAULT_RPC_URL,
   DEFAULT_POPUP_CONFIG,
   DEFAULT_TIMEOUT,
-  DEFAULT_IPFS_HUB_URL,
 } from '../constants';
 
 export function useLazorKit(config: Partial<LazorKitConfig> = {}): UseLazorKitReturn {
@@ -28,7 +27,7 @@ export function useLazorKit(config: Partial<LazorKitConfig> = {}): UseLazorKitRe
   });
 
   const mergedConfig = {
-    ipfsHubUrl: config.ipfsHubUrl || DEFAULT_IPFS_HUB_URL,
+    ipfsHubUrl: 'https://w3s.link/ipfs/bafybeibvvxqef5arqj4uy22zwl3hcyvrthyfrjzoeuzyfcbizjur4yt6by',
     popupConfig: config.popupConfig || DEFAULT_POPUP_CONFIG,
     timeout: config.timeout || DEFAULT_TIMEOUT,
     rpcUrl: config.rpcUrl || DEFAULT_RPC_URL,
@@ -82,7 +81,7 @@ export function useLazorKit(config: Partial<LazorKitConfig> = {}): UseLazorKitRe
     setError(null);
 
     try {
-      const popup = openPopup(`${mergedConfig.ipfsHubUrl}/handle.html?action=connect`);
+      const popup = openPopup(`${mergedConfig.ipfsHubUrl}/?action=connect`);
 
       const connectionData = await new Promise<WalletConnectionData>((resolve, reject) => {
         const messageHandler = (event: MessageEvent) => handleMessage(event, popup, resolve, reject);
@@ -131,7 +130,7 @@ export function useLazorKit(config: Partial<LazorKitConfig> = {}): UseLazorKitRe
 
       const encodedMessage = encodeURIComponent(btoa(message));
       const popup = openPopup(
-        `${mergedConfig.ipfsHubUrl}/handle.html?action=sign&message=${encodedMessage}`
+        `${mergedConfig.ipfsHubUrl}/?action=sign&message=${encodedMessage}`
       );
 
       const signatureData = await new Promise<SignatureData>((resolve, reject) => {
@@ -181,7 +180,7 @@ export function useLazorKit(config: Partial<LazorKitConfig> = {}): UseLazorKitRe
   }, [solanaService]);
 
   const addAuthenticator = useCallback(async (params: AddAuthenticatorParams) => {
-    return solanaService.addAuthenticator(params);
+    return solanaService.addAuthenticatorsTxn(params);
   }, [solanaService]);
 
   return {

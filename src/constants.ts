@@ -1,16 +1,17 @@
 import { PublicKey } from '@solana/web3.js';
-
 // Solana RPC URL
 export const DEFAULT_RPC_URL = 'https://api.mainnet-beta.solana.com';
 
 // IPFS Hub URL
-export const DEFAULT_IPFS_HUB_URL = 'https://bafybeief3qw667srfsovy6zspxqy3ti2bgqseicsvzd5bpkkezn2kzblb4.ipfs.w3s.link';
+export const SMART_WALLET_SEED = new TextEncoder().encode('smart_wallet');
 
-// Program ID
-export const PROGRAM_ID = new PublicKey('your_program_id_here');
+export const SECP256R1_NATIVE_PROGRAM = new PublicKey(
+  'Secp256r1SigVerify1111111111111111111111111'
+);
 
-// Lookup Table Address
-export const LOOKUP_TABLE_ADDRESS = new PublicKey('6GxBfXPQxVV17tdvpXLD7uz2tGqyEhRYYVWw8rKHMFw1');
+export const LOOKUP_TABLE_ADDRESS = new PublicKey(
+  'AhUtjWCVWJZkF4XjhVo7Y2TK2m6RiX3ritwEyxKKnL19'
+); // https://rpc.lazorkit.xyz
 
 // Popup Configuration
 export const DEFAULT_POPUP_CONFIG = {
@@ -21,12 +22,6 @@ export const DEFAULT_POPUP_CONFIG = {
 
 // Timeout Configuration (in milliseconds)
 export const DEFAULT_TIMEOUT = 60000;
-
-// Smart Wallet Seed
-export const SMART_WALLET_SEED = Buffer.from('smart_wallet');
-
-// Secp256r1 Native Program
-export const SECP256R1_NATIVE_PROGRAM = new PublicKey('your_secp256r1_program_id_here');
 
 // Signature Offsets
 export const SIGNATURE_OFFSETS_SERIALIZED_SIZE = 11;

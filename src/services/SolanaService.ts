@@ -5,36 +5,107 @@ import {
   TransactionMessage,
   VersionedTransaction,
 } from '@solana/web3.js';
+import { Contract } from './idl/contract';
+import IDL from './idl/contract.json';
 import * as anchor from '@coral-xyz/anchor';
-import { Contract } from '../idl/contract';
-import IDL from '../idl/contract.json';
 import {
-  CreateSmartWalletParams,
-  ExecuteTransactionParams,
-  AddAuthenticatorParams,
+  AddAuthenticatorsParam,
+  CreateInitSmartWalletTransactionParam,
+  CreateVerifyAndExecuteTransactionParam,
   Message,
+  PasskeyPubkey,
+  SmartWalletAuthority,
   VerifyParam,
 } from '../types';
 import { createSecp256r1Instruction, getID } from '../utils';
+import { bs58 } from '@coral-xyz/anchor/dist/cjs/utils/bytes';
 import { LOOKUP_TABLE_ADDRESS, SMART_WALLET_SEED } from '../constants';
 import crypto from 'crypto';
-
 export class SolanaService {
-  private connection: Connection;
-  private program: anchor.Program<Contract>;
-  private lookupTableAddress: PublicKey;
+  constructor(private readonly connection: Connection) {}
 
-  constructor(connection: Connection) {
-    this.connection = connection;
-    this.program = new anchor.Program(IDL as Contract, {
+  private lookupTableAddress: PublicKey = LOOKUP_TABLE_ADDRESS;
+
+  get program(): anchor.Program<Contract> {
+    return new anchor.Program(IDL as Contract, {
       connection: this.connection,
     });
-    this.lookupTableAddress = LOOKUP_TABLE_ADDRESS;
   }
 
-  async createSmartWallet(params: CreateSmartWalletParams): Promise<Transaction> {
-    const { secp256r1PubkeyBytes, payer } = params;
+  get programId(): PublicKey {
+    return this.program.programId;
+  }
 
+  async getListSmartWalletAuthorityByPasskeyPubkey(
+    authority: PasskeyPubkey
+  ): Promise<PublicKey[]> {
+    const data = await this.connection.getProgramAccounts(
+      this.program.programId,
+      {
+        dataSlice: {
+          offset: 8,
+          length: 33,
+        },
+        filters: [
+          {
+            memcmp: {
+              offset: 0,
+              bytes: bs58.encode(
+                IDL?.accounts.find(
+                  (acc: { name: string; discriminator: number[] }) =>
+                    acc.name === 'SmartWalletAuthority'
+                )?.discriminator as number[]
+              ),
+            },
+          },
+          {
+            memcmp: {
+              offset: 8,
+              bytes: bs58.encode(authority.data),
+            },
+          },
+        ],
+      }
+    );
+
+    if (data.length <= 0) {
+      throw new Error('This passkey pubkey does not have any smart-wallet');
+    }
+
+    return data.map((item) => item.pubkey);
+  }
+
+  async getSmartWalletAuthorityData(
+    smartWalletAuthorityPubkey: PublicKey
+  ): Promise<SmartWalletAuthority> {
+    return this.program.account.smartWalletAuthority.fetch(
+      smartWalletAuthorityPubkey
+    );
+  }
+
+  async getMessage(smartWalletAuthorityData: SmartWalletAuthority): Promise<{
+    message: Message;
+    messageBytes: Buffer<ArrayBufferLike>;
+  }> {
+    const slot = await this.connection.getSlot({ commitment: 'processed' });
+    const timestamp = await this.connection.getBlockTime(slot);
+
+    const message: Message = {
+      nonce: smartWalletAuthorityData.nonce,
+      timestamp: new anchor.BN(timestamp),
+    };
+
+    const messageBytes = this.program.coder.types.encode('message', message);
+
+    return { message, messageBytes };
+  }
+
+  async createInitSmartWalletTransaction(
+    param: CreateInitSmartWalletTransactionParam
+  ): Promise<Transaction> {
+    const { secp256r1PubkeyBytes, payer } = param;
+
+    // check pubkey length
     if (secp256r1PubkeyBytes.length !== 33) {
       throw new Error('Invalid pubkey length');
     }
@@ -46,12 +117,12 @@ export class SolanaService {
         Buffer.from(SMART_WALLET_SEED),
         new anchor.BN(id).toArrayLike(Buffer, 'le', 8),
       ],
-      this.program.programId
+      this.programId
     );
 
     const [smartWalletAuthorityPda] = PublicKey.findProgramAddressSync(
       [this.hashSeeds(secp256r1PubkeyBytes, smartWalletPda)],
-      this.program.programId
+      this.programId
     );
 
     const createSmartWalletIns = await this.program.methods
@@ -66,12 +137,16 @@ export class SolanaService {
     const txn = new Transaction().add(createSmartWalletIns);
 
     txn.feePayer = payer;
-    txn.recentBlockhash = (await this.connection.getLatestBlockhash()).blockhash;
+    txn.recentBlockhash = (
+      await this.connection.getLatestBlockhash()
+    ).blockhash;
 
     return txn;
   }
 
-  async executeTransaction(params: ExecuteTransactionParams): Promise<VersionedTransaction> {
+  async createVerifyAndExecuteTransaction(
+    params: CreateVerifyAndExecuteTransactionParam
+  ): Promise<VersionedTransaction> {
     const {
       arbitraryInstruction,
       pubkey,
@@ -82,11 +157,14 @@ export class SolanaService {
       smartWalletPubkey,
     } = params;
 
-    let remainingAccounts = arbitraryInstruction.keys.map((key) => ({
-      pubkey: key.pubkey,
-      isSigner: false,
-      isWritable: key.isWritable,
-    }));
+    // find signer and set isSigner to false
+    let remainingAccounts = arbitraryInstruction.keys.map((key) => {
+      return {
+        pubkey: key.pubkey,
+        isSigner: false,
+        isWritable: key.isWritable,
+      };
+    });
 
     const messageBytes = this.program.coder.types.encode('message', message);
 
@@ -103,7 +181,7 @@ export class SolanaService {
     };
 
     const executeInstruction = await this.program.methods
-      .executeInstruction(verifyParam)
+      .executeInstruction(verifyParam, arbitraryInstruction.data)
       .accountsPartial({
         smartWallet: smartWalletPubkey,
         smartWalletAuthority,
@@ -121,21 +199,26 @@ export class SolanaService {
     const messageV0 = new TransactionMessage({
       payerKey: payer,
       recentBlockhash: blockhash,
-      instructions: [verifySecp256r1Instruction, executeInstruction],
+      instructions: [verifySecp256r1Instruction, executeInstruction], // note this is an array of instructions
     }).compileToV0Message([lookupTableAccount]);
 
-    return new VersionedTransaction(messageV0);
+    const transactionV0 = new VersionedTransaction(messageV0);
+
+    return transactionV0;
   }
 
-  async addAuthenticator(params: AddAuthenticatorParams): Promise<VersionedTransaction> {
+  async addAuthenticatorsTxn(
+    param: AddAuthenticatorsParam
+  ): Promise<VersionedTransaction> {
     const {
       pubkey,
       signature,
       message,
       payer,
+      newPasskey,
       smartWalletPubkey,
       smartWalletAuthority,
-    } = params;
+    } = param;
 
     const messageBytes = this.program.coder.types.encode('message', message);
 
@@ -152,14 +235,12 @@ export class SolanaService {
     };
 
     const [newSmartWalletAuthorityPda] = PublicKey.findProgramAddressSync(
-      [this.hashSeeds(Array.from(message.payload), smartWalletPubkey)],
-      this.program.programId
+      [this.hashSeeds(Array.from(newPasskey.data), smartWalletPubkey)],
+      this.programId
     );
 
     const addAuthIns = await this.program.methods
-      .addAuthenticator(verifyParam, {
-        data: Array.from(message.payload),
-      })
+      .addAuthenticator(verifyParam, newPasskey)
       .accountsPartial({
         payer,
         smartWallet: smartWalletPubkey,
@@ -177,13 +258,20 @@ export class SolanaService {
     const messageV0 = new TransactionMessage({
       payerKey: payer,
       recentBlockhash: blockhash,
-      instructions: [verifySecp256r1Instruction, addAuthIns],
+      instructions: [verifySecp256r1Instruction, addAuthIns], // note this is an array of instructions
     }).compileToV0Message([lookupTableAccount]);
 
-    return new VersionedTransaction(messageV0);
+    const transactionV0 = new VersionedTransaction(messageV0);
+
+    return transactionV0;
   }
 
-  private hashSeeds(passkey: number[], smartWallet: PublicKey): Buffer {
+  async setLookupTableAddress(lookupTableAddress: PublicKey) {
+    this.lookupTableAddress = lookupTableAddress;
+  }
+
+  // hash with crypto
+  hashSeeds(passkey: number[], smartWallet: PublicKey): Buffer {
     const data = Buffer.concat([Buffer.from(passkey), smartWallet.toBuffer()]);
     return crypto.createHash('sha256').update(data).digest().subarray(0, 32);
   }
