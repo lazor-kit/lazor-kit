@@ -1,0 +1,1 @@
+{"version":3,"file":"WalletDisplay.d.ts","sourceRoot":"","sources":["../../src/components/WalletDisplay.tsx"],"names":[],"mappings":"AAAA,OAAO,KAA2B,MAAM,OAAO,CAAC;AAKhD,UAAU,iBAAiB;IACzB,aAAa,CAAC,EAAE,CAAC,QAAQ,EAAE,MAAM,KAAK,OAAO,CAAC,IAAI,CAAC,CAAC;CACrD;AAED,eAAO,MAAM,YAAY,EAAE,KAAK,CAAC,EAAE,CAAC,iBAAiB,CA0GpD,CAAC"}

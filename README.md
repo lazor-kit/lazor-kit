@@ -1,16 +1,6 @@
-# @lazor-kit/react-sdk
+# Lazor Kit React SDK
 
-Onchain Passkey Solution on Solana 
-
-## Features
-
-- 🔐 Passkey-based wallet connection
-- 🌐 IPFS hub integration
-- 💳 Smart wallet creation and management
-- 📝 Message signing
-- 🔑 Authenticator management
-- 📱 React hooks for easy integration
-- 📦 TypeScript support
+React SDK for Lazor Kit - A Solana Smart Wallet Solution with Passkey Support
 
 ## Installation
 
@@ -20,197 +10,49 @@ npm install @lazor-kit/react-sdk
 yarn add @lazor-kit/react-sdk
 ```
 
-## Usage
+## Setup
 
-### Basic Usage
+### Polyfills
+
+Add the following polyfills to your application's entry point (e.g., `index.tsx` or `main.tsx`):
 
 ```typescript
-import { useLazorKit } from '@lazor-kit/react-sdk';
+import { Buffer } from 'buffer';
+import process from 'process';
 
+// Add to window object
+window.Buffer = Buffer;
+window.process = process;
+```
+
+## Usage
+
+```typescript
+import { LazorConnect, SmartWalletContract } from '@lazor-kit/react-sdk';
+
+// Initialize SDK
+const sdk = new SmartWalletContract(connection);
+
+// Use components
 function App() {
-  const { 
-    connect, 
-    sign, 
-    disconnect, 
-    walletState, 
-    isLoading, 
-    error,
-    createSmartWallet,
-    executeTransaction,
-    addAuthenticator 
-  } = useLazorKit({
-    ipfsHubUrl: 'IPFS_LINK',
-    rpcUrl: 'https://api.mainnet-beta.solana.com',
-    popupConfig: {
-      width: 600,
-      height: 400,
-      title: 'WalletAction'
-    },
-    timeout: 60000
-  });
-
-  const handleConnect = async () => {
-    try {
-      const connectionData = await connect();
-      console.log('Connected:', connectionData);
-    } catch (err) {
-      console.error('Connection failed:', err);
-    }
-  };
-
-  const handleSign = async () => {
-    try {
-      const signatureData = await sign('Hello, World!');
-      console.log('Signature:', signatureData);
-    } catch (err) {
-      console.error('Signing failed:', err);
-    }
-  };
-
-  const handleCreateSmartWallet = async () => {
-    try {
-      const transaction = await createSmartWallet({
-        secp256r1PubkeyBytes: [], // Your pubkey bytes
-        payer: new PublicKey('your_payer_address')
-      });
-      console.log('Smart wallet transaction:', transaction);
-    } catch (err) {
-      console.error('Smart wallet creation failed:', err);
-    }
-  };
-
   return (
-    <div>
-      {!walletState.isConnected ? (
-        <button onClick={handleConnect} disabled={isLoading}>
-          Connect Wallet
-        </button>
-      ) : (
-        <>
-          <p>Connected as: {walletState.publicKey}</p>
-          <button onClick={handleSign} disabled={isLoading}>
-            Sign Message
-          </button>
-          <button onClick={handleCreateSmartWallet} disabled={isLoading}>
-            Create Smart Wallet
-          </button>
-          <button onClick={disconnect}>Disconnect</button>
-        </>
-      )}
-      {error && <p style={{ color: 'red' }}>{error.message}</p>}
-    </div>
+    <LazorConnect onSignMessage={async (base64Tx) => {
+      // Handle signed message
+    }} />
   );
 }
 ```
 
-### Advanced Usage
+## Features
 
-#### Creating a Smart Wallet
+- Solana Smart Wallet integration
+- Passkey authentication
+- React components
+- TypeScript support
 
-```typescript
-const handleCreateSmartWallet = async () => {
-  try {
-    const transaction = await createSmartWallet({
-      secp256r1PubkeyBytes: [], // Your pubkey bytes
-      payer: new PublicKey('your_payer_address')
-    });
-    
-    // Send the transaction
-    const signature = await connection.sendTransaction(transaction);
-    console.log('Smart wallet created:', signature);
-  } catch (err) {
-    console.error('Failed to create smart wallet:', err);
-  }
-};
-```
+## Documentation
 
-#### Executing a Transaction
-
-```typescript
-const handleExecuteTransaction = async () => {
-  try {
-    const transaction = await executeTransaction({
-      arbitraryInstruction: yourInstruction,
-      pubkey: Buffer.from([]), // Your pubkey
-      signature: Buffer.from([]), // Your signature
-      message: {
-        nonce: 1,
-        timestamp: new anchor.BN(Date.now()),
-        payload: Buffer.from([])
-      },
-      payer: new PublicKey('your_payer_address'),
-      smartWalletPubkey: new PublicKey('your_smart_wallet_address'),
-      smartWalletAuthority: new PublicKey('your_smart_wallet_authority')
-    });
-    
-    // Send the transaction
-    const signature = await connection.sendTransaction(transaction);
-    console.log('Transaction executed:', signature);
-  } catch (err) {
-    console.error('Failed to execute transaction:', err);
-  }
-};
-```
-
-#### Adding an Authenticator
-
-```typescript
-const handleAddAuthenticator = async () => {
-  try {
-    const transaction = await addAuthenticator({
-      pubkey: Buffer.from([]), // Your pubkey
-      signature: Buffer.from([]), // Your signature
-      message: {
-        nonce: 1,
-        timestamp: new anchor.BN(Date.now()),
-        payload: Buffer.from([])
-      },
-      payer: new PublicKey('your_payer_address'),
-      smartWalletPubkey: new PublicKey('your_smart_wallet_address'),
-      smartWalletAuthority: new PublicKey('your_smart_wallet_authority')
-    });
-    
-    // Send the transaction
-    const signature = await connection.sendTransaction(transaction);
-    console.log('Authenticator added:', signature);
-  } catch (err) {
-    console.error('Failed to add authenticator:', err);
-  }
-};
-```
-
-## API Reference
-
-### LazorKitConfig
-
-```typescript
-interface LazorKitConfig {
-  ipfsHubUrl: string;
-  popupConfig?: {
-    width?: number;
-    height?: number;
-    title?: string;
-  };
-  timeout?: number;
-  rpcUrl?: string;
-}
-```
-
-### UseLazorKitReturn
-
-```typescript
-interface UseLazorKitReturn {
-  connect: () => Promise<WalletConnectionData>;
-  sign: (message: string) => Promise<SignatureData>;
-  disconnect: () => void;
-  walletState: WalletState;
-  isLoading: boolean;
-  error: Error | null;
-  createSmartWallet: (params: CreateSmartWalletParams) => Promise<Transaction>;
-  executeTransaction: (params: ExecuteTransactionParams) => Promise<VersionedTransaction>;
-  addAuthenticator: (params: AddAuthenticatorParams) => Promise<VersionedTransaction>;
-}
-```
+For detailed documentation, please visit our [documentation site](https://docs.lazor-kit.com).
 
 ## License
 

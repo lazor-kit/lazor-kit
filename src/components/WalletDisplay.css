@@ -1,0 +1,263 @@
+.wallet-container {
+  padding: 20px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  max-width: 600px;
+  margin: 20px auto;
+}
+
+.wallet-status {
+  margin-bottom: 20px;
+}
+
+.status-indicator {
+  padding: 10px;
+  color: white;
+  border-radius: 4px;
+  margin: 10px 0;
+}
+
+.status-indicator.connected {
+  background-color: #4CAF50;
+}
+
+.status-indicator.disconnected {
+  background-color: #f44336;
+}
+
+.error-message {
+  color: #f44336;
+  margin-top: 10px;
+  padding: 10px;
+  background-color: #ffebee;
+  border-radius: 4px;
+}
+
+.wallet-info {
+  margin-top: 20px;
+}
+
+.info-item {
+  margin: 10px 0;
+  padding: 10px;
+  background-color: #f5f5f5;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.connect-button, .disconnect-button {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 16px;
+  margin-top: 10px;
+  width: 100%;
+}
+
+.connect-button {
+  background-color: #2196F3;
+  color: white;
+}
+
+.connect-button.loading {
+  background-color: #ccc;
+  cursor: not-allowed;
+}
+
+.disconnect-button {
+  background-color: #f44336;
+  color: white;
+}
+
+.connect-button:hover, .disconnect-button:hover {
+  opacity: 0.9;
+}
+
+.lazor-connect {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+}
+
+.connect-button {
+  background: #1A1A1A;
+  color: white;
+  padding: 12px 24px;
+  border: none;
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 180px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  position: relative;
+  overflow: hidden;
+  letter-spacing: 0.3px;
+}
+
+.connect-button:hover {
+  background: #2A2A2A;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.connect-button:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+}
+
+.connect-button.loading {
+  opacity: 0.8;
+  cursor: not-allowed;
+}
+
+.wallet-info {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background-color: #FFFFFF;
+  padding: 12px 20px;
+  border-radius: 12px;
+  border: 1px solid #E5E7EB;
+  min-width: 180px;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+.wallet-info:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.wallet-address {
+  font-size: 14px;
+  font-weight: 500;
+  color: #1A1A1A;
+  background-color: #F8F9FA;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid #E5E7EB;
+  cursor: pointer;
+  width: 100%;
+  text-align: center;
+  transition: all 0.2s ease;
+}
+
+.wallet-address:hover {
+  background-color: #F1F3F5;
+}
+
+.disconnect-container {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  width: 100%;
+  background-color: white;
+  border-radius: 8px;
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(-10px);
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+  z-index: 1000;
+  pointer-events: auto;
+  animation: slideDown 0.2s ease forwards;
+  margin-top: 8px;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.disconnect-button {
+  width: 100%;
+  background-color: white;
+  color: #1A1A1A;
+  border: none;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.disconnect-button:hover {
+  background-color: #F8F9FA;
+  color: #DC2626;
+}
+
+.disconnect-button::before {
+  content: '';
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='currentColor'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1'/%3E%3C/svg%3E");
+  background-size: contain;
+  background-repeat: no-repeat;
+  opacity: 0.8;
+}
+
+.error-message {
+  color: #DC2626;
+  font-size: 14px;
+  margin-top: 8px;
+  text-align: center;
+  font-weight: 500;
+}
+
+.create-smart-wallet-button {
+  width: 100%;
+  background-color: #1A1A1A;
+  color: white;
+  border: none;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.create-smart-wallet-button:hover {
+  background-color: #2A2A2A;
+}
+
+.create-smart-wallet-button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.smart-wallet-info {
+  padding: 12px 16px;
+  border-bottom: 1px solid #E5E7EB;
+}
+
+.smart-wallet-label {
+  font-size: 12px;
+  color: #6B7280;
+  margin-bottom: 4px;
+}
+
+.smart-wallet-address {
+  font-size: 14px;
+  font-weight: 500;
+  color: #1A1A1A;
+  word-break: break-all;
+} 

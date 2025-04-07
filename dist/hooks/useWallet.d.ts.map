@@ -1,0 +1,1 @@
+{"version":3,"file":"useWallet.d.ts","sourceRoot":"","sources":["../../src/hooks/useWallet.ts"],"names":[],"mappings":"AACA,OAAO,EAAE,SAAS,EAAE,MAAM,iBAAiB,CAAC;AAa5C,eAAO,MAAM,SAAS;;;4BAiF6B,MAAM;kBA1FzC,MAAM,GAAG,IAAI;eAChB,SAAS,GAAG,IAAI;iBACd,OAAO;eACT,OAAO;WACX,MAAM,GAAG,IAAI;CAsJrB,CAAC"}
