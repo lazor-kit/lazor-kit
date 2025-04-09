@@ -1,7 +1,7 @@
 import { Connection, PublicKey, TransactionInstruction } from '@solana/web3.js';
 import * as anchor from '@coral-xyz/anchor';
-import { Contract } from '../idl/contract';
-
+import { Contract } from './idl/contract';
+import { Buffer } from 'buffer';
 export type Message = anchor.IdlTypes<Contract>['message'];
 export type VerifyParam = anchor.IdlTypes<Contract>['verifyParam'];
 export type PasskeyPubkey = anchor.IdlTypes<Contract>['passkeyPubkey'];
