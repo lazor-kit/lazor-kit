@@ -7,5 +7,5 @@ export const SECP256R1_NATIVE_PROGRAM = new PublicKey(
 );
 
 export const LOOKUP_TABLE_ADDRESS = new PublicKey(
-  'AhUtjWCVWJZkF4XjhVo7Y2TK2m6RiX3ritwEyxKKnL19'
+  '339ZFSTd8dPonacCY5HC9bo4yWXbnFtenED7tBWCiD2V'
 ); // https://rpc.lazorkit.xyz
