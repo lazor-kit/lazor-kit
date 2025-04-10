@@ -1,2 +1,1 @@
-export * from './useWallet';
-export * from './useSmartWallet'; 
+export * from './useWallet'; 
