@@ -2,6 +2,10 @@
 
 A React SDK for integrating Lazor Kit – a Solana Smart Wallet solution with Passkey support 
 
+## How it work 
+![photo_2025-03-19_23-31-25](https://github.com/user-attachments/assets/8fbd66e4-d55d-415a-92a1-95343c0d7615)
+
+
 ## Features
 
 - Connect/disconnect Solana smart wallets with Passkey support
