@@ -1,161 +1,91 @@
-# LazorKit Wallet SDK
+# @lazorkt/wallet
 
-LazorKit Wallet SDK is a React library that makes it easy to integrate LazorKit wallet into your application. The SDK provides basic functionalities such as wallet connection, disconnection, and message signing.
+A React SDK for integrating Lazor Kit – a Solana Smart Wallet solution with Passkey support 
+
+## Features
+
+- Connect/disconnect Solana smart wallets with Passkey support
+- Sign messages and transactions
+- Use in any React project (Vite, Next.js, Create React App, etc.)
+- Customizable UI components
+- Works in browser environments with Buffer support
 
 ## Installation
 
 ```bash
-npm install lazorkit
+npm install @lazorkt/wallet
 # or
-yarn add lazorkit
+yarn add @lazorkt/wallet
 ```
+
+## Buffer Support in Browsers
+
+If your project needs Buffer (for example, when decoding transactions), install the `buffer` package and polyfill it globally if your bundler does not do this automatically:
+
+```js
+import { Buffer } from 'buffer';
+window.Buffer = Buffer; // Polyfill global Buffer if needed
+```
+> Most modern bundlers (Vite, Webpack 5) will auto-polyfill Buffer if you install the `buffer` package.
 
 ## Usage
 
-### 1. Connect Wallet
+### 1. useWallet Hook
+
+The main hook for interacting with the wallet:
 
 ```tsx
-import { LazorConnect } from 'lazorkit';
+import { useWallet } from '@lazorkt/wallet';
 
-function App() {
-  const handleConnect = (publicKey: string) => {
-    console.log('Connected with public key:', publicKey);
-  };
-
-  return (
-    <LazorConnect onConnect={handleConnect} />
-  );
-}
-```
-
-### 2. Sign Message
-
-```tsx
-import { LazorConnect } from 'lazorkit';
-
-function App() {
-  const handleSignMessage = async (base64Tx: string) => {
-    try {
-      // Process signed message
-      console.log('Signed message:', base64Tx);
-    } catch (error) {
-      console.error('Failed to sign message:', error);
-    }
-  };
-
-  return (
-    <LazorConnect onSignMessage={handleSignMessage} />
-  );
-}
-```
-
-## Props
-
-### LazorConnect Component
-
-| Prop | Type | Description |
-|------|------|-------------|
-| `onConnect` | `(publicKey: string) => void` | Callback triggered when wallet is successfully connected |
-| `onSignMessage` | `(base64Tx: string) => Promise<void>` | Callback triggered when user signs a message |
-
-## Hooks
-
-### useWallet
-
-Main hook for interacting with LazorKit wallet.
-
-```tsx
 const {
-  isConnected,    // Connection status
-  isLoading,      // Loading status
-  error,          // Error if any
-  credentialId,   // Credential ID
-  publicKey,      // Wallet public key
-  connect,        // Connect wallet function
-  disconnect,     // Disconnect wallet function
-  signMessage     // Sign message function
+  isConnected,    // boolean: wallet connection status
+  publicKey,      // string | null: user's public key
+  connect,        // () => Promise<void>: connect wallet
+  disconnect,     // () => void: disconnect wallet
+  signMessage,    // (message: Uint8Array) => Promise<Uint8Array>: sign a message
+  error,          // string | null: error message if any
 } = useWallet();
 ```
 
-## Core Features
+### 2. UI Components
 
-### 1. Wallet Connection
+#### LazorConnect
 
-The connection process includes the following steps:
-1. Open wallet connection popup
-2. Wait for user authentication
-3. Store credential and public key in localStorage
-4. Update connection status
-
-### 2. Disconnection
-
-The disconnection process includes:
-1. Remove credential and public key from localStorage
-2. Update disconnection status
-
-### 3. Message Signing
-
-The message signing process includes:
-1. Check connection status
-2. Open signing popup
-3. Wait for user confirmation
-
-## UI Components
-
-### WalletDisplay
-
-Component that displays wallet interface with features:
-- Connect/disconnect button
-- Wallet address display
-- Copy address button
-- Disconnect dropdown menu
-
-## Styling
-
-Component uses CSS modules with main classes:
-
-```css
-.lazor-connect          /* Main container */
-.wallet-address        /* Wallet address display */
-.copy-button           /* Copy button */
-.disconnect-button     /* Disconnect button */
-.connect-button        /* Connect button */
-```
-
-## Error Handling
-
-SDK handles common errors:
-- Connection failure
-- Blocked popup
-- Timeout
-- Message signing error
-
-## Complete Example
+A ready-to-use React component for wallet connection UI:
 
 ```tsx
-import { LazorConnect } from 'lazorkit';
+import { LazorConnect } from '@lazorkt/wallet';
+
+<LazorConnect onConnect={publicKey => { console.log('Connected:', publicKey); }} />
+```
+
+#### WalletButton (Customizable)
+
+You can use and customize the button component via the `as` prop or pass your own component:
+
+```tsx
+import { WalletButton } from '@lazorkt/wallet';
+
+// Use a different HTML element
+<WalletButton as="a" href="/custom">Connect Wallet</WalletButton>
+
+// Or use your own React component
+<WalletButton as={MyCustomButton} />
+```
+
+## Full Example
+
+```tsx
+import { LazorConnect, useWallet } from '@lazorkt/wallet';
 
 function App() {
-  const handleConnect = (publicKey: string) => {
-    console.log('Connected with public key:', publicKey);
-  };
-
-  const handleSignMessage = async (base64Tx: string) => {
-    try {
-      // Process signed message
-      console.log('Signed message:', base64Tx);
-    } catch (error) {
-      console.error('Failed to sign message:', error);
-    }
-  };
+  const { isConnected, publicKey, connect, disconnect } = useWallet();
 
   return (
     <div>
-      <h1>My App</h1>
-      <LazorConnect 
-        onConnect={handleConnect}
-        onSignMessage={handleSignMessage}
-      />
+      <LazorConnect onConnect={connect} />
+      {isConnected && <div>Public Key: {publicKey}</div>}
+      <button onClick={disconnect}>Disconnect</button>
     </div>
   );
 }
@@ -163,10 +93,7 @@ function App() {
 
 ## Notes
 
-1. Ensure your domain is whitelisted in LazorKit
-2. Check internet connection before performing operations
-3. Handle error cases appropriately
-4. Consider security when storing credential information
+- If using Buffer in the browser, install `buffer` and polyfill if needed.
 
 ## License
 

@@ -3,6 +3,7 @@ import { PublicKey , Keypair} from '@solana/web3.js';
 import { Connection } from '@solana/web3.js';
 import { SmartWalletContract } from '../sdk';
 import { Buffer } from 'buffer';
+import { base64ToInstruction } from '../sdk/utils';
 interface WalletState {
   credentialId: string | null;
   publicKey: string | null;
@@ -156,9 +157,10 @@ export const useWallet = () => {
         );
         const smartWalletPubkey = smartWalletAuthorityData.smartWalletPubkey;
 
+        
         const txn = await SmartWallet.createVerifyAndExecuteTransaction({
-          arbitraryInstruction: swapIns,
-          pubkey: pubkey,
+          arbitraryInstruction: base64ToInstruction(base64Tx),
+          pubkey: publickey,
           signature: normalized,
           message,
           payer: keypair.publicKey,
@@ -171,7 +173,6 @@ export const useWallet = () => {
         const result = await connection.sendTransaction(txn, {
           preflightCommitment: 'confirmed',
         });
-
       }}
         window.addEventListener('message', handleMessage);
 

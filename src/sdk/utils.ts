@@ -164,3 +164,36 @@ export function createSecp256r1Instruction(
 export function getID(): number {
   return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
 }
+
+export function base64ToInstruction(base64Str: string): TransactionInstruction {
+  const buf = Buffer.from(base64Str, 'base64');
+
+  let offset = 0;
+
+  const programId = new PublicKey(buf.slice(offset, offset + 32));
+  offset += 32;
+
+  const numKeys = buf[offset];
+  offset += 1;
+
+  const keys = [];
+  for (let i = 0; i < numKeys; i++) {
+    const pubkey = new PublicKey(buf.slice(offset, offset + 32));
+    offset += 32;
+
+    const isSigner = !!buf[offset];
+    offset += 1;
+
+    const isWritable = !!buf[offset];
+    offset += 1;
+
+    keys.push({ pubkey, isSigner, isWritable });
+  }
+
+  const dataLength = buf[offset];
+  offset += 1;
+
+  const data = buf.slice(offset, offset + dataLength);
+
+  return new TransactionInstruction({ keys, programId, data });
+}
