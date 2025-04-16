@@ -1,4 +1,4 @@
-# @lazorkt/wallet
+# @lazorkit/wallet
 
 A React SDK for integrating Lazor Kit – a Solana Smart Wallet solution with Passkey support 
 
@@ -17,9 +17,9 @@ A React SDK for integrating Lazor Kit – a Solana Smart Wallet solution with Pa
 ## Installation
 
 ```bash
-npm install @lazorkt/wallet
+npm install @lazorkit/wallet
 # or
-yarn add @lazorkt/wallet
+yarn add @lazorkit/wallet
 ```
 
 ## Buffer Support in Browsers
@@ -68,7 +68,7 @@ import { LazorConnect } from '@lazorkt/wallet';
 You can use and customize the button component via the `as` prop or pass your own component:
 
 ```tsx
-import { WalletButton } from '@lazorkt/wallet';
+import { WalletButton } from '@lazorkit/wallet';
 
 // Use a different HTML element
 <WalletButton as="a" href="/custom">Connect Wallet</WalletButton>
@@ -80,7 +80,7 @@ import { WalletButton } from '@lazorkt/wallet';
 ## Full Example
 
 ```tsx
-import { LazorConnect, useWallet } from '@lazorkt/wallet';
+import { LazorConnect, useWallet } from '@lazorkit/wallet';
 
 function App() {
   const { isConnected, publicKey, connect, disconnect } = useWallet();
