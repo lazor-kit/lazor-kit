@@ -1,6 +1,6 @@
 {
   "name": "@lazorkt/wallet",
-  "version": "0.1.3",
+  "version": "0.1.0",
   "description": "React SDK for Lazor Kit - A Solana Smart Wallet Solution with Passkey Support",
   "type": "module",
   "main": "dist/index.js",
