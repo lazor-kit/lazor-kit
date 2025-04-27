@@ -8,7 +8,7 @@ import {
 } from '@solana/web3.js';
 import { Contract } from './idl/contract';
 import IDL from './idl/contract.json';
-import * as anchor from '@coral-xyz/anchor';
+import { BN, Program } from '@coral-xyz/anchor';
 import { Buffer } from 'buffer';
 import {
   AddAuthenticatorsParam,
@@ -29,8 +29,8 @@ export class SmartWalletContract {
 
   private lookupTableAddress: PublicKey = LOOKUP_TABLE_ADDRESS;
 
-  get program(): anchor.Program<Contract> {
-    return new anchor.Program(IDL as Contract, {
+  get program(): Program<Contract> {
+    return new Program(IDL as Contract, {
       connection: this.connection,
     });
   }
@@ -95,7 +95,7 @@ export class SmartWalletContract {
 
     const message: Message = {
       nonce: smartWalletAuthorityData.nonce,
-      timestamp: new anchor.BN(timestamp),
+      timestamp: new BN(timestamp),
     };
 
     const messageBytes = this.program.coder.types.encode('message', message);
@@ -118,7 +118,7 @@ export class SmartWalletContract {
     const [smartWalletPda] = PublicKey.findProgramAddressSync(
       [
         Buffer.from(SMART_WALLET_SEED),
-        new anchor.BN(id).toArrayLike(Buffer, 'le', 8),
+        new BN(id).toArrayLike(Buffer, 'le', 8),
       ],
       this.programId
     );
@@ -128,7 +128,7 @@ export class SmartWalletContract {
       this.programId
     );
     const createSmartWalletIns = await this.program.methods
-      .initSmartWallet({ data: secp256r1PubkeyBytes }, new anchor.BN(id))
+      .initSmartWallet({ data: secp256r1PubkeyBytes }, new BN(id))
       .accountsPartial({
         signer: payer,
         smartWallet: smartWalletPda,

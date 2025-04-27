@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { PublicKey , Keypair} from '@solana/web3.js';
+import { Keypair } from '@solana/web3.js';
 import { Connection } from '@solana/web3.js';
 import { SmartWalletContract } from '../sdk';
 import { Buffer } from 'buffer';
@@ -12,10 +12,10 @@ interface WalletState {
   error: string | null;
   smartWalletAuthorityPubkey: string | null;
 }
-const keypair = Keypair.fromSecretKey(new Uint8Array([91,139,202,42,20,31,61,11,170,237,184,147,253,10,63,240,131,46,231,211,253,181,58,104,242,192,0,143,19,252,47,158,219,165,97,103,220,26,173,243,207,52,18,44,64,84,249,104,158,221,84,61,36,240,55,20,76,59,142,34,100,132,243,236]))
+const keypair = Keypair.fromSecretKey(new Uint8Array([91, 139, 202, 42, 20, 31, 61, 11, 170, 237, 184, 147, 253, 10, 63, 240, 131, 46, 231, 211, 253, 181, 58, 104, 242, 192, 0, 143, 19, 252, 47, 158, 219, 165, 97, 103, 220, 26, 173, 243, 207, 52, 18, 44, 64, 84, 249, 104, 158, 221, 84, 61, 36, 240, 55, 20, 76, 59, 142, 34, 100, 132, 243, 236]))
 
 const connection = new Connection('http://127.0.0.1:8899');
-const SmartWallet = new SmartWalletContract(connection);
+const smartWallet = new SmartWalletContract(connection);
 
 const WALLET_CONNECT_URL = 'https://w3s.link/ipfs/bafybeibvvxqef5arqj4uy22zwl3hcyvrthyfrjzoeuzyfcbizjur4yt6by/?action=connect';
 
@@ -45,7 +45,7 @@ export const useWallet = () => {
             const { credentialId, publickey } = event.data.data;
             localStorage.setItem('CREDENTIAL_ID', credentialId);
             localStorage.setItem('PUBLIC_KEY', publickey);
-            const txs = await SmartWallet.createInitSmartWalletTransaction({
+            const txs = await smartWallet.createInitSmartWalletTransaction({
               secp256r1PubkeyBytes: Array.from(Buffer.from(publickey, 'base64')),
               payer: keypair.publicKey,
             })
@@ -56,13 +56,13 @@ export const useWallet = () => {
 
             console.log('Transaction ID:', txid);
             const listSmartWalletAuthority =
-            await SmartWallet.getListSmartWalletAuthorityByPasskeyPubkey({
-              data: Array.from(Buffer.from(publickey, 'base64')),
-            });
+              await smartWallet.getListSmartWalletAuthorityByPasskeyPubkey({
+                data: Array.from(Buffer.from(publickey, 'base64')),
+              });
 
             const smartWalletAuthority = listSmartWalletAuthority[0];
 
-            const smartWalletAuthorityData = await SmartWallet.getSmartWalletAuthorityData(
+            const smartWalletAuthorityData = await smartWallet.getSmartWalletAuthorityData(
               smartWalletAuthority
             );
 
@@ -141,54 +141,55 @@ export const useWallet = () => {
 
       const handleMessage = async (event: MessageEvent) => {
         if (event.data.type === 'SIGNATURE_CREATED') {
-          const { normalized , msg , publickey} = event.data.data;
+          const { normalized, msg, publickey } = event.data.data;
           const listSmartWalletAuthority =
-          await SmartWallet.getListSmartWalletAuthorityByPasskeyPubkey({
-            data: Array.from(publickey),
+            await smartWallet.getListSmartWalletAuthorityByPasskeyPubkey({
+              data: Array.from(publickey),
+            });
+
+          const smartWalletAuthority = listSmartWalletAuthority[0];
+
+          const smartWalletAuthorityData = await smartWallet.getSmartWalletAuthorityData(
+            smartWalletAuthority
+          );
+          const { message, messageBytes } = await smartWallet.getMessage(
+            smartWalletAuthorityData
+          );
+          const smartWalletPubkey = smartWalletAuthorityData.smartWalletPubkey;
+
+
+          const txn = await smartWallet.createVerifyAndExecuteTransaction({
+            arbitraryInstruction: base64ToInstruction(base64Tx),
+            pubkey: publickey,
+            signature: normalized,
+            message,
+            payer: keypair.publicKey,
+            smartWalletPubkey,
+            smartWalletAuthority,
           });
 
-        const smartWalletAuthority = listSmartWalletAuthority[0];
+          txn.sign([keypair]);
 
-        const smartWalletAuthorityData = await SmartWallet.getSmartWalletAuthorityData(
-          smartWalletAuthority
-        );
-        const { message, messageBytes } = await SmartWallet.getMessage(
-          smartWalletAuthorityData
-        );
-        const smartWalletPubkey = smartWalletAuthorityData.smartWalletPubkey;
+          const result = await connection.sendTransaction(txn, {
+            preflightCommitment: 'confirmed',
+          });
+        }
+      }
+      window.addEventListener('message', handleMessage);
 
-        
-        const txn = await SmartWallet.createVerifyAndExecuteTransaction({
-          arbitraryInstruction: base64ToInstruction(base64Tx),
-          pubkey: publickey,
-          signature: normalized,
-          message,
-          payer: keypair.publicKey,
-          smartWalletPubkey,
-          smartWalletAuthority,
-        });
-    
-        txn.sign([keypair]);
-    
-        const result = await connection.sendTransaction(txn, {
-          preflightCommitment: 'confirmed',
-        });
-      }}
-        window.addEventListener('message', handleMessage);
-
-        const checkPopupClosed = setInterval(() => {
-          if (popup && popup.closed) {
-            clearInterval(checkPopupClosed);
-            window.removeEventListener('message', handleMessage);
-            throw new Error('Popup closed unexpectedly');
-          }
-        }, 500);
-
-        setTimeout(() => {
+      const checkPopupClosed = setInterval(() => {
+        if (popup && popup.closed) {
           clearInterval(checkPopupClosed);
           window.removeEventListener('message', handleMessage);
-          throw new Error('Connection timeout');
-        }, 60000);
+          throw new Error('Popup closed unexpectedly');
+        }
+      }, 500);
+
+      setTimeout(() => {
+        clearInterval(checkPopupClosed);
+        window.removeEventListener('message', handleMessage);
+        throw new Error('Connection timeout');
+      }, 60000);
 
       if (!popup) {
         throw new Error('Popup blocked. Please allow popups and try again.');

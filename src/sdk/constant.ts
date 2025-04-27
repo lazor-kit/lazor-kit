@@ -1,5 +1,6 @@
 import { PublicKey } from '@solana/web3.js';
 import { Buffer } from 'buffer';
+
 export const SMART_WALLET_SEED = Buffer.from('smart_wallet');
 
 export const SECP256R1_NATIVE_PROGRAM = new PublicKey(
