@@ -7,9 +7,10 @@ interface LazorConnectProps {
   connection: Connection;
   onSignMessage?: (base64Tx: string) => Promise<void>;
   onConnect?: (publicKey: string) => void;
+  onDisconnect?: () => void;
 }
 
-export const LazorConnect: React.FC<LazorConnectProps> = ({ connection, onSignMessage, onConnect }) => {
+export const LazorConnect: React.FC<LazorConnectProps> = ({ connection, onSignMessage, onConnect, onDisconnect }) => {
   const {
     isConnected,
     isLoading,
@@ -35,6 +36,13 @@ export const LazorConnect: React.FC<LazorConnectProps> = ({ connection, onSignMe
       console.error('Failed to connect:', err);
     }
   };
+
+  const handleDisconnect = async () => {
+    disconnect();
+    if (onDisconnect) {
+      onDisconnect();
+    }
+  }
 
   const handleClick = () => {
     if (isConnected) {
@@ -117,7 +125,7 @@ export const LazorConnect: React.FC<LazorConnectProps> = ({ connection, onSignMe
           {isOpen && (
             <div className="disconnect-container">
               <button
-                onClick={disconnect}
+                onClick={handleDisconnect}
                 className="disconnect-button"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
