@@ -32,7 +32,7 @@ export const useWallet = ({ connection }: { connection: Connection }) => {
 
     try {
       const popup = window.open(
-        WALLET_CONNECT_URL,
+        WALLET_CONNECT_URL + "?action=connect",
         'WalletAction',
         'width=600,height=400'
       );
@@ -132,7 +132,7 @@ export const useWallet = ({ connection }: { connection: Connection }) => {
       }
 
       const popup = window.open(
-        `https://w3s.link/ipfs/bafybeibvvxqef5arqj4uy22zwl3hcyvrthyfrjzoeuzyfcbizjur4yt6by/?action=sign&message=${encodeURIComponent(base64Tx)}`,
+        WALLET_CONNECT_URL + `?action=sign&message=${encodeURIComponent(base64Tx)}`,
         'WalletAction',
         'width=600,height=400'
       );
