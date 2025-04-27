@@ -5,6 +5,7 @@ import {
   TransactionMessage,
   VersionedTransaction,
   Keypair,
+  AddressLookupTableAccount,
 } from '@solana/web3.js';
 import { Contract } from './idl/contract';
 import IDL from './idl/contract.json';
@@ -37,6 +38,14 @@ export class SmartWalletContract {
 
   get programId(): PublicKey {
     return this.program.programId;
+  }
+
+  async getlookupTableAccounts(): Promise<AddressLookupTableAccount[]> {
+    const lookupTableAccount = (
+      await this.connection.getAddressLookupTable(this.lookupTableAddress)
+    ).value;
+
+    return lookupTableAccount ? [lookupTableAccount] : [];
   }
 
   async getListSmartWalletAuthorityByPasskeyPubkey(
@@ -194,15 +203,13 @@ export class SmartWalletContract {
 
     const blockhash = (await this.connection.getLatestBlockhash()).blockhash;
 
-    const lookupTableAccount = (
-      await this.connection.getAddressLookupTable(this.lookupTableAddress)
-    ).value;
+    const lookupTableAccounts = await this.getlookupTableAccounts();
 
     const messageV0 = new TransactionMessage({
       payerKey: payer,
       recentBlockhash: blockhash,
       instructions: [verifySecp256r1Instruction, executeInstruction], // note this is an array of instructions
-    }).compileToV0Message([lookupTableAccount]);
+    }).compileToV0Message(lookupTableAccounts);
 
     const transactionV0 = new VersionedTransaction(messageV0);
 
@@ -253,15 +260,13 @@ export class SmartWalletContract {
 
     const blockhash = (await this.connection.getLatestBlockhash()).blockhash;
 
-    const lookupTableAccount = (
-      await this.connection.getAddressLookupTable(this.lookupTableAddress)
-    ).value;
+    const lookupTableAccounts = await this.getlookupTableAccounts();
 
     const messageV0 = new TransactionMessage({
       payerKey: payer,
       recentBlockhash: blockhash,
       instructions: [verifySecp256r1Instruction, addAuthIns], // note this is an array of instructions
-    }).compileToV0Message([lookupTableAccount]);
+    }).compileToV0Message(lookupTableAccounts);
 
     const transactionV0 = new VersionedTransaction(messageV0);
 
