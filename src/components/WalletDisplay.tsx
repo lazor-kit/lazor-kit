@@ -1,23 +1,25 @@
 import React, { useState, useRef } from 'react';
 import { useWallet } from '../hooks/useWallet';
 import './WalletDisplay.css';
+import { Connection } from '@solana/web3.js';
 
 interface LazorConnectProps {
+  connection: Connection;
   onSignMessage?: (base64Tx: string) => Promise<void>;
   onConnect?: (publicKey: string) => void;
 }
 
-export const LazorConnect: React.FC<LazorConnectProps> = ({ onSignMessage, onConnect }) => {
-  const { 
-    isConnected, 
-    isLoading, 
-    error, 
-    smartWalletAuthorityPubkey, 
+export const LazorConnect: React.FC<LazorConnectProps> = ({ connection, onSignMessage, onConnect }) => {
+  const {
+    isConnected,
+    isLoading,
+    error,
+    smartWalletAuthorityPubkey,
     publicKey,
-    connect, 
+    connect,
     disconnect,
     signMessage
-  } = useWallet();
+  } = useWallet({ connection });
 
   const [isOpen, setIsOpen] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
@@ -77,11 +79,11 @@ export const LazorConnect: React.FC<LazorConnectProps> = ({ onSignMessage, onCon
   return (
     <div className="lazor-connect">
       {isConnected ? (
-        <div 
+        <div
           ref={containerRef}
           className="wallet-info"
         >
-          <div 
+          <div
             className="wallet-address"
             onClick={handleClick}
           >
@@ -89,7 +91,7 @@ export const LazorConnect: React.FC<LazorConnectProps> = ({ onSignMessage, onCon
               <span className="address-text">
                 {smartWalletAuthorityPubkey?.slice(0, 4)}...{smartWalletAuthorityPubkey?.slice(-4)}
               </span>
-              <button 
+              <button
                 className={`copy-button ${isCopied ? 'copied' : ''}`}
                 onClick={handleCopyAddress}
                 title={isCopied ? "Copied!" : "Copy address"}
@@ -114,7 +116,7 @@ export const LazorConnect: React.FC<LazorConnectProps> = ({ onSignMessage, onCon
           </div>
           {isOpen && (
             <div className="disconnect-container">
-              <button 
+              <button
                 onClick={disconnect}
                 className="disconnect-button"
               >
@@ -129,7 +131,7 @@ export const LazorConnect: React.FC<LazorConnectProps> = ({ onSignMessage, onCon
           )}
         </div>
       ) : (
-        <button 
+        <button
           onClick={handleConnect}
           disabled={isLoading}
           className={`connect-button ${isLoading ? 'loading' : ''}`}

@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { Connection } from '@solana/web3.js';
 import { SmartWalletContract } from '../sdk';
 import { Buffer } from 'buffer';
@@ -14,10 +14,7 @@ interface WalletState {
   smartWalletAuthorityPubkey: string | null;
 }
 
-const connection = new Connection('http://127.0.0.1:8899');
-const smartWallet = new SmartWalletContract(connection);
-
-export const useWallet = () => {
+export const useWallet = ({ connection }: { connection: Connection }) => {
   const [walletState, setWalletState] = useState<WalletState>({
     credentialId: localStorage.getItem('CREDENTIAL_ID'),
     publicKey: localStorage.getItem('PUBLIC_KEY'),
@@ -26,6 +23,9 @@ export const useWallet = () => {
     isLoading: false,
     error: null,
   });
+  const smartWallet = useMemo(() => {
+    return new SmartWalletContract(connection);
+  }, [connection]);
 
   const connect = useCallback(async () => {
     setWalletState(prev => ({ ...prev, isLoading: true, error: null }));
@@ -199,6 +199,7 @@ export const useWallet = () => {
 
   return {
     ...walletState,
+    smartWallet,
     connect,
     disconnect,
     signMessage,
