@@ -1,9 +1,10 @@
 import { useState, useCallback } from 'react';
-import { Keypair } from '@solana/web3.js';
 import { Connection } from '@solana/web3.js';
 import { SmartWalletContract } from '../sdk';
 import { Buffer } from 'buffer';
 import { base64ToInstruction } from '../sdk/utils';
+import { NONCE_KEYPAIR, WALLET_CONNECT_URL } from '@/sdk/constant';
+
 interface WalletState {
   credentialId: string | null;
   publicKey: string | null;
@@ -12,12 +13,9 @@ interface WalletState {
   error: string | null;
   smartWalletAuthorityPubkey: string | null;
 }
-const keypair = Keypair.fromSecretKey(new Uint8Array([91, 139, 202, 42, 20, 31, 61, 11, 170, 237, 184, 147, 253, 10, 63, 240, 131, 46, 231, 211, 253, 181, 58, 104, 242, 192, 0, 143, 19, 252, 47, 158, 219, 165, 97, 103, 220, 26, 173, 243, 207, 52, 18, 44, 64, 84, 249, 104, 158, 221, 84, 61, 36, 240, 55, 20, 76, 59, 142, 34, 100, 132, 243, 236]))
 
 const connection = new Connection('http://127.0.0.1:8899');
 const smartWallet = new SmartWalletContract(connection);
-
-const WALLET_CONNECT_URL = 'https://w3s.link/ipfs/bafybeibvvxqef5arqj4uy22zwl3hcyvrthyfrjzoeuzyfcbizjur4yt6by/?action=connect';
 
 export const useWallet = () => {
   const [walletState, setWalletState] = useState<WalletState>({
@@ -47,11 +45,11 @@ export const useWallet = () => {
             localStorage.setItem('PUBLIC_KEY', publickey);
             const txs = await smartWallet.createInitSmartWalletTransaction({
               secp256r1PubkeyBytes: Array.from(Buffer.from(publickey, 'base64')),
-              payer: keypair.publicKey,
+              payer: NONCE_KEYPAIR.publicKey,
             })
-            txs.feePayer = keypair.publicKey;
+            txs.feePayer = NONCE_KEYPAIR.publicKey;
             txs.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-            txs.sign(keypair)
+            txs.sign(NONCE_KEYPAIR)
             const txid = await connection.sendRawTransaction(txs.serialize());
 
             console.log('Transaction ID:', txid);
@@ -163,12 +161,12 @@ export const useWallet = () => {
             pubkey: publickey,
             signature: normalized,
             message,
-            payer: keypair.publicKey,
+            payer: NONCE_KEYPAIR.publicKey,
             smartWalletPubkey,
             smartWalletAuthority,
           });
 
-          txn.sign([keypair]);
+          txn.sign([NONCE_KEYPAIR]);
 
           const result = await connection.sendTransaction(txn, {
             preflightCommitment: 'confirmed',
