@@ -1,5 +1,5 @@
 {
-  "name": "@lazorkit/browser",
+  "name": "@lazorkit/mobile",
   "version": "0.1.0",
   "main": "index.js",
   "scripts": {
