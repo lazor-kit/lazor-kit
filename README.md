@@ -39,7 +39,7 @@ window.Buffer = Buffer; // Polyfill global Buffer if needed
 The main hook for interacting with the wallet:
 
 ```tsx
-import { useWallet } from '@lazorkt/wallet';
+import { useWallet } from '@lazorkit/wallet';
 
 const {
   isConnected,    // boolean: wallet connection status
@@ -58,7 +58,7 @@ const {
 A ready-to-use React component for wallet connection UI:
 
 ```tsx
-import { LazorConnect } from '@lazorkt/wallet';
+import { LazorConnect } from '@lazorkit/wallet';
 
 <LazorConnect onConnect={publicKey => { console.log('Connected:', publicKey); }} />
 ```
