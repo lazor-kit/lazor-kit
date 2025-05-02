@@ -1,6 +1,6 @@
 {
   "name": "@lazorkit/wallet",
-  "version": "0.7.5",
+  "version": "0.9.2",
   "publishConfig": {
     "access": "public"
   },
@@ -39,15 +39,16 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lazor-kit/react-sdk.git"
+    "url": "git+https://github.com/lazor-kit/lazor-kit.git"
   },
   "bugs": {
-    "url": "https://github.com/lazor-kit/react-sdk/issues"
+    "url": "https://github.com/lazor-kit/lazor-kit/issues"
   },
-  "homepage": "https://github.com/lazor-kit/react-sdk#readme",
+  "homepage": "https://github.com/lazor-kit/lazor-kit#readme",
   "dependencies": {
     "@coral-xyz/anchor": "^0.31.0",
     "@solana/web3.js": "^1.98.2",
+    "@types/bs58": "^5.0.0",
     "bs58": "^5.0.0",
     "buffer": "^6.0.3",
     "js-sha256": "^0.11.0",

@@ -1,20 +1,28 @@
 # @lazorkit/wallet
 
-A React SDK for integrating Lazor Kit – a Solana Smart Wallet solution with Passkey support 
+A React SDK for integrating Lazor Kit – a Solana Smart Wallet solution with Passkey support.
 
-## How it work 
-![photo_2025-03-19_23-31-25](https://github.com/user-attachments/assets/8fbd66e4-d55d-415a-92a1-95343c0d7615)
+---
 
+## How It Works
+
+![Lazor Kit Wallet Flow](https://github.com/user-attachments/assets/8fbd66e4-d55d-415a-92a1-95343c0d7615)
+
+---
 
 ## Features
 
-- Connect/disconnect Solana smart wallets with Passkey support
-- Sign messages and transactions
-- Use in any React project (Vite, Next.js, Create React App, etc.)
-- Customizable UI components
-- Works in browser environments with Buffer support
+- **Connect/Disconnect** Solana smart wallets with Passkey support.
+- **Sign Messages and Transactions** seamlessly.
+- **React Integration**: Works with Vite, Next.js, Create React App, and more.
+- **Customizable UI Components** for wallet interactions.
+- **Browser Compatibility**: Works in browser environments.
+
+---
 
 ## Installation
+
+Install the package using npm or yarn:
 
 ```bash
 npm install @lazorkit/wallet
@@ -22,21 +30,15 @@ npm install @lazorkit/wallet
 yarn add @lazorkit/wallet
 ```
 
-## Buffer Support in Browsers
-
-If your project needs Buffer (for example, when decoding transactions), install the `buffer` package and polyfill it globally if your bundler does not do this automatically:
-
-```js
-import { Buffer } from 'buffer';
-window.Buffer = Buffer; // Polyfill global Buffer if needed
-```
-> Most modern bundlers (Vite, Webpack 5) will auto-polyfill Buffer if you install the `buffer` package.
+---
 
 ## Usage
 
-### 1. useWallet Hook
+### 1. `useWallet` Hook
 
-The main hook for interacting with the wallet:
+The `useWallet` hook is the main API for interacting with the wallet. It provides state properties and methods for wallet management.
+
+#### Example:
 
 ```tsx
 import { useWallet } from '@lazorkit/wallet';
@@ -46,24 +48,26 @@ const {
   publicKey,      // string | null: user's public key
   connect,        // () => Promise<void>: connect wallet
   disconnect,     // () => void: disconnect wallet
-  signMessage,    // (message: Uint8Array) => Promise<Uint8Array>: sign a message
+  signMessage,    // (instruction: TransactionInstruction) => Promise<string>: sign a message
   error,          // string | null: error message if any
 } = useWallet();
 ```
 
+---
+
 ### 2. UI Components
 
-#### LazorConnect
+#### **LazorConnect**
 
 A ready-to-use React component for wallet connection UI:
 
 ```tsx
 import { LazorConnect } from '@lazorkit/wallet';
 
-<LazorConnect onConnect={publicKey => { console.log('Connected:', publicKey); }} />
+<LazorConnect onConnect={(publicKey) => console.log('Connected:', publicKey)} />
 ```
 
-#### WalletButton (Customizable)
+#### **WalletButton (Customizable)**
 
 You can use and customize the button component via the `as` prop or pass your own component:
 
@@ -77,7 +81,11 @@ import { WalletButton } from '@lazorkit/wallet';
 <WalletButton as={MyCustomButton} />
 ```
 
+---
+
 ## Full Example
+
+Here’s a simple example of integrating the Lazor Kit Wallet into your dApp:
 
 ```tsx
 import { LazorConnect, useWallet } from '@lazorkit/wallet';
@@ -95,10 +103,89 @@ function App() {
 }
 ```
 
+---
+
+## Advanced Example
+
+Here’s a more advanced example with full wallet functionality:
+
+```tsx
+import React from 'react';
+import { useWallet } from '@lazorkit/wallet';
+
+const DApp = () => {
+  const {
+    credentialId,
+    publicKey,
+    isConnected,
+    isLoading,
+    error,
+    smartWalletAuthorityPubkey,
+    connect,
+    disconnect,
+    signMessage,
+  } = useWallet();
+
+  const handleConnect = async () => {
+    try {
+      await connect();
+      console.log('Wallet connected:', publicKey);
+    } catch (err) {
+      console.error('Failed to connect wallet:', err);
+    }
+  };
+
+  const handleDisconnect = () => {
+    disconnect();
+    console.log('Wallet disconnected');
+  };
+
+  const handleSignMessage = async () => {
+    try {
+      const instruction = {}; // Replace with a valid TransactionInstruction
+      const txid = await signMessage(instruction);
+      console.log('Transaction ID:', txid);
+    } catch (err) {
+      console.error('Failed to sign message:', err);
+    }
+  };
+
+  return (
+    <div>
+      <h1>Lazor Kit Wallet Integration</h1>
+      {isConnected ? (
+        <div>
+          <p>Connected Wallet: {publicKey}</p>
+          <p>Smart Wallet Authority: {smartWalletAuthorityPubkey}</p>
+          <button onClick={handleDisconnect}>Disconnect</button>
+          <button onClick={handleSignMessage}>Sign Message</button>
+        </div>
+      ) : (
+        <div>
+          <button onClick={handleConnect} disabled={isLoading}>
+            {isLoading ? 'Connecting...' : 'Connect Wallet'}
+          </button>
+        </div>
+      )}
+      {error && <p style={{ color: 'red' }}>Error: {error}</p>}
+    </div>
+  );
+};
+
+export default DApp;
+```
+
+---
+
 ## Notes
 
-- If using Buffer in the browser, install `buffer` and polyfill if needed.
+1. **Popup Blocking**: Ensure your browser allows popups for wallet connection and signing processes.
+2. **Local Storage**: The hook uses `localStorage` to persist wallet credentials (`CREDENTIAL_ID` and `PUBLIC_KEY`).
+3. **Error Handling**: Always handle errors gracefully, as wallet operations may fail due to user actions or network issues.
+4. **Transaction Instruction**: When using `signMessage`, ensure you pass a valid `TransactionInstruction` object.
+
+---
 
 ## License
 
-MIT
+This project is licensed under the MIT License.
