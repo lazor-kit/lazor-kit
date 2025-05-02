@@ -1,12 +1,13 @@
-import { Connection, PublicKey, TransactionInstruction } from '@solana/web3.js';
-import * as anchor from '@coral-xyz/anchor';
+import { PublicKey, TransactionInstruction } from '@solana/web3.js';
+import { IdlTypes } from '@coral-xyz/anchor';
 import { Contract } from './idl/contract';
 import { Buffer } from 'buffer';
-export type Message = anchor.IdlTypes<Contract>['message'];
-export type VerifyParam = anchor.IdlTypes<Contract>['verifyParam'];
-export type PasskeyPubkey = anchor.IdlTypes<Contract>['passkeyPubkey'];
+
+export type Message = IdlTypes<Contract>['message'];
+export type VerifyParam = IdlTypes<Contract>['verifyParam'];
+export type PasskeyPubkey = IdlTypes<Contract>['passkeyPubkey'];
 export type SmartWalletAuthority =
-  anchor.IdlTypes<Contract>['smartWalletAuthority'];
+  IdlTypes<Contract>['smartWalletAuthority'];
 
 export type CreateVerifyAndExecuteTransactionParam = {
   arbitraryInstruction: TransactionInstruction;

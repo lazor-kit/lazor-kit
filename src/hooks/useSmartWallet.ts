@@ -1,17 +1,12 @@
 import { useState, useEffect } from 'react';
 import { useWallet } from './useWallet';
-import { SmartWalletContract } from '../sdk';
 import { Connection } from '@solana/web3.js';
 
-export const useSmartWallet = () => {
-  const { publicKey, isConnected } = useWallet();
+export const useSmartWallet = ({ connection }: { connection: Connection }) => {
+  const { publicKey, isConnected, smartWallet } = useWallet({ connection });
   const [smartWalletAddress, setSmartWalletAddress] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // Initialize SmartWalletContract with a connection
-  const connection = new Connection('https://api.mainnet-beta.solana.com');
-  const smartWallet = new SmartWalletContract(connection);
 
   useEffect(() => {
     if (isConnected && publicKey) {
