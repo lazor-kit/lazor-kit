@@ -1,12 +1,6 @@
-# @lazorkit/wallet
+# Lazor Kit Wallet Integration for dApps
 
-A React SDK for integrating Lazor Kit – a Solana Smart Wallet solution with Passkey support.
-
----
-
-## How It Works
-
-![Lazor Kit Wallet Flow](https://github.com/user-attachments/assets/8fbd66e4-d55d-415a-92a1-95343c0d7615)
+Lazor Kit Wallet provides a seamless way to integrate Solana smart wallets with Passkey support into your decentralized application (dApp). This guide explains how to set up and use the wallet in your dApp.
 
 ---
 
@@ -32,11 +26,19 @@ yarn add @lazorkit/wallet
 
 ---
 
+## Polyfill Notice
+
+If your project runs in a browser environment, ensure that `Buffer` is available globally. Lazor Kit Wallet relies on `Buffer` for certain cryptographic operations. You can add the polyfill if needed
+
+This setup ensures compatibility with modern bundlers like Vite, Webpack, or Rollup.
+
+---
+
 ## Usage
 
 ### 1. `useWallet` Hook
 
-The `useWallet` hook is the main API for interacting with the wallet. It provides state properties and methods for wallet management.
+The `useWallet` hook for interacting with the wallet. It provides state properties and methods for wallet management.
 
 #### Example:
 
@@ -45,67 +47,19 @@ import { useWallet } from '@lazorkit/wallet';
 
 const {
   isConnected,    // boolean: wallet connection status
-  publicKey,      // string | null: user's public key
+  publicKey,      // string | null: publickey of passkey 
   connect,        // () => Promise<void>: connect wallet
   disconnect,     // () => void: disconnect wallet
   signMessage,    // (instruction: TransactionInstruction) => Promise<string>: sign a message
+  smartWalletAuthorityPubkey // string | null: publickey of smart wallet on solana 
   error,          // string | null: error message if any
 } = useWallet();
+
 ```
 
 ---
 
-### 2. UI Components
-
-#### **LazorConnect**
-
-A ready-to-use React component for wallet connection UI:
-
-```tsx
-import { LazorConnect } from '@lazorkit/wallet';
-
-<LazorConnect onConnect={(publicKey) => console.log('Connected:', publicKey)} />
-```
-
-#### **WalletButton (Customizable)**
-
-You can use and customize the button component via the `as` prop or pass your own component:
-
-```tsx
-import { WalletButton } from '@lazorkit/wallet';
-
-// Use a different HTML element
-<WalletButton as="a" href="/custom">Connect Wallet</WalletButton>
-
-// Or use your own React component
-<WalletButton as={MyCustomButton} />
-```
-
----
-
-## Full Example
-
-Here’s a simple example of integrating the Lazor Kit Wallet into your dApp:
-
-```tsx
-import { LazorConnect, useWallet } from '@lazorkit/wallet';
-
-function App() {
-  const { isConnected, publicKey, connect, disconnect } = useWallet();
-
-  return (
-    <div>
-      <LazorConnect onConnect={connect} />
-      {isConnected && <div>Public Key: {publicKey}</div>}
-      <button onClick={disconnect}>Disconnect</button>
-    </div>
-  );
-}
-```
-
----
-
-## Advanced Example
+## Example
 
 Here’s a more advanced example with full wallet functionality:
 
@@ -129,7 +83,7 @@ const DApp = () => {
   const handleConnect = async () => {
     try {
       await connect();
-      console.log('Wallet connected:', publicKey);
+      console.log('Wallet connected:', smartWalletAuthorityPubkey);
     } catch (err) {
       console.error('Failed to connect wallet:', err);
     }
@@ -155,8 +109,7 @@ const DApp = () => {
       <h1>Lazor Kit Wallet Integration</h1>
       {isConnected ? (
         <div>
-          <p>Connected Wallet: {publicKey}</p>
-          <p>Smart Wallet Authority: {smartWalletAuthorityPubkey}</p>
+          <p>Connected Wallet: {smartWalletAuthorityPubkey}</p>
           <button onClick={handleDisconnect}>Disconnect</button>
           <button onClick={handleSignMessage}>Sign Message</button>
         </div>
