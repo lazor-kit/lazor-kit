@@ -4,6 +4,20 @@ Lazor Kit Wallet provides a seamless way to integrate Solana smart wallets with 
 
 ---
 
+## Table of Contents
+
+1. [Features](#features)
+2. [Installation](#installation)
+3. [Polyfill Notice](#polyfill-notice)
+4. [Usage](#usage)
+   - [useWallet Hook](#1-usewallet-hook)
+5. [Example](#example)
+6. [Notes](#notes)
+7. [Contributing](#contributing)
+8. [License](#license)
+
+---
+
 ## Features
 
 - **Connect/Disconnect** Solana smart wallets with Passkey support.
@@ -28,7 +42,7 @@ yarn add @lazorkit/wallet
 
 ## Polyfill Notice
 
-If your project runs in a browser environment, ensure that `Buffer` is available globally. Lazor Kit Wallet relies on `Buffer` for certain cryptographic operations. You can add the polyfill if needed
+If your project runs in a browser environment, ensure that `Buffer` is available globally. Lazor Kit Wallet relies on `Buffer` for certain cryptographic operations. You can add the polyfill if needed.
 
 This setup ensures compatibility with modern bundlers like Vite, Webpack, or Rollup.
 
@@ -38,7 +52,7 @@ This setup ensures compatibility with modern bundlers like Vite, Webpack, or Rol
 
 ### 1. `useWallet` Hook
 
-The `useWallet` hook for interacting with the wallet. It provides state properties and methods for wallet management.
+The `useWallet` hook provides state properties and methods for wallet management.
 
 #### Example:
 
@@ -47,14 +61,13 @@ import { useWallet } from '@lazorkit/wallet';
 
 const {
   isConnected,    // boolean: wallet connection status
-  publicKey,      // string | null: publickey of passkey 
+  publicKey,      // string | null: public key of the passkey
   connect,        // () => Promise<void>: connect wallet
   disconnect,     // () => void: disconnect wallet
   signMessage,    // (instruction: TransactionInstruction) => Promise<string>: sign a message
-  smartWalletAuthorityPubkey // string | null: publickey of smart wallet on solana 
+  smartWalletAuthorityPubkey, // string | null: public key of the smart wallet on Solana
   error,          // string | null: error message if any
 } = useWallet();
-
 ```
 
 ---
@@ -139,6 +152,17 @@ export default DApp;
 
 ---
 
+## Contributing
+
+We welcome contributions to Lazor Kit Wallet! To contribute:
+
+1. Fork the repository.
+2. Create a new branch for your feature or bug fix.
+3. Commit your changes and push them to your fork.
+4. Submit a pull request with a detailed description of your changes.
+
+---
+
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the MIT License. See the [LICENSE](./LICENSE) file for details.
