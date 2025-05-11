@@ -1,20 +1,30 @@
 # Lazor Kit Wallet Integration for dApps
 
-Lazor Kit Wallet provides a seamless way to integrate Solana smart wallets with Passkey support into your decentralized application (dApp). This guide explains how to set up and use the wallet in your dApp.
+Lazor Kit Wallet is a powerful tool designed to simplify the integration of Solana smart wallets with Passkey support into your decentralized application (dApp). This guide is tailored for developers transitioning from Web2 to Web3, providing a comprehensive overview of how to set up and use the wallet in your dApp.
 
 ---
 
 ## Table of Contents
 
-1. [Features](#features)
-2. [Installation](#installation)
-3. [Polyfill Notice](#polyfill-notice)
-4. [Usage](#usage)
+1. [Introduction to Web3 and Lazor Kit](#introduction-to-web3-and-lazor-kit)
+2. [Features](#features)
+3. [Installation](#installation)
+4. [Polyfill Notice](#polyfill-notice)
+5. [Usage](#usage)
    - [useWallet Hook](#1-usewallet-hook)
-5. [Example](#example)
-6. [Notes](#notes)
-7. [Contributing](#contributing)
-8. [License](#license)
+6. [Example](#example)
+7. [Key Concepts for Web2 Developers](#key-concepts-for-web2-developers)
+8. [Notes](#notes)
+9. [Contributing](#contributing)
+10. [License](#license)
+
+---
+
+## Introduction to Web3 and Lazor Kit
+
+Web3 represents the next evolution of the internet, where decentralized applications (dApps) operate on blockchain networks. Unlike traditional Web2 applications, Web3 applications rely on decentralized protocols, cryptographic wallets, and smart contracts to function.
+
+Lazor Kit Wallet bridges the gap between Web2 and Web3 by providing an easy-to-use library for integrating Solana smart wallets into your dApp. With features like Passkey support, customizable UI components, and seamless React integration, Lazor Kit Wallet empowers developers to build secure and user-friendly dApps.
 
 ---
 
@@ -42,7 +52,13 @@ yarn add @lazorkit/wallet
 
 ## Polyfill Notice
 
-If your project runs in a browser environment, ensure that `Buffer` is available globally. Lazor Kit Wallet relies on `Buffer` for certain cryptographic operations. You can add the polyfill if needed.
+If your project runs in a browser environment, ensure that `Buffer` is available globally. Lazor Kit Wallet relies on `Buffer` for certain cryptographic operations. You can add the polyfill if needed:
+
+```javascript
+// Add this at the entry point of your application
+import { Buffer } from 'buffer';
+window.Buffer = Buffer;
+```
 
 This setup ensures compatibility with modern bundlers like Vite, Webpack, or Rollup.
 
@@ -52,7 +68,7 @@ This setup ensures compatibility with modern bundlers like Vite, Webpack, or Rol
 
 ### 1. `useWallet` Hook
 
-The `useWallet` hook provides state properties and methods for wallet management.
+The `useWallet` hook provides state properties and methods for wallet management. It abstracts the complexities of interacting with Solana wallets, making it easier for developers to integrate wallet functionality into their dApps.
 
 #### Example:
 
@@ -140,6 +156,16 @@ const DApp = () => {
 
 export default DApp;
 ```
+
+---
+
+## Key Concepts for Web2 Developers
+
+1. **Wallets**: In Web3, wallets are digital tools that store private keys and enable users to interact with blockchain networks. Lazor Kit Wallet simplifies wallet management for developers.
+2. **Smart Contracts**: These are self-executing contracts with the terms of the agreement directly written into code. Solana smart wallets interact with these contracts to perform operations.
+3. **Public and Private Keys**: Public keys are like account numbers, while private keys are like passwords. Lazor Kit Wallet handles these securely.
+4. **Transaction Signing**: Signing a transaction is akin to authorizing a payment in Web2. Lazor Kit Wallet provides methods to sign messages and transactions securely.
+5. **Decentralization**: Unlike Web2, where data is stored on centralized servers, Web3 applications operate on decentralized networks like Solana.
 
 ---
 
