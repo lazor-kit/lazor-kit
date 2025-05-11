@@ -1,12 +1,13 @@
-import { PublicKey, TransactionInstruction } from '@solana/web3.js';
+// Import necessary Solana dependencies
+import { PublicKey, TransactionInstruction } from '@solana/web3.js'; // Solana blockchain utilities
 
 // Constants from the Rust code
-const SIGNATURE_OFFSETS_SERIALIZED_SIZE = 14;
-const SIGNATURE_OFFSETS_START = 2;
-const DATA_START = SIGNATURE_OFFSETS_SERIALIZED_SIZE + SIGNATURE_OFFSETS_START;
-const SIGNATURE_SERIALIZED_SIZE: number = 64;
-const COMPRESSED_PUBKEY_SERIALIZED_SIZE = 33;
-const FIELD_SIZE = 32;
+const SIGNATURE_OFFSETS_SERIALIZED_SIZE = 14; // Size of serialized signature offsets
+const SIGNATURE_OFFSETS_START = 2; // Start position of signature offsets
+const DATA_START = SIGNATURE_OFFSETS_SERIALIZED_SIZE + SIGNATURE_OFFSETS_START; // Start position of data
+const SIGNATURE_SERIALIZED_SIZE: number = 64; // Size of serialized signature
+const COMPRESSED_PUBKEY_SERIALIZED_SIZE = 33; // Size of compressed public key
+const FIELD_SIZE = 32; // Size of a field in the secp256r1 curve
 
 // Order of secp256r1 curve (same as in Rust code)
 const SECP256R1_ORDER = new Uint8Array([
@@ -22,16 +23,22 @@ const SECP256R1_HALF_ORDER = new Uint8Array([
   0xe5, 0x61, 0x7e, 0x31, 0x92, 0xa8,
 ]);
 
+// Interface for secp256r1 signature offsets
 interface Secp256r1SignatureOffsets {
-  signature_offset: number;
-  signature_instruction_index: number;
-  public_key_offset: number;
-  public_key_instruction_index: number;
-  message_data_offset: number;
-  message_data_size: number;
-  message_instruction_index: number;
+  signature_offset: number; // Offset of the signature
+  signature_instruction_index: number; // Index of the signature instruction
+  public_key_offset: number; // Offset of the public key
+  public_key_instruction_index: number; // Index of the public key instruction
+  message_data_offset: number; // Offset of the message data
+  message_data_size: number; // Size of the message data
+  message_instruction_index: number; // Index of the message instruction
 }
 
+/**
+ * Converts various data types to a Uint8Array.
+ * @param {any} data - The data to convert.
+ * @returns {Uint8Array} - The converted data.
+ */
 function bytesOf(data: any): Uint8Array {
   if (data instanceof Uint8Array) {
     return data;
@@ -48,7 +55,12 @@ function bytesOf(data: any): Uint8Array {
   }
 }
 
-// Compare two big numbers represented as Uint8Arrays
+/**
+ * Compares two big numbers represented as Uint8Arrays.
+ * @param {Uint8Array} a - The first number.
+ * @param {Uint8Array} b - The second number.
+ * @returns {boolean} - True if `a` is greater than `b`.
+ */
 function isGreaterThan(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) {
     return a.length > b.length;
@@ -61,7 +73,12 @@ function isGreaterThan(a: Uint8Array, b: Uint8Array): boolean {
   return false;
 }
 
-// Subtract one big number from another (a - b), both represented as Uint8Arrays
+/**
+ * Subtracts one big number from another (a - b), both represented as Uint8Arrays.
+ * @param {Uint8Array} a - The minuend.
+ * @param {Uint8Array} b - The subtrahend.
+ * @returns {Uint8Array} - The result of the subtraction.
+ */
 function subtractBigNumbers(a: Uint8Array, b: Uint8Array): Uint8Array {
   const result = new Uint8Array(a.length);
   let borrow = 0;
@@ -80,6 +97,13 @@ function subtractBigNumbers(a: Uint8Array, b: Uint8Array): Uint8Array {
   return result;
 }
 
+/**
+ * Creates a secp256r1 signature verification instruction.
+ * @param {Uint8Array} message - The message to verify.
+ * @param {Buffer<ArrayBuffer>} pubkey - The public key of the signer.
+ * @param {Buffer<ArrayBuffer>} signature - The signature to verify.
+ * @returns {TransactionInstruction} - The constructed instruction.
+ */
 export function createSecp256r1Instruction(
   message: Uint8Array,
   pubkey: Buffer<ArrayBuffer>,
@@ -160,6 +184,10 @@ export function createSecp256r1Instruction(
   }
 }
 
+/**
+ * Generates a random ID.
+ * @returns {number} - A random ID.
+ */
 export function getID(): number {
   return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
 }
