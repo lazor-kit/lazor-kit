@@ -1,9 +1,10 @@
 import React, { useState, useCallback, createContext, ReactNode, useContext } from 'react';
-import { Connection, PublicKey, Keypair, TransactionInstruction } from '@solana/web3.js';
+import { PublicKey, Keypair, TransactionInstruction } from '@solana/web3.js';
 import { Buffer } from 'buffer';
 import { createSmartWalletTransaction } from '../core/createSmartWallet';
 import { getSmartWalletPdaByCreator } from '../core/getAddress';
 import { createVerifyAndExecuteTransaction } from '../core/verifyAndExecute';
+import { useConnection } from '@solana/wallet-adapter-react';
 
 type WalletContextState = {
   credentialId: string | null;
@@ -20,11 +21,6 @@ type WalletContextState = {
 const WalletContext = createContext<WalletContextState>({} as WalletContextState);
 
 const FUNDED_KEYPAIR = Keypair.fromSecretKey(new Uint8Array([91, 139, 202, 42, 20, 31, 61, 11, 170, 237, 184, 147, 253, 10, 63, 240, 131, 46, 231, 211, 253, 181, 58, 104, 242, 192, 0, 143, 19, 252, 47, 158, 219, 165, 97, 103, 220, 26, 173, 243, 207, 52, 18, 44, 64, 84, 249, 104, 158, 221, 84, 61, 36, 240, 55, 20, 76, 59, 142, 34, 100, 132, 243, 236]));
-const LAZORKIT_CONNECTION = new Connection('https://rpc.lazorkit.xyz/', {
-  wsEndpoint: 'https://rpc.lazorkit.xyz/ws/',
-  commitment: 'confirmed',
-  confirmTransactionInitialTimeout: 60000,
-});
 
 const WALLET_CONNECT_URL = 'https://w3s.link/ipfs/bafybeibvvxqef5arqj4uy22zwl3hcyvrthyfrjzoeuzyfcbizjur4yt6by/?action=connect';
 
@@ -33,6 +29,7 @@ export function useWallet() {
 };
 
 export function WalletProvider({ children }: { children: ReactNode }) {
+  const { connection } = useConnection();
   const [credentialId, setCredentialId] = useState<string | null>(localStorage.getItem('CREDENTIAL_ID'));
   const [publicKey, setPublicKey] = useState<string | null>(localStorage.getItem('PUBLIC_KEY'));
   const [isConnected, setIsConnected] = useState<boolean>(!!localStorage.getItem('PUBLIC_KEY'));
@@ -59,12 +56,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
             localStorage.setItem('PUBLIC_KEY', publicKey);
             const signature = await createSmartWalletTransaction({
               secp256k1PubkeyBytes: Array.from(Buffer.from(publicKey, "base64")),
-              connection: LAZORKIT_CONNECTION,
+              connection,
             });
-            await LAZORKIT_CONNECTION.confirmTransaction({ signature, ...await LAZORKIT_CONNECTION.getLatestBlockhash() });
+            await connection.confirmTransaction({ signature, ...await connection.getLatestBlockhash() });
 
             const smartWalletAuthorityPubkey = await getSmartWalletPdaByCreator(
-              LAZORKIT_CONNECTION,
+              connection,
               Array.from(Buffer.from(publicKey, "base64"))
             );
             console.log(smartWalletAuthorityPubkey);
@@ -142,7 +139,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
               }
 
               const smartWalletPubkey = await getSmartWalletPdaByCreator(
-                LAZORKIT_CONNECTION,
+                connection,
                 Array.from(Buffer.from(storedPublicKey, "base64"))
               );
 
@@ -153,16 +150,16 @@ export function WalletProvider({ children }: { children: ReactNode }) {
                 pubkey: Buffer.from(storedPublicKey, "base64"),
                 signature: Buffer.from(normalized, "base64"),
                 message: Buffer.from(msg, "base64"),
-                connection: LAZORKIT_CONNECTION,
+                connection,
                 payer: FUNDED_KEYPAIR.publicKey,
                 smartWalletPda: new PublicKey(smartWalletPubkey),
               });
 
               txn.partialSign(FUNDED_KEYPAIR);
-              const signature = await LAZORKIT_CONNECTION.sendRawTransaction(txn.serialize(), {
+              const signature = await connection.sendRawTransaction(txn.serialize(), {
                 skipPreflight: true
               });
-              await LAZORKIT_CONNECTION.confirmTransaction({ signature, ...await LAZORKIT_CONNECTION.getLatestBlockhash() });
+              await connection.confirmTransaction({ signature, ...await connection.getLatestBlockhash() });
 
               console.log('Transaction ID:', signature);
 
