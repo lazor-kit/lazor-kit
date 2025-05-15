@@ -47,14 +47,15 @@
   "homepage": "https://github.com/lazor-kit/lazor-kit#readme",
   "dependencies": {
     "@coral-xyz/anchor": "^0.31.0",
+    "@solana/wallet-adapter-react": "^0.15.38",
     "@solana/web3.js": "^1.98.2",
-    "@types/bs58": "^5.0.0",
     "bs58": "^5.0.0",
     "buffer": "^6.0.3",
     "js-sha256": "^0.11.0",
     "process": "^0.11.10"
   },
   "devDependencies": {
+    "@types/bs58": "^5.0.0",
     "@types/jest": "^29.5.12",
     "@types/node": "^20.11.19",
     "@types/react": "^18.2.55",
