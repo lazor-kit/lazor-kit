@@ -12,9 +12,9 @@ type WalletContextState = {
   isLoading: boolean;
   error: string | null;
   smartWalletAuthorityPubkey: string | null;
-  connect: () => void;
+  connect: () => Promise<string | undefined>;
   disconnect: () => void;
-  signMessage: (instruction: TransactionInstruction) => Promise<string>;
+  signMessage: (instruction: TransactionInstruction) => Promise<string | undefined>;
 }
 
 const WalletContext = createContext<WalletContextState>({} as WalletContextState);
@@ -51,7 +51,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         'width=600,height=400'
       );
 
-      await new Promise((resolve, reject) => {
+      return await new Promise<string>((resolve, reject) => {
         const handleMessage = async (event: MessageEvent) => {
           if (event.data.type === 'WALLET_CONNECTED') {
             const { credentialId, publickey: publicKey } = event.data.data;
@@ -63,19 +63,19 @@ export function WalletProvider({ children }: { children: ReactNode }) {
             });
             await LAZORKIT_CONNECTION.confirmTransaction({ signature, ...await LAZORKIT_CONNECTION.getLatestBlockhash() });
 
-            const smartWalletPubkey = await getSmartWalletPdaByCreator(
+            const smartWalletAuthorityPubkey = await getSmartWalletPdaByCreator(
               LAZORKIT_CONNECTION,
               Array.from(Buffer.from(publicKey, "base64"))
             );
-            console.log(smartWalletPubkey);
+            console.log(smartWalletAuthorityPubkey);
             setCredentialId(credentialId);
             setPublicKey(publicKey);
             setIsConnected(true);
             setIsLoading(false);
             setError(null);
-            setSmartWalletAuthorityPubkey(smartWalletPubkey);
+            setSmartWalletAuthorityPubkey(smartWalletAuthorityPubkey);
             window.removeEventListener('message', handleMessage);
-            resolve({ smartWalletPubkey });
+            resolve(smartWalletAuthorityPubkey);
           } else if (event.data.type === 'WALLET_ERROR') {
             window.removeEventListener('message', handleMessage);
             reject(new Error(event.data.error));
@@ -102,6 +102,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         }, 60000);
       });
     } catch (error) {
+      console.error('Error connecting wallet:', error);
       setIsLoading(false);
       setError(error instanceof Error ? error.message : 'Failed to connect wallet;')
     }
@@ -201,7 +202,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       });
     } catch (error) {
       console.error('Error signing message:', error);
-      throw error;
+      setError(error instanceof Error ? error.message : 'Failed to sign message;')
     }
   }, []);
 
