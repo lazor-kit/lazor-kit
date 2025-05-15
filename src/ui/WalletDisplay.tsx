@@ -27,13 +27,9 @@ export const LazorConnect: React.FC<LazorConnectProps> = ({ onSignMessage, onCon
   const containerRef = useRef<HTMLDivElement>(null);
 
   const handleConnect = async () => {
-    try {
-      await connect();
-      if (smartWalletAuthorityPubkey && onConnect) {
-        onConnect(smartWalletAuthorityPubkey);
-      }
-    } catch (err) {
-      console.error('Failed to connect:', err);
+    const smartWalletAuthorityPubkey = await connect();
+    if (smartWalletAuthorityPubkey && onConnect) {
+      onConnect(smartWalletAuthorityPubkey);
     }
   };
 
