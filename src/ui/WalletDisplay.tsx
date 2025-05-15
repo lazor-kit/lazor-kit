@@ -10,7 +10,7 @@ interface LazorConnectProps {
   onDisconnect?: () => void;
 }
 
-export const LazorConnect: React.FC<LazorConnectProps> = ({ connection, onSignMessage, onConnect, onDisconnect }) => {
+export const LazorConnect: React.FC<LazorConnectProps> = ({ onSignMessage, onConnect, onDisconnect }) => {
   const {
     isConnected,
     isLoading,
@@ -20,7 +20,7 @@ export const LazorConnect: React.FC<LazorConnectProps> = ({ connection, onSignMe
     connect,
     disconnect,
     signMessage
-  } = useWallet({ connection });
+  } = useWallet();
 
   const [isOpen, setIsOpen] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
