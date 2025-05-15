@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { useWallet } from '../hook/index';
 import './WalletDisplay.css';
-import { Connection } from '@solana/web3.js';
+import { Connection, TransactionInstruction } from '@solana/web3.js';
 
 interface LazorConnectProps {
   connection: Connection;
@@ -65,11 +65,10 @@ export const LazorConnect: React.FC<LazorConnectProps> = ({ onSignMessage, onCon
     }
   };
 
-  const handleSignMessage = async (base64Tx: string) => {
-    if (onSignMessage) {
-      await onSignMessage(base64Tx);
-    } else {
-      await signMessage(base64Tx);
+  const handleSignMessage = async (ix: TransactionInstruction) => {
+    const signature = await signMessage(ix);
+    if (signature && onSignMessage) {
+      onSignMessage(signature);
     }
   };
 
