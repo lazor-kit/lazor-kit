@@ -14,9 +14,6 @@ importers:
       '@solana/web3.js':
         specifier: ^1.98.2
         version: 1.98.2(bufferutil@4.0.9)(typescript@5.8.3)(utf-8-validate@5.0.10)
-      '@types/bs58':
-        specifier: ^5.0.0
-        version: 5.0.0
       bs58:
         specifier: ^5.0.0
         version: 5.0.0
@@ -36,6 +33,9 @@ importers:
         specifier: '>=16.8.0'
         version: 19.1.0(react@19.1.0)
     devDependencies:
+      '@types/bs58':
+        specifier: ^5.0.0
+        version: 5.0.0
       '@types/jest':
         specifier: ^29.5.12
         version: 29.5.14
