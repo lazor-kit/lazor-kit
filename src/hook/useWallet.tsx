@@ -1,22 +1,26 @@
-import { useState, useCallback } from 'react';
+import React, { useState, useCallback, createContext, ReactNode, useContext } from 'react';
 import { Connection, PublicKey, Keypair, TransactionInstruction } from '@solana/web3.js';
 import { Buffer } from 'buffer';
 import { createSmartWalletTransaction } from '../core/createSmartWallet';
 import { getSmartWalletPdaByCreator } from '../core/getAddress';
 import { createVerifyAndExecuteTransaction } from '../core/verifyAndExecute';
 
-interface WalletState {
+type WalletContextState = {
   credentialId: string | null;
   publicKey: string | null;
   isConnected: boolean;
   isLoading: boolean;
   error: string | null;
   smartWalletAuthorityPubkey: string | null;
-
+  connect: () => void;
+  disconnect: () => void;
+  signMessage: (instruction: TransactionInstruction) => Promise<string>;
 }
 
-const keypair = Keypair.fromSecretKey(new Uint8Array([91, 139, 202, 42, 20, 31, 61, 11, 170, 237, 184, 147, 253, 10, 63, 240, 131, 46, 231, 211, 253, 181, 58, 104, 242, 192, 0, 143, 19, 252, 47, 158, 219, 165, 97, 103, 220, 26, 173, 243, 207, 52, 18, 44, 64, 84, 249, 104, 158, 221, 84, 61, 36, 240, 55, 20, 76, 59, 142, 34, 100, 132, 243, 236]));
-const connection = new Connection('https://rpc.lazorkit.xyz/', {
+const WalletContext = createContext<WalletContextState>({} as WalletContextState);
+
+const FUNDED_KEYPAIR = Keypair.fromSecretKey(new Uint8Array([91, 139, 202, 42, 20, 31, 61, 11, 170, 237, 184, 147, 253, 10, 63, 240, 131, 46, 231, 211, 253, 181, 58, 104, 242, 192, 0, 143, 19, 252, 47, 158, 219, 165, 97, 103, 220, 26, 173, 243, 207, 52, 18, 44, 64, 84, 249, 104, 158, 221, 84, 61, 36, 240, 55, 20, 76, 59, 142, 34, 100, 132, 243, 236]));
+const LAZORKIT_CONNECTION = new Connection('https://rpc.lazorkit.xyz/', {
   wsEndpoint: 'https://rpc.lazorkit.xyz/ws/',
   commitment: 'confirmed',
   confirmTransactionInitialTimeout: 60000,
@@ -24,22 +28,21 @@ const connection = new Connection('https://rpc.lazorkit.xyz/', {
 
 const WALLET_CONNECT_URL = 'https://w3s.link/ipfs/bafybeibvvxqef5arqj4uy22zwl3hcyvrthyfrjzoeuzyfcbizjur4yt6by/?action=connect';
 
-function delay(seconds: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, seconds * 1000));
-}
+export function useWallet() {
+  return useContext(WalletContext);
+};
 
-export const useWallet = () => {
-  const [walletState, setWalletState] = useState<WalletState>({
-    credentialId: localStorage.getItem('CREDENTIAL_ID'),
-    publicKey: localStorage.getItem('PUBLIC_KEY'),
-    isConnected: !!localStorage.getItem('CREDENTIAL_ID'),
-    smartWalletAuthorityPubkey: null,
-    isLoading: false,
-    error: null,
-  });
+export function WalletProvider({ children }: { children: ReactNode }) {
+  const [credentialId, setCredentialId] = useState<string | null>(localStorage.getItem('CREDENTIAL_ID'));
+  const [publicKey, setPublicKey] = useState<string | null>(localStorage.getItem('PUBLIC_KEY'));
+  const [isConnected, setIsConnected] = useState<boolean>(!!localStorage.getItem('PUBLIC_KEY'));
+  const [smartWalletAuthorityPubkey, setSmartWalletAuthorityPubkey] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
 
   const connect = useCallback(async () => {
-    setWalletState(prev => ({ ...prev, isLoading: true, error: null }));
+    setIsLoading(true);
+    setError(null);
 
     try {
       const popup = window.open(
@@ -51,28 +54,26 @@ export const useWallet = () => {
       await new Promise((resolve, reject) => {
         const handleMessage = async (event: MessageEvent) => {
           if (event.data.type === 'WALLET_CONNECTED') {
-            const { credentialId, publickey } = event.data.data;
+            const { credentialId, publickey: publicKey } = event.data.data;
             localStorage.setItem('CREDENTIAL_ID', credentialId);
-            localStorage.setItem('PUBLIC_KEY', publickey);
-            await createSmartWalletTransaction({
-                secp256k1PubkeyBytes: Array.from(Buffer.from(publickey, "base64")),
-                connection: connection,
+            localStorage.setItem('PUBLIC_KEY', publicKey);
+            const signature = await createSmartWalletTransaction({
+              secp256k1PubkeyBytes: Array.from(Buffer.from(publicKey, "base64")),
+              connection: LAZORKIT_CONNECTION,
             });
-            await delay(2);
+            await LAZORKIT_CONNECTION.confirmTransaction({ signature, ...await LAZORKIT_CONNECTION.getLatestBlockhash() });
 
             const smartWalletPubkey = await getSmartWalletPdaByCreator(
-              connection,
-              Array.from(Buffer.from(publickey, "base64"))
+              LAZORKIT_CONNECTION,
+              Array.from(Buffer.from(publicKey, "base64"))
             );
             console.log(smartWalletPubkey);
-            setWalletState({
-              credentialId,
-              publicKey: smartWalletPubkey,
-              isConnected: true,
-              isLoading: false,
-              error: null,
-              smartWalletAuthorityPubkey: smartWalletPubkey,
-            });
+            setCredentialId(credentialId);
+            setPublicKey(publicKey);
+            setIsConnected(true);
+            setIsLoading(false);
+            setError(null);
+            setSmartWalletAuthorityPubkey(smartWalletPubkey);
             window.removeEventListener('message', handleMessage);
             resolve({ smartWalletPubkey });
           } else if (event.data.type === 'WALLET_ERROR') {
@@ -101,25 +102,20 @@ export const useWallet = () => {
         }, 60000);
       });
     } catch (error) {
-      setWalletState(prev => ({
-        ...prev,
-        isLoading: false,
-        error: error instanceof Error ? error.message : 'Failed to connect wallet',
-      }));
+      setIsLoading(false);
+      setError(error instanceof Error ? error.message : 'Failed to connect wallet;')
     }
   }, []);
 
   const disconnect = useCallback(() => {
     localStorage.removeItem('CREDENTIAL_ID');
     localStorage.removeItem('PUBLIC_KEY');
-    setWalletState({
-      credentialId: null,
-      publicKey: null,
-      isConnected: false,
-      isLoading: false,
-      error: null,
-      smartWalletAuthorityPubkey: null,
-    });
+    setCredentialId(null);
+    setPublicKey(null);
+    setIsConnected(false);
+    setIsLoading(false);
+    setError(null);
+    setSmartWalletAuthorityPubkey(null);
   }, []);
 
   const signMessage = useCallback(async (instruction: TransactionInstruction) => {
@@ -145,7 +141,7 @@ export const useWallet = () => {
               }
 
               const smartWalletPubkey = await getSmartWalletPdaByCreator(
-                connection,
+                LAZORKIT_CONNECTION,
                 Array.from(Buffer.from(storedPublicKey, "base64"))
               );
 
@@ -156,20 +152,21 @@ export const useWallet = () => {
                 pubkey: Buffer.from(storedPublicKey, "base64"),
                 signature: Buffer.from(normalized, "base64"),
                 message: Buffer.from(msg, "base64"),
-                connection: connection,
-                payer: keypair.publicKey,
+                connection: LAZORKIT_CONNECTION,
+                payer: FUNDED_KEYPAIR.publicKey,
                 smartWalletPda: new PublicKey(smartWalletPubkey),
               });
 
-              txn.partialSign(keypair);
-              const txid = await connection.sendRawTransaction(txn.serialize(), {
+              txn.partialSign(FUNDED_KEYPAIR);
+              const signature = await LAZORKIT_CONNECTION.sendRawTransaction(txn.serialize(), {
                 skipPreflight: true
               });
+              await LAZORKIT_CONNECTION.confirmTransaction({ signature, ...await LAZORKIT_CONNECTION.getLatestBlockhash() });
 
-              console.log('Transaction ID:', txid);
+              console.log('Transaction ID:', signature);
 
               // Resolve the promise with the txid
-              resolve(txid);
+              resolve(signature);
             } catch (err) {
               reject(err);
             }
@@ -208,11 +205,19 @@ export const useWallet = () => {
     }
   }, []);
 
-
-  return {
-    ...walletState,
-    connect,
-    disconnect,
-    signMessage,
-  };
-};
+  return (
+    <WalletContext.Provider value={{
+      credentialId,
+      publicKey,
+      isConnected,
+      isLoading,
+      error,
+      smartWalletAuthorityPubkey,
+      connect,
+      disconnect,
+      signMessage
+    }}>
+      {children}
+    </WalletContext.Provider>
+  )
+}
