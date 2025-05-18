@@ -1,8 +1,7 @@
-# Lazor Kit Wallet Integration for dApps
+![ChatGPT Image May 18, 2025 at 01_48_09 PM](https://github.com/user-attachments/assets/16b7d71c-03e0-489b-9504-a31a10f701c1)
+# Lazor
 
-Lazor Kit Wallet provides a seamless way to integrate Solana smart wallets with Passkey support into your decentralized application (dApp). This guide explains how to set up and use the wallet in your dApp.
-
----
+Lazor provides a seamless way to integrate Solana smart wallets with Passkey support into your decentralized application (dApp). This guide explains how to set up and use the wallet in your dApp.
 
 ## Features
 
