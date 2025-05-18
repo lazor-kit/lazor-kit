@@ -1,16 +1,15 @@
 ![ChatGPT Image May 18, 2025 at 01_48_09 PM](https://github.com/user-attachments/assets/16b7d71c-03e0-489b-9504-a31a10f701c1)
 # Lazor
+The open-source smart wallet infrastructure for Solana
 
-Lazor provides a seamless way to integrate Solana smart wallets with Passkey support into your decentralized application (dApp). This guide explains how to set up and use the wallet in your dApp.
+> [!WARNING]
+> Do not use in production. This repository is work-in-progress and highly experimental. Non-major version bumps may contain breaking changes.
 
 ## Features
 
-- **Connect/Disconnect** Solana smart wallets with Passkey support.
-- **Sign Messages and Transactions** seamlessly.
-- **React Integration**: Works with Vite, Next.js, Create React App, and more.
-- **Customizable UI Components** for wallet interactions.
-- **Browser Compatibility**: Works in browser environments.
-
+- **Login** Solana smart wallets with Passkey support
+- **Sign Transactions** seamlessly
+- **Customizable UI Components** for wallet interactions
 ---
 
 ## Installation
