@@ -1,4 +1,4 @@
-import  bs58  from 'bs58';
+import bs58 from 'bs58';
 import { Connection, PublicKey } from '@solana/web3.js';
 import IDL from './idl/contract.json';
 

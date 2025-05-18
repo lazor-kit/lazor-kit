@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { useWallet } from '../hook/index';
 import './WalletDisplay.css';
-import { Connection } from '@solana/web3.js';
+import { Connection, TransactionInstruction } from '@solana/web3.js';
 
 interface LazorConnectProps {
   connection: Connection;
@@ -10,7 +10,7 @@ interface LazorConnectProps {
   onDisconnect?: () => void;
 }
 
-export const LazorConnect: React.FC<LazorConnectProps> = ({ connection, onSignMessage, onConnect, onDisconnect }) => {
+export const LazorConnect: React.FC<LazorConnectProps> = ({ onSignMessage, onConnect, onDisconnect }) => {
   const {
     isConnected,
     isLoading,
@@ -20,20 +20,16 @@ export const LazorConnect: React.FC<LazorConnectProps> = ({ connection, onSignMe
     connect,
     disconnect,
     signMessage
-  } = useWallet({ connection });
+  } = useWallet();
 
   const [isOpen, setIsOpen] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const handleConnect = async () => {
-    try {
-      await connect();
-      if (publicKey && onConnect) {
-        onConnect(publicKey);
-      }
-    } catch (err) {
-      console.error('Failed to connect:', err);
+    const smartWalletAuthorityPubkey = await connect();
+    if (smartWalletAuthorityPubkey && onConnect) {
+      onConnect(smartWalletAuthorityPubkey);
     }
   };
 
@@ -69,11 +65,10 @@ export const LazorConnect: React.FC<LazorConnectProps> = ({ connection, onSignMe
     }
   };
 
-  const handleSignMessage = async (base64Tx: string) => {
-    if (onSignMessage) {
-      await onSignMessage(base64Tx);
-    } else {
-      await signMessage(base64Tx);
+  const handleSignMessage = async (ix: TransactionInstruction) => {
+    const signature = await signMessage(ix);
+    if (signature && onSignMessage) {
+      onSignMessage(signature);
     }
   };
 
