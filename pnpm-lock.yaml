@@ -23,6 +23,10 @@ importers:
       typescript:
         specifier: ^5.8.3
         version: 5.8.3
+    devDependencies:
+      '@types/bs58':
+        specifier: ^5.0.0
+        version: 5.0.0
 
 packages:
 
@@ -356,6 +360,10 @@ packages:
 
   '@swc/helpers@0.5.17':
     resolution: {integrity: sha512-5IKx/Y13RsYd+sauPb2x+U/xZikHjolzfuDgTAl/Tdf3Q8rslRvC19NKDLgAJQ6wsqADk10ntlv08nPFw/gO/A==}
+
+  '@types/bs58@5.0.0':
+    resolution: {integrity: sha512-cAw/jKBzo98m6Xz1X5ETqymWfIMbXbu6nK15W4LQYjeHJkVqSmM5PO8Bd9KVHQJ/F4rHcSso9LcjtgCW6TGu2w==}
+    deprecated: This is a stub types definition. bs58 provides its own type definitions, so you do not need this installed.
 
   '@types/connect@3.4.38':
     resolution: {integrity: sha512-K6uROf1LD88uDQqJCktA4yzL1YYAK6NgfsI0v/mTgyPKWsX1CnJ0XPSDhViejru1GcRkLWb8RlzFYJRqGUbaug==}
@@ -1149,6 +1157,10 @@ snapshots:
   '@swc/helpers@0.5.17':
     dependencies:
       tslib: 2.8.1
+
+  '@types/bs58@5.0.0':
+    dependencies:
+      bs58: 4.0.1
 
   '@types/connect@3.4.38':
     dependencies:
