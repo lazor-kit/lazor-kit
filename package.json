@@ -1,78 +1,47 @@
 {
   "name": "@lazorkit/wallet",
-  "version": "0.9.2",
-  "publishConfig": {
-    "access": "public"
+  "version": "1.0.0",
+  "description": "Lazorkit | Opensource smart wallet sdk for Solana",
+  "author": "Lazorkit",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "import": "./dist/index.mjs",
+      "types": "./dist/index.d.ts"
+    }
   },
-  "description": "React SDK for Lazor Kit - A Solana Smart Wallet Solution with Passkey Support",
-  "type": "module",
-  "main": "dist/index.js",
-  "module": "dist/index.esm.js",
-  "types": "dist/index.d.ts",
-  "sideEffects": [
-    "*.css",
-    "*.scss"
-  ],
   "files": [
     "dist",
-    "src/sdk/idl",
-    "src/**/*.json",
-    "src/**/*.css"
+    "README.md"
   ],
   "scripts": {
-    "build": "node esbuild.config.mjs",
-    "prepare": "npm run build",
-    "test": "jest",
-    "lint": "eslint src/**/*.{ts,tsx}",
-    "format": "prettier --write \"src/**/*.{ts,tsx}\""
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.31.1",
+    "@solana/web3.js": "^1.98.2",
+    "eventemitter3": "^5.0.1",
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.3"
   },
   "keywords": [
-    "solana",
-    "web3",
-    "blockchain",
-    "smart-wallet",
+    "wallet",
     "passkey",
-    "react",
-    "ipfs"
+    "webauthn",
+    "solana",
+    "sdk",
+    "lazor"
   ],
-  "author": "Lazor Kit",
-  "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lazor-kit/lazor-kit.git"
-  },
-  "bugs": {
-    "url": "https://github.com/lazor-kit/lazor-kit/issues"
-  },
-  "homepage": "https://github.com/lazor-kit/lazor-kit#readme",
-  "dependencies": {
-    "@coral-xyz/anchor": "^0.31.0",
-    "@solana/web3.js": "^1.98.2",
-    "@types/bs58": "^5.0.0",
-    "bs58": "^5.0.0",
-    "buffer": "^6.0.3",
-    "js-sha256": "^0.11.0",
-    "process": "^0.11.10"
-  },
-  "devDependencies": {
-    "@types/jest": "^29.5.12",
-    "@types/node": "^20.11.19",
-    "@types/react": "^18.2.55",
-    "@types/react-dom": "^18.2.19",
-    "@typescript-eslint/eslint-plugin": "^6.21.0",
-    "@typescript-eslint/parser": "^6.21.0",
-    "esbuild": "^0.20.2",
-    "eslint": "^8.56.0",
-    "eslint-config-prettier": "^9.1.0",
-    "eslint-plugin-react": "^7.33.2",
-    "eslint-plugin-react-hooks": "^4.6.0",
-    "jest": "^29.7.0",
-    "prettier": "^3.2.5",
-    "ts-jest": "^29.1.2",
-    "typescript": "^5.3.3"
-  },
-  "peerDependencies": {
-    "react": ">=16.8.0",
-    "react-dom": ">=16.8.0"
+    "url": "https://github.com/lazor/sdk"
   }
 }
