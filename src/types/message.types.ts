@@ -1,74 +1,52 @@
 // src/types/message.types.ts
 export interface BaseMessage {
   id: string;
+  type: string;
   timestamp: number;
-  version: '1.0';
+  version: string;
   source: 'parent' | 'dialog';
 }
 
-export interface ConnectRequest extends BaseMessage {
-  type: 'passkey:connect';
-  data: {
-    origin: string;
-    challenge: string;
-  };
+export interface RequestMessage extends BaseMessage {
+  method: string;
+  params?: any;
 }
 
-export interface ConnectResponse extends BaseMessage {
-  type: 'passkey:connect:response';
+export interface ResponseMessage extends BaseMessage {
   requestId: string;
-  duration: number;
-  data?: {
-    publicKey: string;
-    credentialId: string;
-    isCreated: boolean;
-    signature: string;
-  };
+  data?: any;
   error?: {
     code: string;
     message: string;
-    details: {
-      step: string;
-      timestamp: number;
-    };
+    details?: any;
   };
+  duration?: number;
 }
 
-export interface SignRequest extends BaseMessage {
-  type: 'passkey:sign';
-  data: {
-    message: string;
-    origin: string;
-    nonce: string;
-    credentialId?: string;
-  };
+export interface ConnectRequest {
+  challenge: string;
+  origin: string;
+  skipWarning?: boolean;
 }
 
-export interface SignResponse extends BaseMessage {
-  type: 'passkey:sign:response';
-  requestId: string;
-  duration: number;
-  data?: {
-    authenticatorData: string;
-    clientDataJSON: string;
-    rawMessage: string;
-    clientDataJSONDigest: string;
-    signature: string;
-    nonce: string;
-    timestamp: number;
-  };
-  error?: {
-    code: string;
-    message: string;
-    details: {
-      step: string;
-      timestamp: number;
-    };
-  };
+export interface ConnectResponse {
+  publicKey: string;
+  credentialId: string;
+  isCreated: boolean;
+  signature: string;
 }
 
-export type DialogMessage = 
-  | ConnectRequest 
-  | ConnectResponse 
-  | SignRequest 
-  | SignResponse;
+export interface SignRequest {
+  message: string;
+  origin: string;
+}
+
+export interface SignResponse {
+  authenticatorData: string;
+  clientDataJSON: string;
+  rawMessage: string;
+  clientDataJSONDigest: string;
+  signature: string;
+  nonce: string;
+  timestamp: number;
+}

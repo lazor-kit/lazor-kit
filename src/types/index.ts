@@ -1,4 +1,7 @@
 // src/types/index.ts
-export * from './wallet.types';
+export * from './sdk.types';
+export * from './dialog.types';
 export * from './message.types';
-export * from './storage.types';
+export * from './wallet.types';
+export * from './transaction.types';
+export * from './errors.types';
