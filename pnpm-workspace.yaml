@@ -1,0 +1,4 @@
+ignoredBuiltDependencies:
+  - bufferutil
+  - esbuild
+  - utf-8-validate
