@@ -13,12 +13,11 @@ export class MessageHandler extends EventEmitter {
   ): Promise<ResponseMessage & { data?: T }> {
     const requestId = generateId();
     
-    // Create request message
+    // Create request message with dialog expected format
     const message = {
       id: requestId,
-      type: 'request',
-      method: request.method,
-      params: request.params,
+      type: request.method,  // Use method as type directly
+      data: request.params,  // Use params as data
       timestamp: Date.now(),
       version: '1.0',
       source: 'parent'

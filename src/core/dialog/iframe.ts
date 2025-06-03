@@ -16,6 +16,10 @@ export function iframe(config: DialogConfig & { fallbackToPopup?: boolean }): Di
       let messenger: Messenger | null = null;
       let fallbackDialog: DialogInstance | null = null;
       let cleanupFunctions: (() => void)[] = [];
+      let messengerReadyResolve: ((value: void) => void) | null = null;
+      let messengerReadyPromise = new Promise<void>((resolve) => {
+        messengerReadyResolve = resolve;
+      });
 
       // Check if should fallback
       const shouldFallback = () => {
@@ -38,6 +42,11 @@ export function iframe(config: DialogConfig & { fallbackToPopup?: boolean }): Di
 
       // Create dialog elements
       const create = () => {
+        // Reset ready promise for new dialog
+        messengerReadyPromise = new Promise<void>((resolve) => {
+          messengerReadyResolve = resolve;
+        });
+        
         // Create dialog element
         dialog = document.createElement('dialog');
         dialog.setAttribute('data-lazor-dialog', '');
@@ -81,12 +90,52 @@ export function iframe(config: DialogConfig & { fallbackToPopup?: boolean }): Di
         // Inject styles
         injectStyles();
         
-        // Setup messenger
-        messenger = new Messenger({
-          target: iframeEl.contentWindow!,
-          origin: params.origin,
-          onMessage: params.onMessage,
-          onError: params.onError
+        // Wait for iframe to load before setting up messenger
+        const loadTimeout = setTimeout(() => {
+          logger.error('Iframe load timeout');
+          if (messengerReadyResolve) {
+            // Reject instead of resolving to handle timeout
+            messengerReadyPromise = Promise.reject(new Error('Iframe load timeout'));
+          }
+        }, 10000); // 10 second timeout
+        
+        iframeEl.addEventListener('load', () => {
+          clearTimeout(loadTimeout);
+          logger.debug('Iframe loaded, setting up messenger');
+          
+          if (!iframeEl || !iframeEl.contentWindow) {
+            logger.error('Iframe or contentWindow not available');
+            if (messengerReadyResolve) {
+              messengerReadyPromise = Promise.reject(new Error('Iframe contentWindow not available'));
+            }
+            return;
+          }
+          
+          // Setup messenger
+          messenger = new Messenger({
+            target: iframeEl.contentWindow,
+            origin: params.origin,
+            onMessage: params.onMessage,
+            onError: params.onError
+          });
+
+          // Handle resize messages
+          messenger.on('resize', (data: { width?: number; height?: number }) => {
+            if (!iframeEl) return;
+            if (data.height) iframeEl.style.height = `${data.height}px`;
+            if (data.width && window.innerWidth > 640) {
+              iframeEl.style.width = `${data.width}px`;
+            }
+          });
+          
+          // Resolve ready promise
+          if (messengerReadyResolve) {
+            messengerReadyResolve();
+            logger.debug('Messenger ready');
+          }
+          
+          // Note: Dialog will send its own READY message when initialized
+          // We don't need to send init message
         });
 
         // Handle escape key
@@ -105,15 +154,6 @@ export function iframe(config: DialogConfig & { fallbackToPopup?: boolean }): Di
         };
         dialog.addEventListener('click', handleBackdropClick);
         cleanupFunctions.push(() => dialog?.removeEventListener('click', handleBackdropClick));
-
-        // Handle resize messages
-        messenger.on('resize', (data: { width?: number; height?: number }) => {
-          if (!iframeEl) return;
-          if (data.height) iframeEl.style.height = `${data.height}px`;
-          if (data.width && window.innerWidth > 640) {
-            iframeEl.style.width = `${data.width}px`;
-          }
-        });
 
         logger.debug('Dialog created');
       };
@@ -144,14 +184,6 @@ export function iframe(config: DialogConfig & { fallbackToPopup?: boolean }): Di
           // Restore body overflow on close
           cleanupFunctions.push(() => {
             document.body.style.overflow = bodyOverflow;
-          });
-          
-          // Send init message
-          messenger?.send({
-            type: 'dialog:init',
-            mode: 'iframe',
-            origin: window.location.origin,
-            timestamp: Date.now()
           });
           
           logger.debug('Dialog opened');
@@ -202,6 +234,9 @@ export function iframe(config: DialogConfig & { fallbackToPopup?: boolean }): Di
             return fallbackDialog.send(message);
           }
 
+          // Wait for messenger to be ready
+          await messengerReadyPromise;
+          
           if (!messenger) throw new Error('Dialog not initialized');
           return messenger.send(message);
         },

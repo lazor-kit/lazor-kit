@@ -64,12 +64,13 @@ export class Messenger extends EventEmitter {
     
     this.logger.debug('Received message', message);
     
-    // Check if this is a response
-    if (message.responseId) {
-      const pending = this.pendingRequests.get(message.responseId);
+    // Check if this is a response (check both responseId and requestId)
+    const responseId = message.responseId || message.requestId;
+    if (responseId) {
+      const pending = this.pendingRequests.get(responseId);
       if (pending) {
         clearTimeout(pending.timeout);
-        this.pendingRequests.delete(message.responseId);
+        this.pendingRequests.delete(responseId);
         
         if (message.error) {
           pending.reject(new Error(message.error.message || message.error));
@@ -90,7 +91,7 @@ export class Messenger extends EventEmitter {
     }
     
     return new Promise((resolve, reject) => {
-      const id = generateId();
+      const id = message.id || generateId();
       // Set timeout
       const timeoutId = setTimeout(() => {
         this.pendingRequests.delete(id);
@@ -103,13 +104,13 @@ export class Messenger extends EventEmitter {
         timeout: timeoutId
       });
       
-      // Build message
+      // Build message - don't override existing fields
       const fullMessage = {
-        ...message,
-        id,
         timestamp: Date.now(),
         source: 'parent',
-        version: '1.0'
+        version: '1.0',
+        ...message,  // Let message override defaults
+        id,  // Ensure id is set
       };
       console.log(fullMessage)
       // Send message
