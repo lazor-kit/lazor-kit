@@ -1,6 +1,6 @@
 // src/utils/encoding.ts
 export function generateId(): string {
-  return "1";
+  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 }
 
 export function base64ToBuffer(base64: string): Buffer {

@@ -31,6 +31,13 @@ export class DialogManager {
    */
   private create(name: string): DialogInstance {
     const dialog = createDialog(this.config);
+    
+    // Debug logging
+    this.logger.debug('Dialog config:', {
+      url: this.config.url,
+      expectedOrigin: new URL(this.config.url).origin
+    });
+    
     const instance = dialog.setup({
       url: this.config.url,
       origin: new URL(this.config.url).origin,
