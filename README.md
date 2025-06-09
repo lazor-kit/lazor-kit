@@ -3,9 +3,9 @@
 The open-source smart wallet infrastructure for Solana.
 
 > [!WARNING]
-> Alpha software: Do not use in production. This repository is highly experimental.
+>  Do not use in production. This repository is highly experimental.
 
-## Monorepo Structure
+## Repo Structure
 
 ```
 ├── src/           # Core SDK implementation
