@@ -1,28 +1,41 @@
-// src/core/wallet/Paymaster.ts
+/**
+ * Paymaster service for handling transaction fees and signing
+ */
 import { 
   Transaction, 
-  PublicKey, 
-  Connection 
+  PublicKey 
 } from '@solana/web3.js';
 import { Logger } from '../../utils/logger';
 
 export class Paymaster {
   private endpoint: string;
-  private connection: Connection;
   private logger = new Logger('Paymaster');
 
+  /**
+   * Create a new Paymaster instance
+   * @param endpoint URL of the paymaster service
+   */
   constructor(endpoint: string) {
     this.endpoint = endpoint;
-    this.connection = new Connection(endpoint);
   }
 
+  /**
+   * Get the public key of the fee payer from the paymaster service
+   * @returns Public key of the fee payer
+   */
   async getPayer(): Promise<PublicKey> {
     try {
-      const response = await fetch(`${this.endpoint}/payer`, {
-        method: 'GET',
+      const response = await fetch(`${this.endpoint}`, {
+        method: 'POST',
         headers: {
           'Content-Type': 'application/json'
-        }
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'getConfig',
+          params: [],
+        })
       });
 
       if (!response.ok) {
@@ -30,20 +43,31 @@ export class Paymaster {
       }
 
       const data = await response.json();
-      return new PublicKey(data.publicKey);
+      const payer = new PublicKey(data.result.fee_payer);
+      return payer;
     } catch (error) {
       this.logger.error('Failed to get payer', error);
       throw error;
     }
   }
 
+  /**
+   * Get a recent blockhash from the paymaster service
+   * @returns Recent blockhash as a string
+   */
   async getBlockhash(): Promise<string> {
     try {
-      const response = await fetch(`${this.endpoint}/blockhash`, {
-        method: 'GET',
+      const response = await fetch(`${this.endpoint}`, {
+        method: 'POST',
         headers: {
           'Content-Type': 'application/json'
-        }
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'getBlockhash',
+          id: 1,
+          params: [],
+        })
       });
 
       if (!response.ok) {
@@ -51,13 +75,18 @@ export class Paymaster {
       }
 
       const data = await response.json();
-      return data.blockhash;
+      return data.result.blockhash;
     } catch (error) {
       this.logger.error('Failed to get blockhash', error);
       throw error;
     }
   }
 
+  /**
+   * Sign a transaction using the paymaster service
+   * @param transaction Transaction to sign
+   * @returns Signed transaction
+   */
   async sign(transaction: Transaction): Promise<Transaction> {
     try {
       const serialized = transaction.serialize({
@@ -65,7 +94,7 @@ export class Paymaster {
         verifySignatures: false
       });
 
-      const response = await fetch(`${this.endpoint}/sign`, {
+      const response = await fetch(`${this.endpoint}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -87,6 +116,11 @@ export class Paymaster {
     }
   }
 
+  /**
+   * Sign and send a transaction using the paymaster service
+   * @param transaction Transaction to sign and send
+   * @returns Transaction hash as a string
+   */
   async signAndSend(transaction: Transaction): Promise<string> {
     try {
       const serialized = transaction.serialize({
@@ -94,13 +128,18 @@ export class Paymaster {
         verifySignatures: false
       });
 
-      const response = await fetch(`${this.endpoint}/sign-and-send`, {
+      const response = await fetch(`${this.endpoint}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          transaction: serialized.toString('base64')
+          jsonrpc: '2.0',
+          method: 'signAndSendTransaction',
+          id: 1,
+          params: [
+            serialized.toString('base64')
+          ]
         })
       });
 
