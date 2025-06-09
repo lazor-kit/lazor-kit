@@ -127,7 +127,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
    */
   async signTransaction(
     instruction: TransactionInstruction,
-    o
+    options?: { sendTransaction?: boolean }
   ): Promise<TransactionResponse> {
     try {
       this.emit('transaction:start');
@@ -170,7 +170,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
       dialog.close();
       // Stick to standard events to avoid type issues
 
-      if () {
+      if (options?.sendTransaction) {
         const txHash = await this.paymaster.signAndSend(transaction);
         const response = {
           success: true,
