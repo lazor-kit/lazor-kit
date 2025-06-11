@@ -44,9 +44,8 @@ export interface SignRequest {
 export interface SignResponse {
   authenticatorData: string;
   clientDataJSON: string;
-  rawMessage: string;
   clientDataJSONDigest: string;
   signature: string;
-  nonce: string;
-  timestamp: number;
+  message: string;
+  rawMessage: string;
 }
