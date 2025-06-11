@@ -33,7 +33,6 @@ export interface ConnectResponse {
   publicKey: string;
   credentialId: string;
   isCreated: boolean;
-  signature: string;
 }
 
 export interface SignRequest {
@@ -42,10 +41,8 @@ export interface SignRequest {
 }
 
 export interface SignResponse {
-  authenticatorData: string;
-  clientDataJSON: string;
-  clientDataJSONDigest: string;
-  signature: string;
-  message: string;
-  rawMessage: string;
+  normalized: string;
+  msg: string;
+  clientDataJSONReturn: string;
+  authenticatorDataReturn: string;
 }

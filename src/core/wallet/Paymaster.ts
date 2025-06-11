@@ -100,7 +100,12 @@ export class Paymaster {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          transaction: serialized.toString('base64')
+          jsonrpc: '2.0',
+          method: 'signTransaction',
+          id: 1,
+          params: [
+            serialized.toString('base64')
+          ]
         })
       });
 
@@ -109,7 +114,9 @@ export class Paymaster {
       }
 
       const data = await response.json();
-      return Transaction.from(Buffer.from(data.transaction, 'base64'));
+      console.log(data);
+      console.log(data.result.signed_transaction);
+      return Transaction.from(Buffer.from(data.result.signed_transaction, 'base64'));
     } catch (error) {
       this.logger.error('Failed to sign transaction', error);
       throw error;
@@ -124,8 +131,8 @@ export class Paymaster {
   async signAndSend(transaction: Transaction): Promise<string> {
     try {
       const serialized = transaction.serialize({
-        requireAllSignatures: false,
-        verifySignatures: false
+        verifySignatures: false,
+        requireAllSignatures: false
       });
 
       const response = await fetch(`${this.endpoint}`, {
@@ -148,6 +155,7 @@ export class Paymaster {
       }
 
       const data = await response.json();
+      console.log(data);
       return data.txHash;
     } catch (error) {
       this.logger.error('Failed to sign and send transaction', error);

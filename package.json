@@ -30,7 +30,8 @@
     "@solana/web3.js": "^1.98.2",
     "eventemitter3": "^5.0.1",
     "tsup": "^8.5.0",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "zustand": "^5.0.5"
   },
   "keywords": [
     "wallet",
@@ -45,6 +46,7 @@
     "url": "https://github.com/lazor/sdk"
   },
   "devDependencies": {
-    "@types/bs58": "^5.0.0"
+    "@types/bs58": "^5.0.0",
+    "@types/node": "^24.0.0"
   }
 }

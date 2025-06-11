@@ -1,139 +1,71 @@
-import { createDialog } from './Dialog';
-import { DialogInstance, DialogConfig } from '../../types';
+import { CommunicationHandler, CommunicationConfig } from './CommunicationHandler';
 import { Logger } from '../../utils/logger';
+import { EventEmitter } from 'eventemitter3';
 
-export class DialogManager {
-  private dialogs = new Map<string, DialogInstance>();
-  private activeDialog: string | null = null;
-  private config: DialogConfig;
+export class DialogManager extends EventEmitter {
+  private handler: CommunicationHandler;
   private logger = new Logger('DialogManager');
 
-  constructor(config: any) {
-    this.config = {
-      url: config.dialogUrl,
-      mode: config.dialogMode || 'auto',
-      fallbackToPopup: true
-    };
+  constructor(config: CommunicationConfig) {
+    super();
+    this.handler = new CommunicationHandler(config);
+    this.handler.initialize();
+
+    // Setup event listeners
+    this.handler.on('connect', this.handleConnect.bind(this));
+    this.handler.on('sign', this.handleSign.bind(this));
+    this.handler.on('error', this.handleError.bind(this));
+    this.handler.on('message', (message) => this.emit('message', message));
   }
 
   /**
-   * Get or create a dialog instance
+   * Open connect dialog
    */
-  getOrCreate(name: string): DialogInstance {
-    if (!this.dialogs.has(name)) {
-      this.create(name);
-    }
-    return this.dialogs.get(name)!;
+  async connect(): Promise<void> {
+    await this.handler.openDialog('connect');
   }
 
   /**
-   * Create a new dialog instance
+   * Open sign dialog
    */
-  private create(name: string): DialogInstance {
-    const dialog = createDialog(this.config);
-    
-    // Debug logging
-    this.logger.debug('Dialog config:', {
-      url: this.config.url,
-      expectedOrigin: new URL(this.config.url).origin
-    });
-    
-    const instance = dialog.setup({
-      url: this.config.url,
-      origin: new URL(this.config.url).origin,
-      onMessage: (msg) => this.handleMessage(name, msg),
-      onClose: () => this.handleClose(name),
-      onError: (error) => this.handleError(name, error)
-    });
-    
-    this.dialogs.set(name, instance);
-    this.logger.debug(`Created dialog: ${name}`);
-    
-    return instance;
+  async sign(): Promise<void> {
+    await this.handler.openDialog('sign');
   }
 
   /**
-   * Open a dialog
+   * Close current dialog
    */
-  open(name: string): void {
-    const dialog = this.getOrCreate(name);
-    
-    // Close other dialogs
-    if (this.activeDialog && this.activeDialog !== name) {
-      const activeDialog = this.dialogs.get(this.activeDialog);
-      if (activeDialog?.isOpen()) {
-        activeDialog.close();
-      }
-    }
-    
-    dialog.open();
-    this.activeDialog = name;
-    this.logger.debug(`Opened dialog: ${name}`);
+  close(): void {
+    this.handler.closeDialog();
   }
 
   /**
-   * Close a dialog
+   * Sync credentials with iframe
    */
-  close(name: string): void {
-    const dialog = this.dialogs.get(name);
-    if (dialog?.isOpen()) {
-      dialog.close();
-      this.logger.debug(`Closed dialog: ${name}`);
-    }
-    
-    if (this.activeDialog === name) {
-      this.activeDialog = null;
-    }
+  syncCredentials(force = false): void {
+    this.handler.syncCredentials(force);
   }
 
   /**
-   * Destroy a dialog
+   * Clean up resources
    */
-  destroy(name: string): void {
-    const dialog = this.dialogs.get(name);
-    if (dialog) {
-      dialog.destroy();
-      this.dialogs.delete(name);
-      this.logger.debug(`Destroyed dialog: ${name}`);
-    }
-    
-    if (this.activeDialog === name) {
-      this.activeDialog = null;
-    }
+  destroy(): void {
+    this.handler.destroy();
   }
 
-  /**
-   * Destroy all dialogs
-   */
-  destroyAll(): void {
-    for (const [name, dialog] of this.dialogs) {
-      dialog.destroy();
-    }
-    this.dialogs.clear();
-    this.activeDialog = null;
-    this.logger.debug('Destroyed all dialogs');
+  private handleConnect(data: any): void {
+    this.logger.debug('Connect success:', data);
+    this.emit('connect', data);
   }
 
-  /**
-   * Get active dialog
-   */
-  getActiveDialog(): DialogInstance | null {
-    if (!this.activeDialog) return null;
-    return this.dialogs.get(this.activeDialog) || null;
+  private handleSign(data: any): void {
+    this.logger.debug('Sign success:', data);
+    this.emit('sign', data);
   }
 
-  private handleMessage(name: string, message: any): void {
-    this.logger.debug(`Dialog ${name} message:`, message);
+  private handleError(error: Error): void {
+    this.logger.error('Dialog error:', error);
+    this.emit('error', error);
   }
 
-  private handleClose(name: string): void {
-    this.logger.debug(`Dialog ${name} closed`);
-    if (this.activeDialog === name) {
-      this.activeDialog = null;
-    }
-  }
-
-  private handleError(name: string, error: Error): void {
-    this.logger.error(`Dialog ${name} error:`, error);
-  }
 }

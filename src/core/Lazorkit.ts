@@ -1,5 +1,5 @@
 import { EventEmitter } from 'eventemitter3';
-import { Connection, TransactionInstruction } from '@solana/web3.js';
+import { Connection, TransactionInstruction, Transaction } from '@solana/web3.js';
 import { DialogManager } from './dialog/DialogManager';
 import { SmartWallet } from './wallet/SmartWallet';
 import { Paymaster } from './wallet/Paymaster';
@@ -7,36 +7,37 @@ import { Security } from './security/Security';
 import { MessageHandler } from './bridge/MessageHandler';
 import { validateConfig } from '../utils/validation';
 import { SDKError } from '../constants/errors';
+import { Buffer } from 'buffer';
 import {
-  LazorSDKConfig,
   SDKOptions,
   SDKEvents,
   WalletAccount,
-  ConnectResponse,
-  SignResponse,
   TransactionResponse,
   ErrorCode
 } from '../types';
+import { ConnectResponse, SignResponse } from '../types/message.types';
+import { PublicKey } from '@solana/web3.js';
+import { CommunicationConfig } from './dialog/CommunicationHandler';
 
 /**
  * Lazorkit is the main entry point for the Lazor Kit SDK
  * It manages wallet connection, transaction signing, and communication with the Lazor portal
  */
 export class Lazorkit extends EventEmitter<SDKEvents> {
-  private config: LazorSDKConfig;
+  private config: CommunicationConfig;
   private dialogManager: DialogManager;
   private messageHandler: MessageHandler;
   private security: Security;
   private paymaster: Paymaster;
   private smartWallet: SmartWallet | null = null;
   private account: WalletAccount | null = null;
-  private isInitialized = false;
+
 
   /**
    * Create a new Lazorkit instance
    * @param config SDK configuration options
    */
-  constructor(config: LazorSDKConfig) {
+  constructor(config: CommunicationConfig) {
     super();
     
     validateConfig(config);
@@ -44,11 +45,21 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
     
     this.security = new Security();
     this.paymaster = new Paymaster(config.paymasterUrl || 'https://paymaster.lazor.io');
-    this.dialogManager = new DialogManager(config);
-    this.messageHandler = new MessageHandler();
     
+    // Create dialog manager with proper config
+    // Create dialog manager with proper config
+    const dialogConfig: CommunicationConfig = {
+      url: config.url,
+      mode: config.mode || 'dialog',
+      rpcUrl: config.rpcUrl,
+      paymasterUrl: config.paymasterUrl,
+      fallbackToPopup: config.fallbackToPopup
+    };
+
+    this.dialogManager = new DialogManager(dialogConfig);
+    
+    this.messageHandler = new MessageHandler();
     this.setupMessageHandler();
-    this.isInitialized = true;
   }
 
   /**
@@ -65,10 +76,9 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
       }
       
       const challenge = this.security.generateChallenge();
-      const dialog = this.dialogManager.getOrCreate('connect');
-      dialog.open();
+      await this.dialogManager.connect();
     
-      const response = await this.messageHandler.request<ConnectResponse>(dialog, {
+      const response = await this.messageHandler.request<ConnectResponse>(this.dialogManager, {
         method: 'passkey:connect',
         params: {
           challenge,
@@ -78,38 +88,30 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
         }
       });
     
-      if (!response.data) {
-        throw new SDKError(ErrorCode.CONNECTION_FAILED, 'No data received from dialog');
+      if (!response) {
+        throw new SDKError(ErrorCode.CONNECTION_FAILED, 'No response received from dialog');
       }
 
-      const isValid = await this.security.verifyChallenge(
-        challenge,
-        response.data.signature,
-        response.data.publicKey
-      );
-
-      if (!isValid) {
-        throw new SDKError(ErrorCode.INVALID_SIGNATURE, 'Invalid challenge signature');
-      }
+      const { publicKey, credentialId, isCreated } = response;
 
       if (!this.config.rpcUrl) {
         throw new SDKError(ErrorCode.INVALID_CONFIG, 'RPC URL is not defined');
       }
 
       this.smartWallet = new SmartWallet(
-        response.data.publicKey, 
+        publicKey, 
         this.paymaster, 
         new Connection(this.config.rpcUrl)
       );
       
       this.account = {
-        publicKey: response.data.publicKey,
-        smartWallet: await this.smartWallet.createSmartWallet(response.data.publicKey),
+        publicKey,
+        smartWallet: await this.smartWallet.createSmartWallet(publicKey),
         isConnected: true,
-        isCreated: response.data.isCreated
+        isCreated
       };
       
-      dialog.close();
+      // Dialog will be closed by CommunicationHandler
       this.emit('connect:success', this.account);
       
       return this.account;
@@ -120,43 +122,48 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
   }
 
   /**
+   * Internal method to handle transaction signing
+   * @param instruction The transaction instruction to sign
+   * @returns SignResponse from the dialog
+   */
+  private async handleTransactionSign(instruction: TransactionInstruction): Promise<SignResponse> {
+    if (!this.isConnected()) {
+      throw new SDKError(ErrorCode.NOT_CONNECTED, 'Wallet not connected');
+    }
+
+    const serializedInstruction = Buffer.from(JSON.stringify(instruction)).toString('base64');
+    const message = {
+      instructions: serializedInstruction,
+      timestamp: Date.now(),
+      nonce: this.security.generateNonce()
+    };
+
+    await this.dialogManager.sign();
+    const signResponse = await this.messageHandler.request<SignResponse>(this.dialogManager, {
+      method: 'passkey:sign',
+      params: {
+        message: Buffer.from(JSON.stringify(message)).toString('base64'),
+        origin: window.location.origin
+      }
+    });
+
+    if (!signResponse) {
+      throw new SDKError(ErrorCode.SIGN_FAILED, 'No response received from dialog');
+    }
+
+    return signResponse;
+  }
+
+  /**
    * Sign transaction with passkey
    * @param instruction The transaction instruction to sign
-   * @param sendTransaction Whether to send the transaction after signing
-   * @returns Transaction response including transaction data and hash if sent
+   * @returns Signed transaction
    */
-  async signTransaction(
-    instruction: TransactionInstruction,
-    options?: { sendTransaction?: boolean }
-  ): Promise<TransactionResponse> {
+  async signTransaction(instruction: TransactionInstruction): Promise<Transaction> {
     try {
       this.emit('transaction:start');
-      
-      if (!this.isConnected()) {
-        throw new SDKError(ErrorCode.NOT_CONNECTED, 'Wallet not connected');
-      }
-      
-      const serializedInstruction = Buffer.from(JSON.stringify(instruction)).toString('base64');
-      const message = {
-        instructions: serializedInstruction,
-        timestamp: Date.now(),
-        nonce: this.security.generateNonce()
-      };
 
-      const dialog = this.dialogManager.getOrCreate('sign');
-      dialog.open();
-
-      const signResponse = await this.messageHandler.request<SignResponse>(dialog, {
-        method: 'passkey:sign',
-        params: {
-          message: Buffer.from(JSON.stringify(message)).toString('base64'),
-          origin: window.location.origin
-        }
-      });
-      
-      if (!signResponse.data) {
-        throw new SDKError(ErrorCode.SIGN_FAILED, 'Signing failed');
-      }
+      const signResponse = await this.handleTransactionSign(instruction);
       
       if (!this.smartWallet) {
         throw new SDKError(ErrorCode.INVALID_CONFIG, 'Smart wallet is not initialized');
@@ -164,31 +171,16 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
       
       const { transaction } = await this.smartWallet.buildTransaction(
         instruction,
-        signResponse.data
+        signResponse
       );
       
-      dialog.close();
-      // Stick to standard events to avoid type issues
-
-      if (options?.sendTransaction) {
-        const txHash = await this.paymaster.signAndSend(transaction);
-        const response = {
-          success: true,
-          txHash,
-          transaction: transaction.serialize().toString('base64')
-        };
-        
-        this.emit('transaction:success', response);
-        return response;
-      } else {
-        const response = {
-          success: true,
-          transaction: transaction.serialize().toString('base64')
-        };
-        
-        // Stick to standard events to avoid type issues
-        return response;
-      }
+      this.dialogManager.close();
+    
+      const signedTransaction = await this.paymaster.sign(transaction);
+      signedTransaction.feePayer = new PublicKey(await this.paymaster.getPayer());
+      this.emit('transaction:success', signedTransaction);
+      return signedTransaction;
+    
     } catch (error) {
       this.emit('transaction:error', error as Error);
       throw error;
@@ -198,10 +190,38 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
   /**
    * Sign and send transaction
    * @param instruction The transaction instruction to sign and send
-   * @returns Transaction response including transaction data and hash
+   * @returns Transaction hash as a string
    */
-  async signAndSendTransaction(instruction: TransactionInstruction): Promise<TransactionResponse> {
-    return this.signTransaction(instruction, true);
+  async signAndSendTransaction(instruction: TransactionInstruction): Promise<string> {
+    try {
+      this.emit('transaction:start');
+      
+      const signResponse = await this.handleTransactionSign(instruction);
+      
+      if (!this.smartWallet) {
+        throw new SDKError(ErrorCode.INVALID_CONFIG, 'Smart wallet is not initialized');
+      }
+      
+      const { transaction } = await this.smartWallet.buildTransaction(
+        instruction,
+        signResponse
+      );
+      
+      this.dialogManager.close();
+    
+      const signedTransaction = await this.paymaster.sign(transaction);
+      signedTransaction.feePayer = new PublicKey(await this.paymaster.getPayer());
+      this.emit('transaction:success', signedTransaction);
+
+      // Send the transaction
+      const txHash = await this.paymaster.signAndSend(signedTransaction);
+      this.emit('transaction:sent', txHash);
+      return txHash;
+    
+    } catch (error) {
+      this.emit('transaction:error', error as Error);
+      throw error;
+    }
   }
 
   /**
@@ -209,7 +229,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
    * @returns Promise that resolves when disconnection is complete
    */
   async disconnect(): Promise<void> {
-    this.dialogManager.destroyAll();
+    this.dialogManager.destroy();
     this.account = null;
     this.smartWallet = null;
     this.emit('disconnect');
@@ -246,7 +266,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
     this.disconnect();
     this.removeAllListeners();
     this.messageHandler.destroy();
-    this.isInitialized = false;
+
   }
 
   /**
@@ -258,3 +278,4 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
     });
   }
 }
+

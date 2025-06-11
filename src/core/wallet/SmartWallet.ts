@@ -16,7 +16,7 @@ import * as anchor from "@coral-xyz/anchor";
 import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 
 export class SmartWallet {
-  private ownerPublicKey: PublicKey;
+  private ownerPublicKey: string;
   private paymaster: Paymaster;
   private lastestSmartWallet: PublicKey | null = null;
   private defaultRuleProgram: DefaultRuleProgram;
@@ -29,7 +29,7 @@ export class SmartWallet {
    * @param paymaster The paymaster instance
    * @param connection The Solana connection
    */
-  constructor(ownerPublicKey: PublicKey, paymaster: Paymaster, connection: Connection) {
+  constructor(ownerPublicKey: string, paymaster: Paymaster, connection: Connection) {
     this.ownerPublicKey = ownerPublicKey;
     this.paymaster = paymaster;
     this.connection = connection;
@@ -58,8 +58,9 @@ export class SmartWallet {
     signData: SignResponse
   ): Promise<{ transaction: Transaction }> {
     const payer = await this.paymaster.getPayer();
+    const blockhash = await this.paymaster.getBlockhash();
     const [smartWalletAuthenticator] = this.lazorkitProgram.smartWalletAuthenticator(
-      Array.from(Buffer.from(this.ownerPublicKey.toBase58(), 'base64')),
+      Array.from(Buffer.from(this.ownerPublicKey, 'base64')),
       this.lastestSmartWallet!
     );
     
@@ -71,15 +72,18 @@ export class SmartWallet {
     
     // Create execution transaction with authenticated instruction
     const executeTxn = await this.lazorkitProgram.executeInstructionTxn(
-      Array.from(Buffer.from(this.ownerPublicKey.toBase58(), 'base64')),
-      Buffer.from(signData.clientDataJSONDigest, 'base64'),
-      Buffer.from(signData.signature, 'base64'),
+      Array.from(Buffer.from(this.ownerPublicKey, 'base64')),
+      Buffer.from(signData.msg, 'base64'),
+      Buffer.from(signData.normalized, 'base64'),
       checkRule,
       instruction,
       payer,
       this.lastestSmartWallet!
     );
 
+    executeTxn.feePayer = payer;
+    executeTxn.recentBlockhash = blockhash;
+    
     return { transaction: executeTxn };
   }
 
@@ -96,7 +100,6 @@ export class SmartWallet {
     const payer = await this.paymaster.getPayer();
     const blockhash = await this.paymaster.getBlockhash();
     const pubkey = Array.from(Buffer.from(ownerPublicKey, 'base64'));
-    
     // Create authenticator for the smart wallet
     const [smartWalletAuthenticator] = this.lazorkitProgram.smartWalletAuthenticator(
       pubkey, 

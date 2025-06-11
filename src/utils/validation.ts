@@ -1,32 +1,29 @@
 // src/utils/validation.ts
-import { LazorSDKConfig } from '../types';
+import { CommunicationConfig } from '../core/dialog/CommunicationHandler';
 
-export function validateConfig(config: LazorSDKConfig): void {
-  if (!config.dialogUrl) {
-    throw new Error('dialogUrl is required');
+export function validateConfig(config: CommunicationConfig): void {
+  if (!config.url) {
+    throw new Error('url is required');
   }
 
   try {
-    new URL(config.dialogUrl);
+    new URL(config.url);
   } catch {
-    throw new Error('Invalid dialogUrl: must be a valid URL');
+    throw new Error('Invalid url: must be a valid URL');
   }
 
-  if (config.paymasterUrl) {
+  if (config.rpcUrl) {
     try {
-      new URL(config.paymasterUrl);
+      new URL(config.rpcUrl);
     } catch {
-      throw new Error('Invalid paymasterUrl: must be a valid URL');
+      throw new Error('Invalid rpcUrl: must be a valid URL');
     }
   }
 
-  if (config.dialogMode && !['popup', 'iframe', 'auto'].includes(config.dialogMode)) {
-    throw new Error('Invalid dialogMode: must be "popup", "iframe", or "auto"');
+  if (config.mode && !['popup', 'dialog', 'auto'].includes(config.mode)) {
+    throw new Error('Invalid mode: must be "popup", "dialog", or "auto"');
   }
 
-  if (config.timeout && (typeof config.timeout !== 'number' || config.timeout <= 0)) {
-    throw new Error('Invalid timeout: must be a positive number');
-  }
 }
 
 export function validateOrigin(origin: string, expectedOrigin: string): boolean {

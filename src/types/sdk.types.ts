@@ -1,4 +1,6 @@
 import { WalletAccount } from "./wallet.types";
+import { PublicKey, Transaction } from '@solana/web3.js';
+
 export interface LazorSDKConfig {
   dialogUrl: string;
   paymasterUrl?: string;
@@ -24,7 +26,8 @@ export interface SDKEvents {
   'connect:success': WalletAccount;
   'connect:error': Error;
   'transaction:start': void;
-  'transaction:success': { txHash: string };
+  'transaction:success': Transaction;
+  'transaction:sent': string;
   'transaction:error': Error;
   'disconnect': void;
   'error': Error;
