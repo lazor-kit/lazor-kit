@@ -112,7 +112,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
       
       // Dialog will be closed by CommunicationHandler
       this.emit('connect:success', this.account);
-      
+      this.dialogManager.close();
       return this.account;
     } catch (error) {
       this.emit('connect:error', error as Error);
