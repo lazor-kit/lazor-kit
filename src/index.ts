@@ -1,12 +1,15 @@
 // src/index.ts
 // Core exports
-export { Lazorkit } from './core/Lazorkit';
+export * from './core/Lazorkit';
 export { DialogManager } from './core/dialog/DialogManager';
 export { SmartWallet } from './core/wallet/SmartWallet';
 export { Paymaster } from './core/wallet/Paymaster';
 
 // Type exports
 export * from './types';
+
+// React exports
+export * from './react';
 
 // Utility exports
 export * from './utils';
@@ -22,3 +25,4 @@ export {
   Connection,
   Keypair
 } from '@solana/web3.js';
+

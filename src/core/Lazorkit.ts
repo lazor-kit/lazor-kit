@@ -12,7 +12,6 @@ import {
   SDKOptions,
   SDKEvents,
   WalletAccount,
-  TransactionResponse,
   ErrorCode
 } from '../types';
 import { ConnectResponse, SignResponse } from '../types/message.types';
@@ -92,7 +91,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
         throw new SDKError(ErrorCode.CONNECTION_FAILED, 'No response received from dialog');
       }
 
-      const { publicKey, credentialId, isCreated } = response;
+      const { publicKey, isCreated } = response;
 
       if (!this.config.rpcUrl) {
         throw new SDKError(ErrorCode.INVALID_CONFIG, 'RPC URL is not defined');
@@ -174,10 +173,12 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
         signResponse
       );
       
-      this.dialogManager.close();
-    
       const signedTransaction = await this.paymaster.sign(transaction);
       signedTransaction.feePayer = new PublicKey(await this.paymaster.getPayer());
+      
+      // Only close dialog after successful signing
+      this.dialogManager.close();
+      
       this.emit('transaction:success', signedTransaction);
       return signedTransaction;
     

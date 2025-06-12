@@ -1,6 +1,4 @@
 // src/utils/logger.ts
-type LogLevel = 'debug' | 'info' | 'warn' | 'error';
-
 export class Logger {
   private context: string;
   private enabled: boolean;

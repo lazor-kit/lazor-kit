@@ -1,6 +1,5 @@
 import { EventEmitter } from 'eventemitter3';
 import { Logger } from '../../utils/logger';
-
 type DialogMode = 'popup' | 'dialog' | 'auto';
 type DialogAction = 'connect' | 'sign' | 'pay';
 
@@ -133,7 +132,7 @@ const getDialogStyles = (isMobile: boolean): DialogStyles => ({
 
 export class CommunicationHandler extends EventEmitter {
   private popupWindow: Window | null = null;
-  private popupCloseInterval: NodeJS.Timeout | null = null;
+  private popupCloseInterval: number | null = null;
   private dialogRef: HTMLDialogElement | null = null;
   private iframeRef: HTMLIFrameElement | null = null;
 
@@ -348,12 +347,8 @@ export class CommunicationHandler extends EventEmitter {
     // Start monitoring popup closure
     this.startPopupMonitor();
 
-    return new Promise((resolve, reject) => {
+    return new Promise<void>((resolve) => {
       const checkPopup = setInterval(() => {
-        if (!this.popupWindow || this.popupWindow.closed) {
-          clearInterval(checkPopup);
-          reject(new Error('Popup window was closed'));
-        }
         try {
           const popupWindow = this.popupWindow;
           if (popupWindow && popupWindow.location.href.includes(this.config.url)) {
@@ -362,6 +357,11 @@ export class CommunicationHandler extends EventEmitter {
           }
         } catch (e) {
           // Cross-origin access error, ignore
+          // If popup is closed, we'll wait for the message handler
+          if (!this.popupWindow || this.popupWindow.closed) {
+            clearInterval(checkPopup);
+            resolve(); // Don't reject, wait for message
+          }
         }
       }, 100);
     });
@@ -374,7 +374,12 @@ export class CommunicationHandler extends EventEmitter {
 
     this.popupCloseInterval = setInterval(() => {
       if (this.popupWindow?.closed) {
-        this.closeDialog();
+        // Clear popup references but don't close dialog
+        this.popupWindow = null;
+        if (this.popupCloseInterval) {
+          clearInterval(this.popupCloseInterval);
+          this.popupCloseInterval = null;
+        }
       }
     }, 500);
   }
@@ -456,18 +461,24 @@ export class CommunicationHandler extends EventEmitter {
           timestamp,
           connectionType
         });
+        // Don't close yet, wait for smart wallet creation
+        shouldClose = false;
         break;
 
       case 'SIGN_SUCCESS':
       case 'SIGNATURE_CREATED':
         this.emit('sign', message.data);
+        // Don't close yet, wait for transaction building
+        shouldClose = false;
         break;
 
       case 'ERROR':
         this.emit('error', new Error(message.error));
+        shouldClose = false;
         break;
 
       case 'CLOSE':
+        // Only close if explicitly requested
         break;
 
       default:
@@ -493,8 +504,7 @@ export class CommunicationHandler extends EventEmitter {
       }
     };
 
-    const targetOrigin = new URL(this.config.url).origin;
-    this.iframeRef.contentWindow.postMessage(credentials, "*")
+    this.iframeRef.contentWindow.postMessage(credentials, new URL(this.config.url).origin)
     this.logger.debug('Synced credentials');
     if (!this.iframeRef || !this.dialogRef) {
       throw new Error('Dialog or iframe reference not found');

@@ -1,5 +1,5 @@
 import { WalletAccount } from "./wallet.types";
-import { PublicKey, Transaction } from '@solana/web3.js';
+import { Transaction } from '@solana/web3.js';
 
 export interface LazorSDKConfig {
   dialogUrl: string;

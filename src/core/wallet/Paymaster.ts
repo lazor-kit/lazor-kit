@@ -6,7 +6,7 @@ import {
   PublicKey 
 } from '@solana/web3.js';
 import { Logger } from '../../utils/logger';
-
+import { Buffer } from 'buffer';
 export class Paymaster {
   private endpoint: string;
   private logger = new Logger('Paymaster');

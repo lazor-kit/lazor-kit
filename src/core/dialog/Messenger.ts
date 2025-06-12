@@ -13,7 +13,7 @@ interface MessengerConfig {
 interface PendingRequest {
   resolve: (value: any) => void;
   reject: (error: any) => void;
-  timeout: NodeJS.Timeout;
+  timeout: number;
 }
 
 export class Messenger extends EventEmitter {

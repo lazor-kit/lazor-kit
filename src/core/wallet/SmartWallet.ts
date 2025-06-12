@@ -9,18 +9,17 @@ import {
 } from '@solana/web3.js';
 import { Paymaster } from './Paymaster';
 import { SignResponse } from '../../types';
-import { SMART_WALLET_PROGRAM_ID } from '../../constants/config';
 import { LazorKitProgram } from './sdk/lazor-kit';
 import { DefaultRuleProgram } from './sdk/default-rule-program';
 import * as anchor from "@coral-xyz/anchor";
 import { LAMPORTS_PER_SOL } from "@solana/web3.js";
+import { Buffer } from 'buffer';
 
 export class SmartWallet {
   private ownerPublicKey: string;
   private paymaster: Paymaster;
   private lastestSmartWallet: PublicKey | null = null;
   private defaultRuleProgram: DefaultRuleProgram;
-  private connection: Connection;
   private lazorkitProgram: LazorKitProgram;
 
   /**
@@ -32,7 +31,6 @@ export class SmartWallet {
   constructor(ownerPublicKey: string, paymaster: Paymaster, connection: Connection) {
     this.ownerPublicKey = ownerPublicKey;
     this.paymaster = paymaster;
-    this.connection = connection;
     this.lazorkitProgram = new LazorKitProgram(connection);
     this.defaultRuleProgram = new DefaultRuleProgram(connection);
   }

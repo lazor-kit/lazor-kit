@@ -1,5 +1,5 @@
 // src/core/security/Security.ts
-import { encode, decode } from 'bs58';
+import bs58 from 'bs58';
 import { Logger } from '../../utils/logger';
 
 interface Challenge {
@@ -16,7 +16,7 @@ export class Security {
   generateChallenge(): string {
     const buffer = new Uint8Array(32);
     crypto.getRandomValues(buffer);
-    const challenge = encode(buffer);
+    const challenge = bs58.encode(buffer);
     
     this.challenges.set(challenge, {
       value: challenge,
@@ -35,13 +35,11 @@ export class Security {
   generateNonce(): string {
     const buffer = new Uint8Array(16);
     crypto.getRandomValues(buffer);
-    return encode(buffer);
+    return bs58.encode(buffer);
   }
 
   async verifyChallenge(
     challenge: string, 
-    signature: string, 
-    publicKey: string
   ): Promise<boolean> {
     const challengeData = this.challenges.get(challenge);
     
