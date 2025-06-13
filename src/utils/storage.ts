@@ -68,6 +68,19 @@ export class StorageUtil {
   }
 
   /**
+   * Update smart wallet address in local storage
+   * @param smartWalletAddress The smart wallet address to save
+   */
+  static updateSmartWalletAddress(smartWalletAddress: string): void {
+    try {
+      localStorage.setItem(SMART_WALLET_KEY, smartWalletAddress);
+      console.log('✅ Smart wallet address updated in local storage');
+    } catch (error) {
+      console.error('❌ Failed to update smart wallet address in local storage:', error);
+    }
+  }
+
+  /**
    * Clear credentials from local storage
    */
   static clearCredentials(): void {

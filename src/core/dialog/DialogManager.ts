@@ -15,7 +15,29 @@ export class DialogManager extends EventEmitter {
     this.handler.on('connect', this.handleConnect.bind(this));
     this.handler.on('sign', this.handleSign.bind(this));
     this.handler.on('error', this.handleError.bind(this));
-    this.handler.on('message', (message) => this.emit('message', message));
+    
+    // Handle raw message events and forward them
+    this.handler.on('message', (message) => {
+      this.logger.debug('Received message event', { message });
+      
+      // Process special message types
+      if (message?.type === 'WALLET_CONNECTED' && message?.data) {
+        // Convert to the expected format for handleConnect
+        const connectData = {
+          publicKey: message.data.publickey,
+          credentialId: message.data.credentialId,
+          isCreated: message.data.connectionType === 'create',
+          timestamp: message.data.timestamp,
+          connectionType: message.data.connectionType
+        };
+        this.handleConnect(connectData);
+      } else if (message?.type === 'SIGNATURE_CREATED' && message?.data) {
+        this.handleSign(message.data);
+      }
+      
+      // Forward the raw message for other listeners
+      this.emit('message', message);
+    });
   }
 
   /**
@@ -55,11 +77,38 @@ export class DialogManager extends EventEmitter {
 
   private handleConnect(data: any): void {
     this.logger.debug('Connect success:', data);
+    
+    // Store credentials in localStorage immediately
+    if (data?.publicKey) {
+      localStorage.setItem('PUBLIC_KEY', data.publicKey);
+    }
+    
+    if (data?.credentialId) {
+      localStorage.setItem('CREDENTIAL_ID', data.credentialId);
+    }
+    
+    // Dispatch a custom event for components that might be listening
+    window.dispatchEvent(new CustomEvent('lazorkit:connect-success', {
+      detail: data,
+      bubbles: true,
+      cancelable: true
+    }));
+    
+    // Emit event for internal listeners
     this.emit('connect', data);
   }
 
   private handleSign(data: any): void {
     this.logger.debug('Sign success:', data);
+    
+    // Dispatch a custom event for components that might be listening
+    window.dispatchEvent(new CustomEvent('lazorkit:sign-success', {
+      detail: data,
+      bubbles: true,
+      cancelable: true
+    }));
+    
+    // Emit event for internal listeners
     this.emit('sign', data);
   }
 

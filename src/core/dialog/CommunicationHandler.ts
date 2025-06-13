@@ -463,15 +463,56 @@ export class CommunicationHandler extends EventEmitter {
 
     switch (message.type) {
       case 'WALLET_CONNECTED':
-        // Extract wallet data
-        const { publickey: publicKey, credentialId, timestamp, connectionType } = message.data;
+        // Extract wallet data and validate
+        const { publickey, credentialId, timestamp, connectionType } = message.data;
+        
+        // Log the received data for debugging
+        this.logger.debug('WALLET_CONNECTED data received:', { 
+          publickey, 
+          credentialId, 
+          timestamp, 
+          connectionType,
+          messageData: JSON.stringify(message.data)
+        });
+        
+        // Validate public key
+        if (!publickey) {
+          this.logger.error('Public key is missing in WALLET_CONNECTED message');
+          // Try to get from localStorage as fallback
+          const storedPublicKey = localStorage.getItem('PUBLIC_KEY');
+          if (storedPublicKey) {
+            this.logger.debug('Using stored public key as fallback');
+            message.data.publickey = storedPublicKey;
+          } else {
+            this.logger.error('No public key available in localStorage either');
+          }
+        }
+        
+        // Store credentials immediately to ensure they're available for smart wallet operations
+        if (credentialId) {
+          localStorage.setItem('CREDENTIAL_ID', credentialId);
+        }
+        
+        if (publickey) {
+          localStorage.setItem('PUBLIC_KEY', publickey);
+        }
+        
+        // Directly emit the connection event without waiting
         this.emit('connect', {
-          publicKey,
+          publicKey: publickey,
           credentialId: credentialId,
           isCreated: connectionType === 'create',
           timestamp,
           connectionType
         });
+        
+        // Store credentials in parent window and notify any listeners
+        this.notifyCredentialsUpdated({
+          credentialId,
+          publicKey: publickey,
+          timestamp
+        });
+        
         // Don't close yet, wait for smart wallet creation
         shouldClose = false;
         break;
@@ -506,19 +547,58 @@ export class CommunicationHandler extends EventEmitter {
    * Sync credentials with the iframe
    * @param force Force a retry after a short delay
    */
+  /**
+   * Notify all listeners that credentials have been updated
+   * @param credentials The updated credentials
+   */
+  notifyCredentialsUpdated(credentials: { credentialId: string; publicKey: string; timestamp: string | number }): void {
+    this.logger.debug('📣 Notifying credential update', { 
+      credentialIdExists: !!credentials.credentialId,
+      publicKeyExists: !!credentials.publicKey
+    });
+    
+    // Emit an event that parent components can listen for
+    this.emit('credentials-updated', credentials);
+    
+    // Dispatch a custom event that can be listened for by any component
+    const event = new CustomEvent('lazorkit:credentials-updated', { 
+      detail: credentials,
+      bubbles: true,
+      cancelable: true
+    });
+    
+    window.dispatchEvent(event);
+    
+    // Try to sync with iframe if available
+    if (this.iframeRef?.contentWindow) {
+      this.syncCredentials(true);
+    } else {
+      this.logger.debug('⏱️ No iframe available, scheduling delayed sync attempt');
+      // Schedule a delayed sync attempt in case iframe becomes available
+      setTimeout(() => this.syncCredentials(true), 500);
+    }
+  }
+  
+  /**
+   * Sync credentials with the iframe and emit events to notify parent window
+   * @param force Force a retry after a short delay
+   * @returns boolean indicating if sync was attempted
+   */
   syncCredentials(force = false): boolean {
     if (!this.iframeRef || !this.iframeRef.contentWindow) {
       this.logger.warn("⚠️ Cannot sync credentials: iframe reference not available");
       return false;
     }
 
-    // Get credentials directly from localStorage to match reference implementation
+    // Get credentials from StorageUtil to ensure consistency
     const credentialId = localStorage.getItem('CREDENTIAL_ID');
     const publickey = localStorage.getItem('PUBLIC_KEY');
+    const smartWalletAddress = localStorage.getItem('SMART_WALLET_ADDRESS');
     
     this.logger.debug(`🔍 Checking credentials for iframe sync${force ? ' (forced)' : ''}:`, { 
       credentialIdExists: !!credentialId, 
       publickeyExists: !!publickey,
+      smartWalletExists: !!smartWalletAddress,
       iframeReady: !!this.iframeRef.contentWindow
     });
     
@@ -526,18 +606,29 @@ export class CommunicationHandler extends EventEmitter {
       this.logger.debug(`🔄 Syncing credentials to iframe${force ? ' (forced)' : ''}`);
       
       try {
+        // Send more complete credential data including smart wallet address if available
         this.iframeRef.contentWindow.postMessage({
           type: 'SYNC_CREDENTIALS',
           data: {
             credentialId,
             publickey,
+            smartWalletAddress: smartWalletAddress || '',
+            timestamp: Date.now()
           },
         }, '*');
         
-        // When forced, also retry after a short delay to ensure delivery
+        // Emit a credentials-synced event that components can listen for
+        this.emit('credentials-synced', {
+          credentialId,
+          publickey,
+          smartWalletAddress: smartWalletAddress || ''
+        });
+        
+        // Multiple retries with decreasing intervals to ensure delivery
         if (force) {
+          // First retry after 300ms
           setTimeout(() => {
-            this.logger.debug("🔄 Re-syncing credentials to iframe (retry)");
+            this.logger.debug("🔄 Re-syncing credentials to iframe (retry 1/3)");
             try {
               if (this.iframeRef?.contentWindow) {
                 this.iframeRef.contentWindow.postMessage({
@@ -545,13 +636,42 @@ export class CommunicationHandler extends EventEmitter {
                   data: {
                     credentialId,
                     publickey,
+                    smartWalletAddress: smartWalletAddress || '',
+                    timestamp: Date.now()
                   },
                 }, '*');
               }
             } catch (err) {
-              this.logger.error("❌ Error during retry credential sync:", err);
+              this.logger.error("❌ Error during retry 1 credential sync:", err);
             }
-          }, 1000);
+          }, 300);
+          
+          // Second retry after 600ms
+          setTimeout(() => {
+            this.logger.debug("🔄 Re-syncing credentials to iframe (retry 2/3)");
+            try {
+              if (this.iframeRef?.contentWindow) {
+                this.iframeRef.contentWindow.postMessage({
+                  type: 'SYNC_CREDENTIALS',
+                  data: {
+                    credentialId,
+                    publickey,
+                    smartWalletAddress: smartWalletAddress || '',
+                    timestamp: Date.now()
+                  },
+                }, '*');
+                
+                // Emit the event again to ensure listeners catch it
+                this.emit('credentials-synced', {
+                  credentialId,
+                  publickey,
+                  smartWalletAddress: smartWalletAddress || ''
+                });
+              }
+            } catch (err) {
+              this.logger.error("❌ Error during retry 2 credential sync:", err);
+            }
+          }, 600);
         }
         
         return true;

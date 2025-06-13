@@ -31,8 +31,6 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
   private paymaster: Paymaster;
   private smartWallet: SmartWallet | null = null;
   private account: WalletAccount | null = null;
-
-
   /**
    * Create a new Lazorkit instance
    * @param config SDK configuration options
@@ -42,7 +40,6 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
     
     validateConfig(config);
     this.config = config;
-    
     this.security = new Security();
     this.paymaster = new Paymaster(config.paymasterUrl || 'https://paymaster.lazor.io');
     
@@ -92,18 +89,48 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
         throw new SDKError(ErrorCode.CONNECTION_FAILED, 'No response received from dialog');
       }
 
-      const { publicKey, isCreated } = response;
-
+      let { publicKey, isCreated, credentialId } = response;
+      
       if (!this.config.rpcUrl) {
         throw new SDKError(ErrorCode.INVALID_CONFIG, 'RPC URL is not defined');
       }
+      
+      // Validate public key
+      if (!publicKey) {
+        console.warn('Public key is undefined in connect response, checking localStorage');
+        const storedPublicKey = localStorage.getItem('PUBLIC_KEY');
+        if (storedPublicKey) {
+          console.log('Using public key from localStorage:', storedPublicKey);
+          publicKey = storedPublicKey;
+        } else {
+          throw new SDKError(ErrorCode.CONNECTION_FAILED, 'Public key not available');
+        }
+      }
 
+      // Store credentials in local storage immediately to ensure availability
+      StorageUtil.saveCredentials({
+        credentialId: credentialId,
+        publickey: publicKey, // Match the case used in reference implementation
+        smartWalletAddress: '', // Will be updated after smart wallet creation
+        timestamp: Date.now()
+      });
+
+      // Initialize smart wallet right away
       this.smartWallet = new SmartWallet(
         this.paymaster, 
         new Connection(this.config.rpcUrl)
       );
       
+      // Create smart wallet and get address
       const smartWalletAddress = await this.smartWallet.createSmartWallet(publicKey);
+      
+      // Update stored credentials with the smart wallet address
+      StorageUtil.saveCredentials({
+        credentialId: credentialId,
+        publickey: publicKey,
+        smartWalletAddress,
+        timestamp: Date.now()
+      });
       
       this.account = {
         publicKey,
@@ -112,17 +139,14 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
         isCreated
       };
       
-      // Store credentials in local storage
-      StorageUtil.saveCredentials({
-        credentialId: response.credentialId,
-        publickey: publicKey, // Match the case used in reference implementation
-        smartWalletAddress,
-        timestamp: Date.now()
-      });
-      
-      // Dialog will be closed by CommunicationHandler
+      // Emit success event before closing dialog to ensure listeners are notified
       this.emit('connect:success', this.account);
-      this.dialogManager.close();
+      
+      // Add a small delay before closing dialog to ensure events are processed
+      setTimeout(() => {
+        this.dialogManager.close();
+      }, 100);
+      
       return this.account;
       
     } catch (error) {

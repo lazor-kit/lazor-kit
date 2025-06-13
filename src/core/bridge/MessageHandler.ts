@@ -41,27 +41,77 @@ export class MessageHandler extends EventEmitter {
 
       // Listen for response
       const handleResponse = (data: any) => {
+        this.logger.debug('Received response for request', { requestId, data });
         clearTimeout(timeoutId);
         this.pendingRequests.delete(requestId);
         dialogManager.off('connect', handleResponse);
         dialogManager.off('sign', handleResponse);
         dialogManager.off('error', handleError);
+        dialogManager.off('message', handleMessageEvent);
+        
+        // Add credentials to localStorage if they're in the response
+        if (data?.publicKey || data?.credentialId) {
+          this.logger.debug('Storing credentials from response', { 
+            hasPublicKey: !!data.publicKey, 
+            hasCredentialId: !!data.credentialId 
+          });
+          
+          if (data.publicKey) {
+            localStorage.setItem('PUBLIC_KEY', data.publicKey);
+          }
+          
+          if (data.credentialId) {
+            localStorage.setItem('CREDENTIAL_ID', data.credentialId);
+          }
+        }
+        
         resolve(data as T);
       };
 
       const handleError = (error: Error) => {
+        this.logger.debug('Received error for request', { requestId, error });
         clearTimeout(timeoutId);
         this.pendingRequests.delete(requestId);
         dialogManager.off('connect', handleResponse);
         dialogManager.off('sign', handleResponse);
         dialogManager.off('error', handleError);
+        dialogManager.off('message', handleMessageEvent);
         reject(error);
+      };
+      
+      // Handle raw message events from popup/iframe
+      const handleMessageEvent = (messageEvent: any) => {
+        this.logger.debug('Received raw message event', { messageEvent });
+        
+        // Check if this is a response to our request
+        if (messageEvent?.id === requestId || 
+            (messageEvent?.type === 'WALLET_CONNECTED' || messageEvent?.type === 'SIGNATURE_CREATED')) {
+          
+          // Extract data from message event
+          let responseData = messageEvent.data || messageEvent;
+          
+          // Handle wallet connected message
+          if (messageEvent.type === 'WALLET_CONNECTED') {
+            responseData = {
+              publicKey: messageEvent.data?.publickey,
+              credentialId: messageEvent.data?.credentialId,
+              isCreated: messageEvent.data?.connectionType === 'create',
+              timestamp: messageEvent.data?.timestamp,
+              connectionType: messageEvent.data?.connectionType
+            };
+            
+            this.logger.debug('Processed WALLET_CONNECTED message', responseData);
+          }
+          
+          handleResponse(responseData);
+        }
       };
 
       // Listen for both connect and sign events
       dialogManager.on('connect', handleResponse);
       dialogManager.on('sign', handleResponse);
       dialogManager.on('error', handleError);
+      dialogManager.on('message', handleMessageEvent);
       
       // Send message through dialog
       dialogManager.emit('message', message);
