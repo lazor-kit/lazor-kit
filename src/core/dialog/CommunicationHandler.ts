@@ -45,8 +45,8 @@ const DIALOG_DIMENSIONS = {
   mobile: {
     width: '100%',
     maxWidth: '100%',
-    height: '85vh',
-    maxHeight: '85vh',
+    height: '66.67vh',
+    maxHeight: '66.67vh',
     padding: '0',
     borderRadius: '20px 20px 0 0'
   },
@@ -63,25 +63,30 @@ const DIALOG_DIMENSIONS = {
 const getDialogStyles = (isMobile: boolean): DialogStyles => ({
   container: {
     position: 'fixed',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
+    top: isMobile ? 'auto' : '50%',
+    left: isMobile ? 0 : '50%',
+    right: isMobile ? 0 : 'auto',
+    bottom: isMobile ? 0 : 'auto',
+    transform: isMobile ? 'none' : 'translate(-50%, -50%)',
     display: 'flex',
-    alignItems: isMobile ? 'flex-end' : 'center',
-    justifyContent: 'center',
+    flexDirection: 'column',
     background: 'white',
     border: 'none',
-    margin: 'auto',
+    margin: isMobile ? 0 : 'auto',
     width: DIALOG_DIMENSIONS[isMobile ? 'mobile' : 'desktop'].width,
     maxWidth: DIALOG_DIMENSIONS[isMobile ? 'mobile' : 'desktop'].maxWidth,
     height: DIALOG_DIMENSIONS[isMobile ? 'mobile' : 'desktop'].height,
     maxHeight: DIALOG_DIMENSIONS[isMobile ? 'mobile' : 'desktop'].maxHeight,
     borderRadius: DIALOG_DIMENSIONS[isMobile ? 'mobile' : 'desktop'].borderRadius,
-    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.12)',
+    padding: DIALOG_DIMENSIONS[isMobile ? 'mobile' : 'desktop'].padding,
     overflow: 'hidden',
-    willChange: 'transform, opacity',
-    zIndex: 999999
+    boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+    zIndex: 2147483647,
+    willChange: 'transform',
+    webkitBackfaceVisibility: 'hidden',
+    backfaceVisibility: 'hidden',
+    webkitOverflowScrolling: 'touch',
+    overscrollBehavior: 'contain'
   },
 
   closeButton: {
@@ -110,7 +115,14 @@ const getDialogStyles = (isMobile: boolean): DialogStyles => ({
     margin: '0',
     overflow: 'hidden',
     borderRadius: 'inherit',
-    background: 'white'
+    background: 'white',
+    display: 'flex',
+    flexDirection: 'column',
+    willChange: 'transform',
+    webkitBackfaceVisibility: 'hidden',
+    backfaceVisibility: 'hidden',
+    webkitOverflowScrolling: 'touch',
+    overscrollBehavior: 'contain'
   },
   iframe: {
     border: 'none',
@@ -232,15 +244,25 @@ export class CommunicationHandler extends EventEmitter {
       .lazor-dialog {
         animation: dialogShow 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
         transform-origin: center bottom;
+        position: fixed !important;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
       }
       .lazor-dialog::backdrop {
         background: rgba(0, 0, 0, 0.5);
         backdrop-filter: blur(8px);
         animation: backdropShow 0.2s ease-out forwards;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
       }
       .lazor-close-button {
         opacity: 0.7;
         transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        position: absolute;
+        z-index: 10;
       }
       .lazor-close-button:hover {
         opacity: 1;
@@ -249,10 +271,19 @@ export class CommunicationHandler extends EventEmitter {
       }
       @media (max-width: 768px) {
         .lazor-dialog {
-          margin: 0;
+          margin: 0 !important;
           border-radius: 20px 20px 0 0 !important;
           width: 100% !important;
           max-width: 100% !important;
+          bottom: 0 !important;
+          left: 0 !important;
+          right: 0 !important;
+          height: 66.67vh !important;
+          transform: translateY(0) !important;
+          position: fixed !important;
+          will-change: transform;
+          -webkit-backface-visibility: hidden;
+          backface-visibility: hidden;
         }
       }
     `;
