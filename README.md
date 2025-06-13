@@ -9,7 +9,7 @@
 
 <br />
 
-> **Seamless Web3 authentication for the web.** A web wallet adapter that leverages passkey authentication, smart wallets, and gasless transactions for the Solana Devnet ecosystem.
+> **Seamless Web3 authentication for the web.** A web wallet adapter that leverages passkey authentication, smart wallets, and gasless transactions for the Solana ecosystem.
 
 ## ⚠️ Current Status
 
@@ -26,6 +26,7 @@
 🔗 **Solana Devnet** - Full Anchor framework support with transaction signing  
 💾 **Persistent Storage** - Secure credential storage and syncing between popup and iframe  
 🛡️ **Type Safety** - Full TypeScript support with comprehensive type definitions  
+🔄 **Transaction Management** - Sign and send transactions in one step with built-in error handling
 
 ---
 
@@ -163,19 +164,20 @@ The main hook providing wallet functionality:
 
 ```tsx
 const {
-  // State
-  smartWalletPubkey,    // PublicKey | null - Smart wallet public key
-  isConnected,          // boolean - Connection status  
-  isLoading,            // boolean - General loading state
-  isConnecting,         // boolean - Connection in progress
-  isSigning,            // boolean - Transaction signing in progress
-  error,                // Error | null - Last error that occurred
-  connection,           // Connection - Solana RPC connection
+   // State
+    smartWalletPubkey, // PublicKey | null - Smart wallet public key
+    isConnected: !!account, // boolean - Connection status
+    isLoading: isConnecting || isSigning, // boolean - General loading state
+    isConnecting, // boolean - Connection in progress
+    isSigning, // boolean - Transaction signing in progress
+    error, // Error | null - Last error that occurred
+    account, // WalletAccount | null - Connected wallet account
 
-  // Actions  
-  connect,              // () => Promise<WalletInfo>
-  disconnect,           // () => Promise<void>
-  signTransaction,      // (instruction: TransactionInstruction) => Promise<string>
+    // Actions
+    connect, // (options?: SDKOptions) => Promise<WalletInfo>
+    disconnect, // () => Promise<void>
+    signTransaction, // (instruction: TransactionInstruction) => Promise<string>
+    signAndSendTransaction, // (instruction: TransactionInstruction) => Promise<Transaction>
 } = useWallet();
 ```
 
@@ -201,6 +203,35 @@ type WalletInfo = {
   passkeyPubkey: number[];        // Passkey public key bytes
   smartWallet: string;            // Smart wallet address (base58)
   smartWalletAuthenticator: string; // Authenticator address (base58)
+  isConnected: boolean;           // Connection status
+  timestamp: number;              // Connection timestamp
+};
+
+// SDK Options for connection
+type SDKOptions = {
+  skipWarning?: boolean;          // Skip warning dialogs
+  mode?: 'popup' | 'dialog' | 'auto'; // Dialog display mode
+  fallbackToPopup?: boolean;      // Fallback to popup if dialog fails
+  origin?: string;                // Origin for the connection request
+};
+
+// Connect Response from the dialog
+type ConnectResponse = {
+  publicKey: string;              // Base64 encoded public key
+  credentialId: string;           // Credential ID
+  isCreated: boolean;             // Whether the credential was newly created
+  connectionType: 'create' | 'get'; // Type of connection
+  timestamp: number;              // Response timestamp
+};
+
+// Sign Response from the dialog
+type SignResponse = {
+  signature: string;              // Base64 encoded signature
+  msg: string;                    // Original message
+  normalized: string;             // Normalized message
+  credentialId?: string;          // Credential ID used for signing
+  publicKey?: string;             // Public key used for signing
+  timestamp: number;              // Response timestamp
 };
 ```
 
@@ -230,7 +261,7 @@ type WalletInfo = {
 
 ## 💡 Advanced Usage
 
-### Custom Transaction
+### Sign and Send Transaction
 
 ```tsx
 import { SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js';
@@ -245,11 +276,38 @@ const sendSOL = async () => {
   });
 
   try {
-    const signature = await signTransaction(instruction);
+    // Sign and send in one step
+    const signature = await signAndSendTransaction(instruction);
     console.log('Transfer successful:', signature);
     return signature;
   } catch (error) {
     console.error('Transaction failed:', error);
+    throw error;
+  }
+};
+```
+
+### Custom Transaction (Sign Only)
+
+```tsx
+import { SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js';
+
+const signTransferSOL = async () => {
+  if (!smartWalletPubkey) return;
+
+  const instruction = SystemProgram.transfer({
+    fromPubkey: smartWalletPubkey,
+    toPubkey: new PublicKey('RECIPIENT_WALLET_ADDRESS'),
+    lamports: 0.1 * LAMPORTS_PER_SOL,
+  });
+
+  try {
+    // Sign only, returns transaction signature
+    const signature = await signTransaction(instruction);
+    console.log('Transaction signed:', signature);
+    return signature;
+  } catch (error) {
+    console.error('Signing failed:', error);
     throw error;
   }
 };
@@ -283,9 +341,84 @@ const executeMultipleInstructions = async () => {
     }
   }
 };
+
+// Or sign and send each instruction in one step
+const executeAndSendMultipleInstructions = async () => {
+  if (!smartWalletPubkey) return;
+
+  // Create multiple instructions
+  const instructions = [
+    // Memo instruction
+    new anchor.web3.TransactionInstruction({
+      keys: [],
+      programId: new anchor.web3.PublicKey('Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo'),
+      data: Buffer.from('First instruction', 'utf-8'),
+    }),
+    // Second instruction
+    new anchor.web3.TransactionInstruction({
+      keys: [],
+      programId: new anchor.web3.PublicKey('Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo'),
+      data: Buffer.from('Second instruction', 'utf-8'),
+    })
+  ];
+
+  // Sign and send each instruction
+  for (const instruction of instructions) {
+    try {
+      const signature = await signAndSendTransaction(instruction);
+      console.log('Instruction signed and sent:', signature);
+    } catch (error) {
+      console.error('Batch execution failed:', error);
+      break;
+    }
+  }
+};
 ```
 
 ---
+
+## 💾 Credential Storage and Syncing
+
+LazorKit implements a robust credential management system to ensure consistent access to credentials across different UI components:
+
+```typescript
+// StorageUtil provides consistent access to credentials
+class StorageUtil {
+  // Save credentials to local storage
+  static saveCredentials({
+    credentialId,
+    publickey,
+    smartWalletAddress
+  }: {
+    credentialId: string;
+    publickey: string;
+    smartWalletAddress: string;
+  }): void {
+    // Implementation details
+  }
+
+  // Get credentials from local storage
+  static getCredentials(): {
+    credentialId: string | null;
+    publickey: string | null;
+    smartWalletAddress: string | null;
+  } {
+    // Implementation details
+  }
+
+  // Clear credentials from local storage
+  static clearCredentials(): void {
+    // Implementation details
+  }
+}
+```
+
+### Credential Syncing Flow
+
+1. **Connection**: Credentials are saved after successful connection
+2. **Popup to Iframe**: Credentials are synced between popup and iframe
+3. **Pre-signing**: Credentials are synced before transaction signing
+4. **Storage Access**: Consistent storage access via StorageUtil
 
 ## 🔒 Security Considerations
 
@@ -293,6 +426,7 @@ const executeMultipleInstructions = async () => {
 - **Storage**: Credentials are stored securely and synced between popup and iframe
 - **Network**: Currently supports Solana Devnet only
 - **Validation**: Always validate transaction instructions before signing
+- **Error Handling**: Robust error handling for missing credentials
 
 ---
 
@@ -307,11 +441,14 @@ const executeMultipleInstructions = async () => {
 
 ## 🧩 Key Components
 
-- **useWallet** - React hook for wallet integration
-- **MessageHandler** - Cross-origin communication utility
-- **PasskeyManager** - WebAuthn credential management
-- **StorageUtil** - Credential storage and syncing
-- **SmartWallet** - Smart wallet implementation
+- **useWallet** - React hook for wallet integration with comprehensive state management
+- **Lazorkit** - Main SDK class that manages wallet connection, transaction signing, and communication
+- **MessageHandler** - Cross-origin communication utility for secure message passing between components
+- **DialogManager** - Manages UI dialogs for wallet connection and transaction signing
+- **CommunicationHandler** - Handles communication between popup, iframe, and parent window
+- **SmartWallet** - Smart wallet implementation with credential persistence between UI components
+- **StorageUtil** - Credential storage and syncing between popup and iframe
+- **Paymaster** - Handles gasless transactions through a paymaster service
 
 ## 📦 Development
 
@@ -320,6 +457,31 @@ pnpm install   # Install dependencies
 pnpm build     # Build all packages
 ```
 
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) for details on our code of conduct and development process.
+
+---
+
+## 🆘 Support
+
+- 🐦 **Twitter**: [@lazorkit](https://twitter.com/lazorkit)
+- 🐛 **Issues**: [GitHub Issues](https://github.com/lazor-kit/lazor-kit/issues)
+
+---
+
 ## 📄 License
 
-MIT
+ISC © [LazorKit](https://github.com/lazor-kit)
+
+---
+
+<div align="center">
+  <p>Made with ❤️ by the LazorKit team</p>
+  <p>
+    <a href="https://lazorkit.xyz">🌐 Website</a> •
+    <a href="https://twitter.com/lazorkit">🐦 Twitter</a>
+  </p>
+</div>
