@@ -156,7 +156,7 @@ export class Paymaster {
 
       const data = await response.json();
       console.log(data);
-      return data.txHash;
+      return data.result.signature;
     } catch (error) {
       this.logger.error('Failed to sign and send transaction', error);
       throw error;
