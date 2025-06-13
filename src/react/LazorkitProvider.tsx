@@ -1,20 +1,22 @@
-import React, { useEffect } from 'react';
+import { useEffect } from 'react';
+import type { ReactNode } from 'react';
 import { Lazorkit } from '../core/Lazorkit';
 import { useLazorkitStore } from './store';
 
 interface LazorkitProviderProps {
-  children: React.ReactNode;
+  children: ReactNode;
   rpcUrl: string;
   ipfsUrl?: string;
   paymasterUrl: string;
 }
 
-export const LazorkitProvider: React.FC<LazorkitProviderProps> = ({
-  children,
-  rpcUrl,
-  ipfsUrl = 'https://portal.lazor.sh',
-  paymasterUrl
-}) => {
+export const LazorkitProvider = (props: LazorkitProviderProps) => {
+  const {
+    children,
+    rpcUrl,
+    ipfsUrl = 'https://portal.lazor.sh',
+    paymasterUrl
+  } = props;
   const { setSdk, setAccount, setIsConnecting, setIsSigning, setError } = useLazorkitStore();
 
   useEffect(() => {

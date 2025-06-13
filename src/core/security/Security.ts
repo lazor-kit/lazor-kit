@@ -1,6 +1,6 @@
 // src/core/security/Security.ts
-import bs58 from 'bs58';
 import { Logger } from '../../utils/logger';
+import bs58 from 'bs58';
 
 interface Challenge {
   value: string;
@@ -16,6 +16,7 @@ export class Security {
   generateChallenge(): string {
     const buffer = new Uint8Array(32);
     crypto.getRandomValues(buffer);
+    
     const challenge = bs58.encode(buffer);
     
     this.challenges.set(challenge, {

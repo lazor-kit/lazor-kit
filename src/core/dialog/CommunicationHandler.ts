@@ -132,13 +132,24 @@ const getDialogStyles = (isMobile: boolean): DialogStyles => ({
 
 export class CommunicationHandler extends EventEmitter {
   private popupWindow: Window | null = null;
-  private popupCloseInterval: number | null = null;
+  private popupCloseInterval: ReturnType<typeof setInterval> | null = null;
   private dialogRef: HTMLDialogElement | null = null;
   private iframeRef: HTMLIFrameElement | null = null;
 
   private logger = new Logger('CommunicationHandler');
   private config: CommunicationConfig;
-  private action: 'connect' | 'sign' | 'pay' | null = null;
+  // Action type for the current operation
+  private _action: 'connect' | 'sign' | 'pay' | null = null;
+  
+  // Getter for the action property
+  get action(): 'connect' | 'sign' | 'pay' | null {
+    return this._action;
+  }
+  
+  // Setter for the action property
+  set action(value: 'connect' | 'sign' | 'pay' | null) {
+    this._action = value;
+  }
   private isDestroyed = false;
 
   constructor(config: CommunicationConfig) {

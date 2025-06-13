@@ -16,7 +16,6 @@ import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { Buffer } from 'buffer';
 
 export class SmartWallet {
-  private ownerPublicKey: string;
   private paymaster: Paymaster;
   private lastestSmartWallet: PublicKey | null = null;
   private defaultRuleProgram: DefaultRuleProgram;
@@ -28,8 +27,7 @@ export class SmartWallet {
    * @param paymaster The paymaster instance
    * @param connection The Solana connection
    */
-  constructor(ownerPublicKey: string, paymaster: Paymaster, connection: Connection) {
-    this.ownerPublicKey = ownerPublicKey;
+  constructor(paymaster: Paymaster, connection: Connection) {
     this.paymaster = paymaster;
     this.lazorkitProgram = new LazorKitProgram(connection);
     this.defaultRuleProgram = new DefaultRuleProgram(connection);
@@ -64,7 +62,7 @@ export class SmartWallet {
     }
     
     const [smartWalletAuthenticator] = this.lazorkitProgram.smartWalletAuthenticator(
-      Array.from(Buffer.from(storedPublicKey, 'base64')),
+      Array.from(Buffer.from(storedPublicKey, 'base64')) as number[],
       this.lastestSmartWallet!
     );
     
@@ -96,6 +94,37 @@ export class SmartWallet {
    * @param ownerPublicKey The owner's public key as a base64 encoded string
    * @returns The smart wallet address as a base58 encoded string
    */
+  /**
+   * Check if a smart wallet account exists on-chain
+   * @param publicKey The public key as a base64 encoded string
+   * @returns A boolean indicating if the account exists
+   */
+  async checkSmartWalletExists(publicKey: string): Promise<boolean> {
+    try {
+      // Get the latest smart wallet address
+      const smartWalletAddress = await this.getAddress();
+      if (!smartWalletAddress) {
+        return false;
+      }
+      
+      // Get the authenticator PDA
+      const [smartWalletAuthenticator] = this.lazorkitProgram.smartWalletAuthenticator(
+        Array.from(Buffer.from(publicKey, 'base64')) as number[],
+        new PublicKey(smartWalletAddress)
+      );
+      
+      // Check if the authenticator account exists
+      const connection = this.lazorkitProgram.connection;
+      const accountInfo = await connection.getAccountInfo(smartWalletAuthenticator);
+      
+      // If accountInfo is not null, the account exists
+      return accountInfo !== null;
+    } catch (error) {
+      console.error('Error checking smart wallet existence:', error);
+      return false;
+    }
+  }
+
   async createSmartWallet(ownerPublicKey: string): Promise<string> {
     // Get wallet address
     const smartWallet = await this.getAddress();
@@ -103,13 +132,14 @@ export class SmartWallet {
     // Get necessary components for transactions
     const payer = await this.paymaster.getPayer();
     const blockhash = await this.paymaster.getBlockhash();
-    const pubkey = Array.from(Buffer.from(ownerPublicKey, 'base64'));
+    const pubkey = Array.from(Buffer.from(ownerPublicKey, 'base64')) as number[];
+    
     // Create authenticator for the smart wallet
     const [smartWalletAuthenticator] = this.lazorkitProgram.smartWalletAuthenticator(
       pubkey, 
       new PublicKey(smartWallet)
     );
-    
+   
     // Step 1: Fund the smart wallet with a small amount of SOL
     const depositSolIns = anchor.web3.SystemProgram.transfer({
       fromPubkey: payer,

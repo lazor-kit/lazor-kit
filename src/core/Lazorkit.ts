@@ -99,7 +99,6 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
       }
 
       this.smartWallet = new SmartWallet(
-        publicKey, 
         this.paymaster, 
         new Connection(this.config.rpcUrl)
       );
