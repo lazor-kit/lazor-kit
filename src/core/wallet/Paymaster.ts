@@ -87,11 +87,11 @@ export class Paymaster {
    * @param transaction Transaction to sign
    * @returns Signed transaction
    */
-  async sign(transaction: Transaction): Promise<Transaction> {
+  private async attemptSign(transaction: Transaction, attempt: number = 1): Promise<Transaction> {
     try {
       const serialized = transaction.serialize({
-        requireAllSignatures: false,
-        verifySignatures: false
+        verifySignatures: false,
+        requireAllSignatures: false
       });
 
       const response = await fetch(`${this.endpoint}`, {
@@ -114,13 +114,42 @@ export class Paymaster {
       }
 
       const data = await response.json();
-      console.log(data);
-      console.log(data.result.signed_transaction);
+      if (data.error) {
+        throw new Error(data.error.message || 'Unknown paymaster error');
+      }
+
       return Transaction.from(Buffer.from(data.result.signed_transaction, 'base64'));
     } catch (error) {
-      this.logger.error('Failed to sign transaction', error);
+      this.logger.error(`Sign attempt ${attempt} failed:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Sign a transaction using the paymaster service with retries
+   * @param transaction Transaction to sign
+   * @param maxRetries Maximum number of retry attempts (default: 3)
+   * @param baseDelay Base delay between retries in ms (default: 1000)
+   * @returns Signed transaction
+   */
+  async sign(transaction: Transaction, maxRetries: number = 3, baseDelay: number = 1000): Promise<Transaction> {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await this.attemptSign(transaction, attempt);
+      } catch (error) {
+        if (attempt === maxRetries) {
+          this.logger.error('All sign retry attempts failed', error);
+          throw error;
+        }
+        
+        // Calculate exponential backoff delay
+        const delay = baseDelay * Math.pow(2, attempt - 1);
+        this.logger.info(`Retrying sign in ${delay}ms (attempt ${attempt}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+    
+    throw new Error('Failed to sign transaction after all retries');
   }
 
   /**
@@ -128,7 +157,7 @@ export class Paymaster {
    * @param transaction Transaction to sign and send
    * @returns Transaction hash as a string
    */
-  async signAndSend(transaction: Transaction): Promise<string> {
+  private async attemptSignAndSend(transaction: Transaction, attempt: number = 1): Promise<string> {
     try {
       const serialized = transaction.serialize({
         verifySignatures: false,
@@ -155,12 +184,42 @@ export class Paymaster {
       }
 
       const data = await response.json();
-      console.log(data);
+      if (data.error) {
+        throw new Error(data.error.message || 'Unknown paymaster error');
+      }
+      
       return data.result.signature;
     } catch (error) {
-      this.logger.error('Failed to sign and send transaction', error);
+      this.logger.error(`Attempt ${attempt} failed:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Sign and send a transaction with retries
+   * @param transaction Transaction to sign and send
+   * @param maxRetries Maximum number of retry attempts (default: 3)
+   * @param baseDelay Base delay between retries in ms (default: 1000)
+   * @returns Transaction signature
+   */
+  async signAndSend(transaction: Transaction, maxRetries: number = 3, baseDelay: number = 1000): Promise<string> {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await this.attemptSignAndSend(transaction, attempt);
+      } catch (error) {
+        if (attempt === maxRetries) {
+          this.logger.error('All retry attempts failed', error);
+          throw error;
+        }
+        
+        // Calculate exponential backoff delay
+        const delay = baseDelay * Math.pow(2, attempt - 1);
+        this.logger.info(`Retrying in ${delay}ms (attempt ${attempt}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+    
+    throw new Error('Failed to sign and send transaction after all retries');
   }
   
 }

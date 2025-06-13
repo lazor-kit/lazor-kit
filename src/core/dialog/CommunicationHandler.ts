@@ -45,8 +45,8 @@ const DIALOG_DIMENSIONS = {
   mobile: {
     width: '100%',
     maxWidth: '100%',
-    height: '66.67vh',
-    maxHeight: '66.67vh',
+    height: '50vh',
+    maxHeight: '50vh',
     padding: '0',
     borderRadius: '20px 20px 0 0'
   },
@@ -90,14 +90,14 @@ const getDialogStyles = (isMobile: boolean): DialogStyles => ({
   },
 
   closeButton: {
-    zIndex: 1001,
+    zIndex: 2147483648,
     position: 'absolute',
-    top: '16px',
-    right: '16px',
-    background: 'rgba(0, 0, 0, 0.05)',
+    top: '12px',
+    right: '12px',
+    background: 'transparent',
     border: 'none',
     borderRadius: '50%',
-    width: '32px',
+    width: '24px',
     height: '32px',
     display: 'flex',
     alignItems: 'center',
@@ -241,13 +241,79 @@ export class CommunicationHandler extends EventEmitter {
         from { opacity: 0; }
         to { opacity: 1; }
       }
-      .lazor-dialog {
-        animation: dialogShow 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
-        transform-origin: center bottom;
-        position: fixed !important;
-        overscroll-behavior: contain;
-        -webkit-overflow-scrolling: touch;
+      /* Desktop Styles */
+      @media (min-width: 769px) {
+        .lazor-dialog {
+          animation: dialogShow 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+          transform-origin: center;
+          position: fixed !important;
+          top: 50% !important;
+          left: 50% !important;
+          transform: translate(-50%, -50%) !important;
+          border-radius: 20px !important;
+          width: 420px !important;
+          max-width: 90vw !important;
+          height: 600px !important;
+          max-height: 85vh !important;
+          overscroll-behavior: contain;
+          -webkit-overflow-scrolling: touch;
+        }
+        .lazor-close-button {
+          opacity: 0.7;
+          transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+          position: absolute;
+          z-index: 2147483648;
+          top: 16px;
+          right: 16px;
+          width: 32px;
+          height: 32px;
+          background: rgba(0, 0, 0, 0.05);
+        }
+        .lazor-close-button:hover {
+          opacity: 1;
+          background: rgba(0, 0, 0, 0.1) !important;
+          transform: scale(1.1) !important;
+        }
+        .lazor-close-button svg {
+          width: 16px;
+          height: 16px;
+          stroke: currentColor;
+          stroke-width: 2;
+        }
       }
+
+      /* Mobile Styles */
+      @media (max-width: 768px) {
+        .lazor-dialog {
+          animation: dialogShow 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+          transform-origin: bottom;
+          position: fixed !important;
+          margin: 0 !important;
+          border-radius: 20px 20px 0 0 !important;
+          width: 100% !important;
+          max-width: 100% !important;
+          bottom: 0 !important;
+          left: 0 !important;
+          right: 0 !important;
+          height: 50vh !important;
+          transform: translateY(0) !important;
+          will-change: transform;
+          -webkit-backface-visibility: hidden;
+          backface-visibility: hidden;
+          overscroll-behavior: contain;
+          -webkit-overflow-scrolling: touch;
+        }
+        .lazor-close-button {
+          opacity: 0.7;
+          transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+          position: absolute;
+          z-index: 2147483648;
+          top: 12px;
+          right: 12px;
+        }
+      }
+
+      /* Common Styles */
       .lazor-dialog::backdrop {
         background: rgba(0, 0, 0, 0.5);
         backdrop-filter: blur(8px);
@@ -257,34 +323,6 @@ export class CommunicationHandler extends EventEmitter {
         left: 0;
         right: 0;
         bottom: 0;
-      }
-      .lazor-close-button {
-        opacity: 0.7;
-        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-        position: absolute;
-        z-index: 10;
-      }
-      .lazor-close-button:hover {
-        opacity: 1;
-        background: rgba(0, 0, 0, 0.1) !important;
-        transform: scale(1.1) !important;
-      }
-      @media (max-width: 768px) {
-        .lazor-dialog {
-          margin: 0 !important;
-          border-radius: 20px 20px 0 0 !important;
-          width: 100% !important;
-          max-width: 100% !important;
-          bottom: 0 !important;
-          left: 0 !important;
-          right: 0 !important;
-          height: 66.67vh !important;
-          transform: translateY(0) !important;
-          position: fixed !important;
-          will-change: transform;
-          -webkit-backface-visibility: hidden;
-          backface-visibility: hidden;
-        }
       }
     `;
     document.head.appendChild(style);
@@ -298,7 +336,7 @@ export class CommunicationHandler extends EventEmitter {
     closeButton.className = 'lazor-close-button';
     Object.assign(closeButton.style, styles.closeButton);
     closeButton.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#000000" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
         <line x1="18" y1="6" x2="6" y2="18"/>
         <line x1="6" y1="6" x2="18" y2="18"/>
       </svg>
