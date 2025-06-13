@@ -120,7 +120,6 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
         this.paymaster, 
         new Connection(this.config.rpcUrl)
       );
-      
       // Create smart wallet and get address
       const smartWalletAddress = await this.smartWallet.createSmartWallet(publicKey);
       

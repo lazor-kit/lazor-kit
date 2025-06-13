@@ -24,7 +24,7 @@ export const LazorkitProvider = (props: LazorkitProviderProps) => {
       url: ipfsUrl,
       rpcUrl,
       paymasterUrl,
-      mode: 'auto'
+      mode: 'popup'
     });
 
     // Set up event listeners
