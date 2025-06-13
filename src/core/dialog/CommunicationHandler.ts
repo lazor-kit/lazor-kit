@@ -286,21 +286,35 @@ export class CommunicationHandler extends EventEmitter {
     // Close any existing dialog
     if (this.dialogRef || this.iframeRef) {
       this.closeDialog();
-      // Wait for cleanup
-      await new Promise(resolve => setTimeout(resolve, 100));
+      // Wait for cleanup - increased to ensure complete cleanup
+      await new Promise(resolve => setTimeout(resolve, 2000));
     }
 
     this.action = action;
+    console.log(`Opening dialog for action: ${action}`);
 
     // Check if we should use popup instead
     if (this.shouldUsePopup(action)) {
       const url = `${this.config.url}?action=${action}`;
+      console.log(`Using popup for ${action} at URL: ${url}`);
       await this.openPopup(url);
       return;
     }
 
     try {
       const isMobile = this.isMobileDevice();
+      console.log(`Creating ${isMobile ? 'mobile' : 'desktop'} dialog for ${action}`);
+      
+      // Pre-load credentials from localStorage
+      const credentialId = localStorage.getItem('CREDENTIAL_ID');
+      const publicKey = localStorage.getItem('PUBLIC_KEY');
+      const smartWalletAddress = localStorage.getItem('SMART_WALLET_ADDRESS');
+      
+      console.log('Current credentials before dialog creation:', {
+        credentialIdExists: !!credentialId,
+        publicKeyExists: !!publicKey,
+        smartWalletAddressExists: !!smartWalletAddress
+      });
       
       // Create dialog first
       this.dialogRef = this.createDialog(isMobile);
@@ -312,17 +326,38 @@ export class CommunicationHandler extends EventEmitter {
       // Create iframe with all necessary attributes
       this.iframeRef = document.createElement('iframe');
       Object.assign(this.iframeRef.style, getDialogStyles(isMobile).iframe);
+      
+      // Critical: Ensure proper permissions for WebAuthn
       this.iframeRef.allow = `publickey-credentials-get ${this.config.url}; publickey-credentials-create ${this.config.url}; clipboard-write`;
       this.iframeRef.setAttribute('aria-label', 'Lazor Wallet');
       this.iframeRef.setAttribute('role', 'dialog');
       this.iframeRef.tabIndex = 0;
       this.iframeRef.title = 'Lazor';
-      this.iframeRef.sandbox.add('allow-forms', 'allow-scripts', 'allow-same-origin', 'allow-popups', 'allow-popups-to-escape-sandbox', 'allow-modals');
+      
+      // Critical: Ensure all necessary sandbox permissions
+      const sandbox = this.iframeRef.sandbox;
+      sandbox.add('allow-forms');
+      sandbox.add('allow-scripts');
+      sandbox.add('allow-same-origin');
+      sandbox.add('allow-popups');
+      sandbox.add('allow-popups-to-escape-sandbox');
+      sandbox.add('allow-modals');
+      
+      // Build URL with action and credentials as query parameters
       const url = new URL(this.config.url);
       url.searchParams.set('action', action);
+      
+      // For sign action, include credentials in URL to ensure they're available
       if (action === 'sign') {
         url.searchParams.set('message', 'hello');
+        
+        // Pass credentials in URL for immediate availability
+        if (credentialId) url.searchParams.set('credentialId', credentialId);
+        if (publicKey) url.searchParams.set('publicKey', publicKey);
+        if (smartWalletAddress) url.searchParams.set('smartWalletAddress', smartWalletAddress);
       }
+      
+      console.log(`Setting iframe src to: ${url.toString()}`);
       this.iframeRef.src = url.toString();
       
       // Assemble the dialog
@@ -331,12 +366,41 @@ export class CommunicationHandler extends EventEmitter {
       document.body.appendChild(this.dialogRef);
       
       // Show dialog
+      console.log('Showing dialog modal');
       this.dialogRef.showModal();
 
       // Wait for iframe to load then sync credentials
-      await new Promise(resolve => this.iframeRef!.addEventListener('load', resolve, { once: true }));
+      console.log('Waiting for iframe to load...');
+      await new Promise(resolve => {
+        if (this.iframeRef) {
+          this.iframeRef.addEventListener('load', () => {
+            console.log('Iframe loaded successfully');
+            resolve(null);
+          }, { once: true });
+          
+          // Safety timeout in case load event doesn't fire
+          setTimeout(() => {
+            console.log('Iframe load timeout - proceeding anyway');
+            resolve(null);
+          }, 5000);
+        } else {
+          console.error('No iframe reference available');
+          resolve(null);
+        }
+      });
+      
+      // Sync credentials multiple times to ensure they're received
+      console.log('Syncing credentials after iframe load');
       this.syncCredentials(true);
+      
+      // Additional sync after a short delay
+      setTimeout(() => {
+        console.log('Performing additional credential sync');
+        this.syncCredentials(true);
+      }, 500);
     } catch (error) {
+      console.error('Error opening dialog:', error);
+      this.logger.error('Error opening dialog:', error);
       this.closeDialog();
       throw error;
     }
@@ -458,8 +522,10 @@ export class CommunicationHandler extends EventEmitter {
 
     this.logger.debug('Received message:', message);
 
-    // Handle message before closing dialog to avoid race conditions
-    let shouldClose = true;
+    // IMPORTANT: Never automatically close the dialog based on message type
+    // The parent application should explicitly call closeDialog when it's ready
+    // This prevents premature dialog closing during transaction signing
+    let shouldClose = false; // Default to NOT closing
 
     switch (message.type) {
       case 'WALLET_CONNECTED':
@@ -513,32 +579,36 @@ export class CommunicationHandler extends EventEmitter {
           timestamp
         });
         
-        // Don't close yet, wait for smart wallet creation
-        shouldClose = false;
+        // NEVER close automatically for WALLET_CONNECTED
+        console.log('Wallet connected, keeping dialog open');
         break;
         
       case 'SIGNATURE_CREATED':
+        console.log('Signature created, keeping dialog open for transaction building');
         this.emit('sign', message.data);
-        // Don't close yet, wait for transaction building
-        shouldClose = false;
+        // NEVER close automatically for SIGNATURE_CREATED
+        // The parent application will close it after building the transaction
         break;
 
       case 'ERROR':
         this.emit('error', new Error(message.error));
-        shouldClose = false;
+        // Don't close on error, let the parent application handle it
         break;
 
       case 'CLOSE':
-        // Only close if explicitly requested
+        // Only close if explicitly requested by the dialog itself
+        console.log('Explicit close request received from dialog');
+        shouldClose = true;
         break;
 
       default:
         this.emit('message', message);
-        shouldClose = false;
+        // Don't close for unknown message types
     }
 
-    // Close dialog after handling message if needed
+    // Close dialog ONLY if explicitly requested by a CLOSE message
     if (shouldClose) {
+      console.log('Closing dialog due to explicit close request');
       this.closeDialog();
     }
   };
@@ -587,13 +657,20 @@ export class CommunicationHandler extends EventEmitter {
   syncCredentials(force = false): boolean {
     if (!this.iframeRef || !this.iframeRef.contentWindow) {
       this.logger.warn("⚠️ Cannot sync credentials: iframe reference not available");
+      console.error("Cannot sync credentials: iframe reference not available");
       return false;
     }
 
-    // Get credentials from StorageUtil to ensure consistency
+    // Get credentials from localStorage to ensure consistency
     const credentialId = localStorage.getItem('CREDENTIAL_ID');
     const publickey = localStorage.getItem('PUBLIC_KEY');
     const smartWalletAddress = localStorage.getItem('SMART_WALLET_ADDRESS');
+    
+    console.log('Syncing credentials to iframe:', { 
+      credentialIdExists: !!credentialId, 
+      publickeyExists: !!publickey,
+      smartWalletExists: !!smartWalletAddress
+    });
     
     this.logger.debug(`🔍 Checking credentials for iframe sync${force ? ' (forced)' : ''}:`, { 
       credentialIdExists: !!credentialId, 
@@ -602,87 +679,99 @@ export class CommunicationHandler extends EventEmitter {
       iframeReady: !!this.iframeRef.contentWindow
     });
     
-    if (credentialId && publickey) {
-      this.logger.debug(`🔄 Syncing credentials to iframe${force ? ' (forced)' : ''}`);
+    // Always attempt to sync even if credentials are missing
+    // This ensures we're sending the most up-to-date state
+    try {
+      // Send credential data including smart wallet address if available
+      const message = {
+        type: 'SYNC_CREDENTIALS',
+        data: {
+          credentialId: credentialId || '',
+          publickey: publickey || '',
+          smartWalletAddress: smartWalletAddress || '',
+          timestamp: Date.now()
+        },
+      };
       
-      try {
-        // Send more complete credential data including smart wallet address if available
-        this.iframeRef.contentWindow.postMessage({
-          type: 'SYNC_CREDENTIALS',
-          data: {
-            credentialId,
-            publickey,
-            smartWalletAddress: smartWalletAddress || '',
-            timestamp: Date.now()
-          },
-        }, '*');
-        
-        // Emit a credentials-synced event that components can listen for
-        this.emit('credentials-synced', {
-          credentialId,
-          publickey,
-          smartWalletAddress: smartWalletAddress || ''
-        });
-        
-        // Multiple retries with decreasing intervals to ensure delivery
-        if (force) {
-          // First retry after 300ms
-          setTimeout(() => {
-            this.logger.debug("🔄 Re-syncing credentials to iframe (retry 1/3)");
-            try {
-              if (this.iframeRef?.contentWindow) {
-                this.iframeRef.contentWindow.postMessage({
-                  type: 'SYNC_CREDENTIALS',
-                  data: {
-                    credentialId,
-                    publickey,
-                    smartWalletAddress: smartWalletAddress || '',
-                    timestamp: Date.now()
-                  },
-                }, '*');
-              }
-            } catch (err) {
-              this.logger.error("❌ Error during retry 1 credential sync:", err);
+      console.log('Sending credentials to iframe:', message);
+      this.iframeRef.contentWindow.postMessage(message, '*');
+      
+      // Emit a credentials-synced event that components can listen for
+      this.emit('credentials-synced', {
+        credentialId: credentialId || '',
+        publickey: publickey || '',
+        smartWalletAddress: smartWalletAddress || ''
+      });
+      
+      // Multiple retries with decreasing intervals to ensure delivery
+      if (force) {
+        // First retry after 200ms
+        setTimeout(() => {
+          console.log("Re-syncing credentials to iframe (retry 1/5)");
+          try {
+            if (this.iframeRef?.contentWindow) {
+              this.iframeRef.contentWindow.postMessage(message, '*');
             }
-          }, 300);
-          
-          // Second retry after 600ms
-          setTimeout(() => {
-            this.logger.debug("🔄 Re-syncing credentials to iframe (retry 2/3)");
-            try {
-              if (this.iframeRef?.contentWindow) {
-                this.iframeRef.contentWindow.postMessage({
-                  type: 'SYNC_CREDENTIALS',
-                  data: {
-                    credentialId,
-                    publickey,
-                    smartWalletAddress: smartWalletAddress || '',
-                    timestamp: Date.now()
-                  },
-                }, '*');
-                
-                // Emit the event again to ensure listeners catch it
-                this.emit('credentials-synced', {
-                  credentialId,
-                  publickey,
-                  smartWalletAddress: smartWalletAddress || ''
-                });
-              }
-            } catch (err) {
-              this.logger.error("❌ Error during retry 2 credential sync:", err);
-            }
-          }, 600);
-        }
+          } catch (err) {
+            console.error("Error during retry 1 credential sync:", err);
+          }
+        }, 200);
         
-        return true;
-      } catch (err) {
-        this.logger.error("❌ Error during credential sync:", err);
-        return false;
+        // Second retry after 400ms
+        setTimeout(() => {
+          console.log("Re-syncing credentials to iframe (retry 2/5)");
+          try {
+            if (this.iframeRef?.contentWindow) {
+              this.iframeRef.contentWindow.postMessage(message, '*');
+            }
+          } catch (err) {
+            console.error("Error during retry 2 credential sync:", err);
+          }
+        }, 400);
+        
+        // Third retry after 800ms
+        setTimeout(() => {
+          console.log("Re-syncing credentials to iframe (retry 3/5)");
+          try {
+            if (this.iframeRef?.contentWindow) {
+              this.iframeRef.contentWindow.postMessage(message, '*');
+            }
+          } catch (err) {
+            console.error("Error during retry 3 credential sync:", err);
+          }
+        }, 800);
+        
+        // Fourth retry after 1500ms
+        setTimeout(() => {
+          console.log("Re-syncing credentials to iframe (retry 4/5)");
+          try {
+            if (this.iframeRef?.contentWindow) {
+              this.iframeRef.contentWindow.postMessage(message, '*');
+            }
+          } catch (err) {
+            console.error("Error during retry 4 credential sync:", err);
+          }
+        }, 1500);
+        
+        // Fifth retry after 3000ms
+        setTimeout(() => {
+          console.log("Re-syncing credentials to iframe (retry 5/5)");
+          try {
+            if (this.iframeRef?.contentWindow) {
+              this.iframeRef.contentWindow.postMessage(message, '*');
+            }
+          } catch (err) {
+            console.error("Error during retry 5 credential sync:", err);
+          }
+        }, 3000);
       }
+      
+      return true;
+    } catch (err) {
+      console.error("Error syncing credentials to iframe:", err);
+      this.logger.error("❌ Error syncing credentials to iframe:", err);
+      return false;
     }
-    
-    this.logger.warn("⚠️ No valid credentials found for syncing");
-    return false;
   }
 
   destroy(): void {

@@ -156,39 +156,6 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
   }
 
   /**
-   * Internal method to handle transaction signing
-   * @param instruction The transaction instruction to sign
-   * @returns SignResponse from the dialog
-   */
-  private async handleTransactionSign(instruction: TransactionInstruction): Promise<SignResponse> {
-    if (!this.isConnected()) {
-      throw new SDKError(ErrorCode.NOT_CONNECTED, 'Wallet is not connected');
-    }
-
-    const serializedInstruction = Buffer.from(JSON.stringify(instruction)).toString('base64');
-    const message = {
-      instructions: serializedInstruction,
-      timestamp: Date.now(),
-      nonce: this.security.generateNonce()
-    };
-    
-    await this.dialogManager.sign();
-    const signResponse = await this.messageHandler.request<SignResponse>(this.dialogManager, {
-      method: 'passkey:sign',
-      params: {
-        message: Buffer.from(JSON.stringify(message)).toString('base64'),
-        origin: window.location.origin
-      }
-    });
-
-    if (!signResponse) {
-      throw new SDKError(ErrorCode.SIGN_FAILED, 'No response received from dialog');
-    }
-
-    return signResponse;
-  }
-
-  /**
    * Sign transaction with passkey
    * @param instruction The transaction instruction to sign
    * @returns Signed transaction
@@ -196,27 +163,76 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
   async signTransaction(instruction: TransactionInstruction): Promise<Transaction> {
     try {
       this.emit('transaction:start');
+      console.log('Transaction signing started');
 
-      const signResponse = await this.handleTransactionSign(instruction);
+      // Don't close the dialog until we're completely done
+      let dialogClosed = false;
       
-      if (!this.smartWallet) {
-        throw new SDKError(ErrorCode.INVALID_CONFIG, 'Smart wallet is not initialized');
-      }
-      
-      const { transaction } = await this.smartWallet.buildTransaction(
-        instruction,
-        signResponse
-      );
-      
-      const signedTransaction = await this.paymaster.sign(transaction);
-      signedTransaction.feePayer = new PublicKey(await this.paymaster.getPayer());
-      
-      // Only close dialog after successful signing
-      this.dialogManager.close();
-      
-      this.emit('transaction:success', signedTransaction);
-      return signedTransaction;
+      try {
+        // Serialize the instruction for signing
+        const serializedInstruction = Buffer.from(JSON.stringify(instruction)).toString('base64');
+        const message = {
+          instructions: serializedInstruction,
+          timestamp: Date.now(),
+          nonce: this.security.generateNonce()
+        };
+        
+        // Make sure credentials are synced before opening dialog
+        this.dialogManager.syncCredentials(true);
+        
+        // Open the dialog for signing
+        console.log('Opening dialog for signing...');
+        await this.dialogManager.sign();
+        
+        // IMPORTANT: We need to wait for the user to sign the transaction
+        // The messageHandler.request will wait for the response from the dialog
+        // and won't return until the user has signed or cancelled
+        console.log('Waiting for user to sign transaction...');
+        const signResponse = await this.messageHandler.request<SignResponse>(this.dialogManager, {
+          method: 'passkey:sign',
+          params: {
+            message: Buffer.from(JSON.stringify(message)).toString('base64'),
+            origin: window.location.origin
+          }
+        }, 60000); // 60 second timeout
     
+        console.log('Received signature response:', signResponse);
+        
+        if (!signResponse) {
+          throw new SDKError(ErrorCode.SIGN_FAILED, 'No response received from dialog');
+        }
+        
+        if (!this.smartWallet) {
+          throw new SDKError(ErrorCode.INVALID_CONFIG, 'Smart wallet is not initialized');
+        }
+        
+        // Build transaction with the signature
+        // IMPORTANT: We build the transaction BEFORE closing the dialog
+        // to ensure we have all the necessary data
+        console.log('Building transaction with signature...');
+        const { transaction } = await this.smartWallet.buildTransaction(
+          instruction,
+          signResponse
+        );
+        
+        const signedTransaction = await this.paymaster.sign(transaction);
+        signedTransaction.feePayer = new PublicKey(await this.paymaster.getPayer());
+        
+        console.log('Transaction built successfully, closing dialog');
+        // Only close the dialog AFTER the transaction is fully built
+        this.dialogManager.close();
+        dialogClosed = true;
+        
+        this.emit('transaction:success', signedTransaction);
+        return signedTransaction;
+      } catch (innerError) {
+        console.error('Error during transaction signing:', innerError);
+        if (!dialogClosed) {
+          console.log('Closing dialog due to error');
+          this.dialogManager.close();
+        }
+        throw innerError;
+      }
     } catch (error) {
       this.emit('transaction:error', error as Error);
       throw error;
@@ -231,29 +247,81 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
   async signAndSendTransaction(instruction: TransactionInstruction): Promise<string> {
     try {
       this.emit('transaction:start');
-      
-      const signResponse = await this.handleTransactionSign(instruction);
-      
-      if (!this.smartWallet) {
-        throw new SDKError(ErrorCode.INVALID_CONFIG, 'Smart wallet is not initialized');
-      }
-      
-      const { transaction } = await this.smartWallet.buildTransaction(
-        instruction,
-        signResponse
-      );
-      
-      this.dialogManager.close();
-    
-      const signedTransaction = await this.paymaster.sign(transaction);
-      signedTransaction.feePayer = new PublicKey(await this.paymaster.getPayer());
-      this.emit('transaction:success', signedTransaction);
+      console.log('Transaction signing and sending started');
 
-      // Send the transaction
-      const txHash = await this.paymaster.signAndSend(signedTransaction);
-      this.emit('transaction:sent', txHash);
-      return txHash;
+      // Don't close the dialog until we're completely done
+      let dialogClosed = false;
+      
+      try {
+        // Serialize the instruction for signing
+        const serializedInstruction = Buffer.from(JSON.stringify(instruction)).toString('base64');
+        const message = {
+          instructions: serializedInstruction,
+          timestamp: Date.now(),
+          nonce: this.security.generateNonce()
+        };
+        
+        // Make sure credentials are synced before opening dialog
+        this.dialogManager.syncCredentials(true);
+        
+        // Open the dialog for signing
+        console.log('Opening dialog for signing...');
+        await this.dialogManager.sign();
+        
+        // IMPORTANT: We need to wait for the user to sign the transaction
+        // The messageHandler.request will wait for the response from the dialog
+        // and won't return until the user has signed or cancelled
+        console.log('Waiting for user to sign transaction...');
+        const signResponse = await this.messageHandler.request<SignResponse>(this.dialogManager, {
+          method: 'passkey:sign',
+          params: {
+            message: Buffer.from(JSON.stringify(message)).toString('base64'),
+            origin: window.location.origin
+          }
+        }, 60000); // 60 second timeout
     
+        console.log('Received signature response:', signResponse);
+        
+        if (!signResponse) {
+          throw new SDKError(ErrorCode.SIGN_FAILED, 'No response received from dialog');
+        }
+        
+        if (!this.smartWallet) {
+          throw new SDKError(ErrorCode.INVALID_CONFIG, 'Smart wallet is not initialized');
+        }
+        
+        // Build transaction with the signature
+        // IMPORTANT: We build the transaction BEFORE closing the dialog
+        // to ensure we have all the necessary data
+        console.log('Building transaction with signature...');
+        const { transaction } = await this.smartWallet.buildTransaction(
+          instruction,
+          signResponse
+        );
+        
+        console.log('Transaction built successfully, closing dialog');
+        // Only close the dialog AFTER the transaction is fully built
+        this.dialogManager.close();
+        dialogClosed = true;
+        
+        const signedTransaction = await this.paymaster.sign(transaction);
+        signedTransaction.feePayer = new PublicKey(await this.paymaster.getPayer());
+        this.emit('transaction:success', signedTransaction);
+
+        // Send the transaction
+        console.log('Sending transaction to blockchain...');
+        const txHash = await this.paymaster.signAndSend(signedTransaction);
+        console.log('Transaction sent successfully:', txHash);
+        this.emit('transaction:sent', txHash);
+        return txHash;
+      } catch (innerError) {
+        console.error('Error during transaction signing or sending:', innerError);
+        if (!dialogClosed) {
+          console.log('Closing dialog due to error');
+          this.dialogManager.close();
+        }
+        throw innerError;
+      }
     } catch (error) {
       this.emit('transaction:error', error as Error);
       throw error;

@@ -31,8 +31,25 @@ export class DialogManager extends EventEmitter {
           connectionType: message.data.connectionType
         };
         this.handleConnect(connectData);
-      } else if (message?.type === 'SIGNATURE_CREATED' && message?.data) {
-        this.handleSign(message.data);
+      } else if (message?.type === 'SIGNATURE_CREATED') {
+        console.log('DialogManager: Received SIGNATURE_CREATED message:', message);
+        
+        // Extract signature data from the message
+        const signatureData = {
+          signature: message.data?.signature || message.signature,
+          timestamp: message.data?.timestamp || message.timestamp || Date.now(),
+          credentialId: message.data?.credentialId || message.credentialId,
+          publicKey: message.data?.publicKey || message.publicKey
+        };
+        
+        if (signatureData.signature) {
+          console.log('DialogManager: Valid signature data found:', signatureData);
+          this.handleSign(signatureData);
+          // Emit the SIGNATURE_CREATED event with the signature data
+          this.emit('SIGNATURE_CREATED', signatureData);
+        } else {
+          console.warn('DialogManager: SIGNATURE_CREATED message without signature data:', message);
+        }
       }
       
       // Forward the raw message for other listeners
@@ -49,9 +66,25 @@ export class DialogManager extends EventEmitter {
 
   /**
    * Open sign dialog
+   * Ensures credentials are synced before opening the dialog
    */
   async sign(): Promise<void> {
+    console.log('DialogManager: Opening sign dialog with credential sync');
+    
+    // Force sync credentials multiple times before opening dialog
+    this.syncCredentials(true);
+    
+    // Small delay to ensure credentials are synced before opening dialog
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Open the dialog
     await this.handler.openDialog('sign');
+    
+    // Sync credentials again after dialog is open
+    setTimeout(() => {
+      console.log('DialogManager: Re-syncing credentials after dialog open');
+      this.syncCredentials(true);
+    }, 300);
   }
 
   /**

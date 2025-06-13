@@ -2,7 +2,6 @@ import { EventEmitter } from 'eventemitter3';
 import { generateId } from '../../utils/encoding';
 import { DialogManager } from '../dialog/DialogManager';
 import { Logger } from '../../utils/logger';
-import { BaseResponse } from '../../types/responses';
 
 export class MessageHandler extends EventEmitter {
   private logger = new Logger('MessageHandler');
@@ -82,6 +81,7 @@ export class MessageHandler extends EventEmitter {
       // Handle raw message events from popup/iframe
       const handleMessageEvent = (messageEvent: any) => {
         this.logger.debug('Received raw message event', { messageEvent });
+        console.log('Received message event in MessageHandler:', messageEvent);
         
         // Check if this is a response to our request
         if (messageEvent?.id === requestId || 
@@ -101,9 +101,63 @@ export class MessageHandler extends EventEmitter {
             };
             
             this.logger.debug('Processed WALLET_CONNECTED message', responseData);
+            handleResponse(responseData);
           }
-          
-          handleResponse(responseData);
+          // Handle signature created message
+          else if (messageEvent.type === 'SIGNATURE_CREATED') {
+            console.log('MessageHandler: Received SIGNATURE_CREATED message:', messageEvent);
+            
+            // Extract signature data from the message
+            const signatureData = {
+              signature: messageEvent.data?.signature || messageEvent.signature,
+              timestamp: messageEvent.data?.timestamp || messageEvent.timestamp || Date.now(),
+              credentialId: messageEvent.data?.credentialId || messageEvent.credentialId,
+              publicKey: messageEvent.data?.publicKey || messageEvent.publicKey
+            };
+            
+            if (signatureData.signature) {
+              console.log('MessageHandler: Valid signature data found:', signatureData);
+              
+              // Make sure we have credentials synced
+              const credentialId = localStorage.getItem('CREDENTIAL_ID');
+              const publicKey = localStorage.getItem('PUBLIC_KEY');
+              
+              if (!credentialId || !publicKey) {
+                console.warn('Missing credentials when processing signature, attempting to extract from message');
+                
+                // Try to extract credentials from the message
+                if (signatureData.credentialId) {
+                  localStorage.setItem('CREDENTIAL_ID', signatureData.credentialId);
+                }
+                
+                if (signatureData.publicKey) {
+                  localStorage.setItem('PUBLIC_KEY', signatureData.publicKey);
+                }
+              }
+              
+              // Resolve with the signature data
+              handleResponse(signatureData);
+            } else {
+              console.warn('MessageHandler: SIGNATURE_CREATED message without signature data');
+              // Don't resolve yet, wait for a complete signature response
+              return;
+            }
+          } else if (messageEvent?.id === requestId) {
+            // For direct responses to our request ID
+            console.log('MessageHandler: Received direct response for request ID:', { requestId, messageEvent });
+            
+            // For sign requests, we need to wait for the SIGNATURE_CREATED message
+            if (request.method === 'passkey:sign') {
+              // This is just the initial response, don't resolve yet
+              console.log('MessageHandler: Initial sign request response received, waiting for signature...');
+              // Don't resolve yet, wait for SIGNATURE_CREATED event
+              return;
+            }
+            
+            // For other requests, resolve with the response data
+            this.logger.debug('MessageHandler: Resolving with response data:', responseData);
+            handleResponse(responseData);
+          }
         }
       };
 
