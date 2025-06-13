@@ -464,8 +464,7 @@ export class CommunicationHandler extends EventEmitter {
         // Don't close yet, wait for smart wallet creation
         shouldClose = false;
         break;
-
-      case 'SIGN_SUCCESS':
+        
       case 'SIGNATURE_CREATED':
         this.emit('sign', message.data);
         // Don't close yet, wait for transaction building
@@ -492,23 +491,67 @@ export class CommunicationHandler extends EventEmitter {
     }
   };
 
-  syncCredentials(force = false): void {
-    if (!this.iframeRef?.contentWindow || !force && !this.action) {
-      return;
+  /**
+   * Sync credentials with the iframe
+   * @param force Force a retry after a short delay
+   */
+  syncCredentials(force = false): boolean {
+    if (!this.iframeRef || !this.iframeRef.contentWindow) {
+      this.logger.warn("⚠️ Cannot sync credentials: iframe reference not available");
+      return false;
     }
 
-    const credentials = {
-      type: 'SYNC_CREDENTIALS',
-      data: {
+    // Get credentials directly from localStorage to match reference implementation
+    const credentialId = localStorage.getItem('CREDENTIAL_ID');
+    const publickey = localStorage.getItem('PUBLIC_KEY');
+    
+    this.logger.debug(`🔍 Checking credentials for iframe sync${force ? ' (forced)' : ''}:`, { 
+      credentialIdExists: !!credentialId, 
+      publickeyExists: !!publickey,
+      iframeReady: !!this.iframeRef.contentWindow
+    });
+    
+    if (credentialId && publickey) {
+      this.logger.debug(`🔄 Syncing credentials to iframe${force ? ' (forced)' : ''}`);
+      
+      try {
+        this.iframeRef.contentWindow.postMessage({
+          type: 'SYNC_CREDENTIALS',
+          data: {
+            credentialId,
+            publickey,
+          },
+        }, '*');
         
+        // When forced, also retry after a short delay to ensure delivery
+        if (force) {
+          setTimeout(() => {
+            this.logger.debug("🔄 Re-syncing credentials to iframe (retry)");
+            try {
+              if (this.iframeRef?.contentWindow) {
+                this.iframeRef.contentWindow.postMessage({
+                  type: 'SYNC_CREDENTIALS',
+                  data: {
+                    credentialId,
+                    publickey,
+                  },
+                }, '*');
+              }
+            } catch (err) {
+              this.logger.error("❌ Error during retry credential sync:", err);
+            }
+          }, 1000);
+        }
+        
+        return true;
+      } catch (err) {
+        this.logger.error("❌ Error during credential sync:", err);
+        return false;
       }
-    };
-
-    this.iframeRef.contentWindow.postMessage(credentials, new URL(this.config.url).origin)
-    this.logger.debug('Synced credentials');
-    if (!this.iframeRef || !this.dialogRef) {
-      throw new Error('Dialog or iframe reference not found');
     }
+    
+    this.logger.warn("⚠️ No valid credentials found for syncing");
+    return false;
   }
 
   destroy(): void {

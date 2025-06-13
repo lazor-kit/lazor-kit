@@ -57,8 +57,14 @@ export class SmartWallet {
   ): Promise<{ transaction: Transaction }> {
     const payer = await this.paymaster.getPayer();
     const blockhash = await this.paymaster.getBlockhash();
+    // Try to get from local storage
+    const storedPublicKey = localStorage.getItem('PUBLIC_KEY');
+    if (!storedPublicKey) {
+      throw new Error('Public key not found. Please reconnect your wallet.');
+    }
+    
     const [smartWalletAuthenticator] = this.lazorkitProgram.smartWalletAuthenticator(
-      Array.from(Buffer.from(this.ownerPublicKey, 'base64')),
+      Array.from(Buffer.from(storedPublicKey, 'base64')),
       this.lastestSmartWallet!
     );
     
@@ -70,7 +76,7 @@ export class SmartWallet {
     
     // Create execution transaction with authenticated instruction
     const executeTxn = await this.lazorkitProgram.executeInstructionTxn(
-      Array.from(Buffer.from(this.ownerPublicKey, 'base64')),
+      Array.from(Buffer.from(storedPublicKey, 'base64')),
       Buffer.from(signData.msg, 'base64'),
       Buffer.from(signData.normalized, 'base64'),
       checkRule,

@@ -17,6 +17,7 @@ import {
 import { ConnectResponse, SignResponse } from '../types/message.types';
 import { PublicKey } from '@solana/web3.js';
 import { CommunicationConfig } from './dialog/CommunicationHandler';
+import { StorageUtil } from '../utils/storage';
 
 /**
  * Lazorkit is the main entry point for the Lazor Kit SDK
@@ -103,12 +104,22 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
         new Connection(this.config.rpcUrl)
       );
       
+      const smartWalletAddress = await this.smartWallet.createSmartWallet(publicKey);
+      
       this.account = {
         publicKey,
-        smartWallet: await this.smartWallet.createSmartWallet(publicKey),
+        smartWallet: smartWalletAddress,
         isConnected: true,
         isCreated
       };
+      
+      // Store credentials in local storage
+      StorageUtil.saveCredentials({
+        credentialId: response.credentialId,
+        publickey: publicKey, // Match the case used in reference implementation
+        smartWalletAddress,
+        timestamp: Date.now()
+      });
       
       // Dialog will be closed by CommunicationHandler
       this.emit('connect:success', this.account);
@@ -128,7 +139,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
    */
   private async handleTransactionSign(instruction: TransactionInstruction): Promise<SignResponse> {
     if (!this.isConnected()) {
-      throw new SDKError(ErrorCode.NOT_CONNECTED, 'Wallet not connected');
+      throw new SDKError(ErrorCode.NOT_CONNECTED, 'Wallet is not connected');
     }
 
     const serializedInstruction = Buffer.from(JSON.stringify(instruction)).toString('base64');
@@ -137,7 +148,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
       timestamp: Date.now(),
       nonce: this.security.generateNonce()
     };
-
+    
     await this.dialogManager.sign();
     const signResponse = await this.messageHandler.request<SignResponse>(this.dialogManager, {
       method: 'passkey:sign',
@@ -234,6 +245,10 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
     this.dialogManager.destroy();
     this.account = null;
     this.smartWallet = null;
+    
+    // Clear credentials from local storage
+    StorageUtil.clearCredentials();
+    
     this.emit('disconnect');
   }
 
@@ -268,8 +283,8 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
     this.disconnect();
     this.removeAllListeners();
     this.messageHandler.destroy();
-
   }
+  
 
   /**
    * Set up message handler to forward errors to SDK events
