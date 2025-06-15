@@ -1,71 +1,149 @@
-# Lazor Kit - Smart Wallet Ecosystem
+# Wallet Management Contract
 
-A modular Solana smart contract ecosystem that provides passkey-authenticated smart wallets with customizable rule-based transaction controls.
+A Solana-based smart wallet management system that provides secure and flexible wallet management capabilities with customizable rules and transfer limits.
 
 ## Overview
 
-Lazor Kit consists of three interconnected programs that work together to provide secure, rule-based smart wallet functionality:
+This project implements a smart wallet system on Solana with the following key features:
+- Smart wallet creation and management
+- Default rule implementation
+- Transfer limit controls
+- Whitelist rule program support
+- Secp256r1 authentication
 
-### Core Programs
+## Project Structure
 
-1. **LazorKit Core** (`lazorkit`) - Main smart wallet program
-2. **Transfer Limit** (`transfer_limit`) - Transaction limit enforcement rules
-3. **Default Rule** (`default_rule`) - Basic transaction validation rules
+```
+├── programs/
+│   ├── lazorkit/         # Main smart wallet program
+│   ├── default_rule/     # Default rule implementation
+│   └── transfer_limit/   # Transfer limit functionality
+├── sdk/
+│   ├── lazor-kit.ts      # Main SDK implementation
+│   ├── default-rule-program.ts
+│   ├── transfer_limit.ts
+│   ├── utils.ts
+│   ├── types.ts
+│   └── constants.ts
+└── tests/
+    ├── smart_wallet_with_default_rule.test.ts
+    ├── change_rule.test.ts
+    ├── utils.ts
+    └── constants.ts
+```
+
+## Prerequisites
+
+- Node.js
+- Solana CLI
+- Anchor Framework
+- Rust (for program development)
+
+## Installation
+
+1. Clone the repository:
+```bash
+git clone <repository-url>
+cd wallet-management-contract
+```
+
+2. Install dependencies:
+```bash
+npm install
+```
+
+3. Build the programs:
+```bash
+anchor build
+```
+
+## Program IDs
+
+- LazorKit Program: `33tS3mSoyvdmKWxb6bgSL657AqH4Wxsu9R6GnvjtZdEd`
+- Transfer Limit Program: `EXYavpYDn6twyPvsGtvuJkEaGeqbN5TLCnC3Fp3evv85`
+- Default Rule Program: `scdFpnHi1Hu1BbKPwEdhRcdWwu5DohSWxCAg3UeDNKZ`
+
+## Deployment
+
+To deploy the programs and initialize the IDL:
+
+```bash
+# Initialize IDL for LazorKit
+anchor idl init -f ./target/idl/lazorkit.json 33tS3mSoyvdmKWxb6bgSL657AqH4Wxsu9R6GnvjtZdEd
+
+# Initialize IDL for Transfer Limit
+anchor idl init -f ./target/idl/transfer_limit.json EXYavpYDn6twyPvsGtvuJkEaGeqbN5TLCnC3Fp3evv85
+
+# Initialize IDL for Default Rule
+anchor idl init -f ./target/idl/default_rule.json scdFpnHi1Hu1BbKPwEdhRcdWwu5DohSWxCAg3UeDNKZ
+
+# Upgrade IDL for LazorKit
+anchor idl upgrade 33tS3mSoyvdmKWxb6bgSL657AqH4Wxsu9R6GnvjtZdEd -f ./target/idl/lazorkit.json
+
+# Upgrade IDL for Transfer Limit
+anchor idl upgrade EXYavpYDn6twyPvsGtvuJkEaGeqbN5TLCnC3Fp3evv85 -f ./target/idl/transfer_limit.json
+
+# Upgrade IDL for Default Rule
+anchor idl upgrade scdFpnHi1Hu1BbKPwEdhRcdWwu5DohSWxCAg3UeDNKZ -f ./target/idl/default_rule.json
+```
+
+## Testing
+
+Run the test suite:
+
+```bash
+anchor test
+```
+
+The test suite includes:
+- Smart wallet creation and initialization
+- Default rule implementation
+- Transfer limit functionality
+- Rule change operations
+
+## SDK Usage
+
+The SDK provides a comprehensive interface for interacting with the smart wallet system:
+
+```typescript
+import { LazorKitProgram } from './sdk/lazor-kit';
+import { DefaultRuleProgram } from './sdk/default-rule-program';
+
+// Initialize the programs
+const connection = new anchor.web3.Connection('YOUR_RPC_URL');
+const lazorkitProgram = new LazorKitProgram(connection);
+const defaultRuleProgram = new DefaultRuleProgram(connection);
+
+// Create a smart wallet
+const createSmartWalletTxn = await lazorkitProgram.createSmartWalletTxn(
+  passkeyPubkey,
+  initRuleIns,
+  payer.publicKey
+);
+```
 
 ## Features
 
-### 🔐 Passkey Authentication
-- WebAuthn/FIDO2 compatible authentication
-- Secure key management with secp256r1 signatures
-- No seed phrases required
+### Smart Wallet Management
+- Create and manage smart wallets
+- Secp256r1 authentication
+- Configurable wallet rules
 
-### 📏 Rule-Based Controls
-- Configurable transaction limits
-- Multi-member approval systems
-- Whitelisted program execution
-- Custom rule program integration
+### Default Rule System
+- Implement default transaction rules
+- Custom rule program support
+- Whitelist functionality
 
-### 🏗️ Modular Architecture
-- Composable rule programs
-- Extensible smart wallet functionality
-- Clean separation of concerns
-
-## Program Details
-
-### LazorKit Core (`3CFG1eVGpUVAxMeuFnNw7CbBA1GQ746eQDdMWPoFTAD8`)
-
-The main program that manages smart wallets and coordinates with rule programs.
-
-**Instructions:**
-- `initialize()` - Initialize the program sequence tracker
-- `create_smart_wallet()` - Create a new smart wallet with passkey
-- `execute_instruction()` - Execute transactions with passkey authentication
-- `upsert_whitelist_rule_programs()` - Manage whitelisted rule programs
-
-### Transfer Limit (`HjgdxTNPqpL59KLRVDwQ28cqam2SxBirnNN5SFAFGHZ8`)
-
-Implements transaction limits and member management for enhanced security.
-
-**Instructions:**
-- `initialize()` - Initialize the transfer limit program
-- `init_rule()` - Set up transfer limit rules
-- `add_member()` - Add new passkey members to a wallet
-- `check_rule()` - Validate transactions against limits
-
-### Default Rule (`B98ooLRYBP6m6Zsrd3Hnzn4UAejfVZwyDgMFaBNzVR2W`)
-
-Provides basic rule validation functionality.
-
-**Instructions:**
-- `initialize()` - Initialize the default rule program
-- `init_rule()` - Set up basic rules
-- `check_rule()` - Perform basic transaction validation
-- `destroy()` - Clean up rule instances
+### Transfer Limits
+- Configurable transfer limits
+- Token transfer restrictions
+- Custom limit rules
 
 ## Contributing
 
 1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests for new functionality
-5. Submit a pull request
+2. Create your feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a new Pull Request
+

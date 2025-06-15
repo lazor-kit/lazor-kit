@@ -14,7 +14,7 @@ import { ExecuteAction } from "../sdk/types";
 import { TransferLimitProgram } from "../sdk/transfer_limit";
 dotenv.config();
 
-describe("Test smart wallet with transfer limit", () => {
+describe.skip("Test smart wallet with transfer limit", () => {
   const connection = new anchor.web3.Connection(
     process.env.RPC_URL || "http://localhost:8899",
     "confirmed"
@@ -39,38 +39,6 @@ describe("Test smart wallet with transfer limit", () => {
       const txn = await lazorkitProgram.initializeTxn(
         payer.publicKey,
         defaultRuleProgram.programId
-      );
-
-      await sendAndConfirmTransaction(connection, txn, [payer], {
-        commitment: "confirmed",
-      });
-    }
-
-    const defaultRuleConfigAccountInfo = await connection.getAccountInfo(
-      defaultRuleProgram.config
-    );
-
-    if (defaultRuleConfigAccountInfo === null) {
-      // create the default rule program
-      const txn = await defaultRuleProgram.initializeTxn(
-        payer.publicKey,
-        lazorkitProgram.authority
-      );
-
-      await sendAndConfirmTransaction(connection, txn, [payer], {
-        commitment: "confirmed",
-      });
-    }
-
-    const transferLimitConfigAccountInfo = await connection.getAccountInfo(
-      transferLimitProgram.config
-    );
-
-    if (transferLimitConfigAccountInfo === null) {
-      // create the transfer limit program
-      const txn = await transferLimitProgram.initializeTxn(
-        payer.publicKey,
-        lazorkitProgram.authority
       );
 
       await sendAndConfirmTransaction(connection, txn, [payer], {

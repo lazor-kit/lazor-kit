@@ -1,26 +1,14 @@
 {
-  "name": "prongram",
-  "version": "1.0.0",
-  "description": "Smart contract framework for Lazorkit",
   "license": "ISC",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "scripts": {
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
-    "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check",
-    "build": "tsc",
-    "test": "mocha -r ts-node/register test/**/*.ts",
-    "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit"
+    "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.31.0",
-    "@raydium-io/raydium-sdk": "^1.3.1-beta.58",
-    "@raydium-io/raydium-sdk-v2": "^0.1.115-alpha",
-    "@solana/spl-token": "^0.4.12",
-    "@solana/web3.js": "^1.98.0",
-    "bs58": "^6.0.0",
-    "dotenv": "^16.4.7",
+    "@solana/spl-token": "^0.4.13",
+    "@solana/web3.js": "^1.98.2",
+    "dotenv": "^16.5.0",
     "ecdsa-secp256r1": "^1.3.3",
     "js-sha256": "^0.11.0"
   },
@@ -32,6 +20,6 @@
     "mocha": "^9.0.3",
     "prettier": "^2.6.2",
     "ts-mocha": "^10.0.0",
-    "typescript": "^5.8.3"
+    "typescript": "^5.7.3"
   }
 }
