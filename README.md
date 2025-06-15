@@ -1,6 +1,6 @@
 # LazorKit 
 
-LazorKit is a collection of open-source packages for building Solana applications, including a smart wallet SDK, portal, and documentation.
+LazorKit is a collection of open-source packages for building Solana applications, including a smart wallet SDK, passkey sharing hub , and documentation.
 
 ## Packages
 
