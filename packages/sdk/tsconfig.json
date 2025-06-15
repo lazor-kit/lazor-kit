@@ -7,7 +7,6 @@
     "declarationMap": true,
     "sourceMap": true,
     "outDir": "./dist",
-    "rootDir": "./src",
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
@@ -22,6 +21,6 @@
     "isolatedModules": true,
     "jsx": "react-jsx"
   },
-  "include": ["src/**/*"],
+  "include": ["*.ts", "core/**/*.ts", "react/**/*.ts", "types/**/*.ts", "utils/**/*.ts"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"]
 }
