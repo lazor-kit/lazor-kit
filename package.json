@@ -29,6 +29,7 @@
     "@coral-xyz/anchor": "^0.31.1",
     "@solana/web3.js": "^1.98.2",
     "eventemitter3": "^5.0.1",
+    "react": "^19.1.0",
     "tsup": "^8.5.0",
     "typescript": "^5.8.3",
     "zustand": "^5.0.5"
@@ -47,6 +48,7 @@
   },
   "devDependencies": {
     "@types/bs58": "^5.0.0",
-    "@types/node": "^24.0.0"
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.1.8"
   }
 }
