@@ -1,6 +1,5 @@
 {
   "name": "@lazorkit/wallet",
-  "version": "1.0.0",
   "description": "Lazorkit | Opensource smart wallet sdk for Solana",
   "author": "Lazorkit",
   "license": "MIT",
@@ -33,7 +32,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/lazor/sdk"
+    "url": "https://github.com/lazor-kit/lazor-kit"
   },
   "devDependencies": {
     "@types/bs58": "^5.0.0",
