@@ -169,11 +169,11 @@ function WalletDemo() {
     // Actions
     connect: () => Promise<void>;            // Connect wallet
     disconnect: () => void;                  // Disconnect wallet
-    signTransaction: (                       // Sign single transaction
-      transaction: Transaction
-    ) => Promise<string>;
+    signTransaction: (                       // Sign single transaction 
+      instruction: TransactionInstruction
+    ) => Promise<Transaction>;
     signAndSendTransaction: (               // Sign and send transaction
-      transaction: Transaction
+      instruction: TransactionInstruction
     ) => Promise<string>;
   } = useWallet();
 
