@@ -1,0 +1,3 @@
+[submodule "packages/anchor"]
+	path = packages/anchor
+	url = https://github.com/lazor-kit/program.git
