@@ -1,4 +1,4 @@
-# Lazorkit Monorepo
+# Lazorkit 
 
 LazorKit is a collection of open-source packages for building Solana applications, including a smart wallet SDK, portal, and documentation.
 
