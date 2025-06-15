@@ -170,10 +170,10 @@ function WalletDemo() {
     connect: () => Promise<void>;            // Connect wallet
     disconnect: () => void;                  // Disconnect wallet
     signTransaction: (                       // Sign single transaction
-      transaction: Transaction
-    ) => Promise<string>;
+      instruction: TransactionInstruction
+    ) => Promise<Transaction>;
     signAndSendTransaction: (               // Sign and send transaction
-      transaction: Transaction
+      instruction: TransactionInstruction
     ) => Promise<string>;
   } = useWallet();
 
