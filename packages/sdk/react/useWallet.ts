@@ -11,7 +11,7 @@ export const useWallet = () => {
   const { sdk, account, isConnecting, isSigning, error } = useLazorkitStore();
 
   /**
-   * Connect to the wallet
+   * Connects to wallet
    * @returns Promise resolving to wallet account information
    */
   const connect = useCallback(async (): Promise<WalletAccount> => {
@@ -29,7 +29,7 @@ export const useWallet = () => {
   }, [sdk]);
 
   /**
-   * Disconnect from the wallet
+   * Disconnects from wallet
    */
   const disconnect = useCallback(async (): Promise<void> => {
     if (!sdk) {
@@ -45,9 +45,9 @@ export const useWallet = () => {
   }, [sdk]);
 
   /**
-   * Sign a transaction instruction
-   * @param instruction Transaction instruction to sign
-   * @returns Promise resolving to transaction signature
+   * Builds and signs a transaction
+   * @param instruction Instruction to include in the transaction
+   * @returns Promise resolving to signed transaction
    */
   const signTransaction = useCallback(
     async (instruction: TransactionInstruction): Promise<Transaction> => {
@@ -60,8 +60,8 @@ export const useWallet = () => {
       }
 
       try {
-        const signature = await sdk.signTransaction(instruction);
-        return signature;
+        const transaction = await sdk.signTransaction(instruction);
+        return transaction;
       } catch (error) {
         console.error('Failed to sign transaction:', error);
         throw error;
@@ -70,6 +70,11 @@ export const useWallet = () => {
     [sdk, account]
   );
 
+  /**
+   * Builds, signs, and sends a transaction
+   * @param instruction Instruction to include in the transaction
+   * @returns Promise resolving to transaction signature
+   */
   const signAndSendTransaction = useCallback(
     async (instruction: TransactionInstruction): Promise<string> => {
       if (!sdk) {

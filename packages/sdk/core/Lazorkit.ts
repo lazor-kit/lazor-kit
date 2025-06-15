@@ -155,8 +155,8 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
   }
 
   /**
-   * Sign transaction with passkey
-   * @param instruction The transaction instruction to sign
+   * Builds and signs a transaction with passkey
+   * @param instruction Instruction to include in the transaction
    * @returns Signed transaction
    */
   async signTransaction(instruction: TransactionInstruction): Promise<Transaction> {
@@ -239,9 +239,9 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
   }
 
   /**
-   * Sign and send transaction
-   * @param instruction The transaction instruction to sign and send
-   * @returns Transaction hash as a string
+   * Builds, signs and sends a transaction
+   * @param instruction Instruction to include in the transaction
+   * @returns Transaction signature
    */
   async signAndSendTransaction(instruction: TransactionInstruction): Promise<string> {
     try {
