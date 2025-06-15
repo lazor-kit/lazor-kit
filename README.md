@@ -1,4 +1,4 @@
-# Lazorkit 
+# LazorKit 
 
 LazorKit is a collection of open-source packages for building Solana applications, including a smart wallet SDK, portal, and documentation.
 
@@ -7,23 +7,51 @@ LazorKit is a collection of open-source packages for building Solana application
 This monorepo contains several packages:
 
 - `@lazorkit/wallet`: Core SDK for Solana wallet functionality
-- `prongram`: Core smart contract framework for Smart Wallet 
+- `program`: Core smart contract framework for smart wallet
 
 ## Getting Started
 
-### Prerequisites
-
-- Node.js >= 18
-- pnpm >= 7
-
 ### Installation
 
+1. Clone the repository:
 ```bash
-# Clone the repository
-git clone https://github.com/lazor/sdk.git
+git clone https://github.com/lazor-kit/lazor-kit.git
+```
 
-# Install dependencies
+2. Install dependencies for the workspace:
+
+```bash
+# Install all dependencies
 pnpm install
+```
+
+3. Start development server for each package:
+
+```bash
+# Start SDK development server
+cd packages/sdk && pnpm dev
+
+# Start Portal development server
+cd packages/portal && pnpm dev
+
+# Start Program development server
+cd packages/program && pnpm dev
+```
+```
+
+### Building
+
+To build each package:
+
+```bash
+# Build SDK
+cd packages/sdk && pnpm build
+
+# Build Portal
+cd packages/portal && pnpm build
+
+# Build Program
+cd packages/program && pnpm build
 ```
 
 ## Development
@@ -32,16 +60,16 @@ pnpm install
 
 ```bash
 # Run development server for SDK
-pnpm --filter sdk dev
+cd packages/sdk && pnpm dev
 
 # Build SDK
-pnpm --filter sdk build
+cd packages/sdk && pnpm build
 
 # Run development server for Portal
-pnpm --filter portal dev
+cd packages/portal && pnpm dev
 
 # Build Portal
-pnpm --filter portal build
+cd packages/portal && pnpm build
 ```
 
 ### Running All Packages
@@ -60,8 +88,8 @@ pnpm dev:all
 lazor-kit/
 ├── packages/
 │   ├── sdk/          # Core SDK package
-│   ├── portal/       # Portal application
-│   ├── program/      # Solana program
+│   ├── portal/       # Passkey sharing hub 
+│   ├── program/      # Core smart contract framework for smart wallet 
 │   └── docs/         # Documentation
 └── package.json      # Root configuration
 ```
