@@ -1,4 +1,4 @@
-# Lazor Kit
+# LazorKit
 
 The open-source smart wallet infrastructure for Solana.
 
