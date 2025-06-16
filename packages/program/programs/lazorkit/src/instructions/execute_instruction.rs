@@ -2,7 +2,7 @@ use anchor_lang::solana_program::hash::hash; // ✅ required import
 
 use anchor_lang::{prelude::*, solana_program::sysvar::instructions::load_instruction_at_checked};
 
-use crate::state::Config;
+use crate::state::{Config, Message};
 use crate::utils::{
     check_whitelist, execute_cpi, get_pda_signer, sighash, transfer_sol_from_pda,
     verify_secp256r1_instruction, PasskeyExt, PdaSigner,
@@ -56,6 +56,7 @@ pub fn execute_instruction(
     let authenticator = &ctx.accounts.smart_wallet_authenticator;
     let payer = &ctx.accounts.payer;
     let payer_balance_before = payer.lamports();
+    let smart_wallet_config = &mut ctx.accounts.smart_wallet_config;
 
     // --- Passkey and wallet validation ---
     require!(
@@ -79,6 +80,19 @@ pub fn execute_instruction(
     let json_str = std::str::from_utf8(&args.client_data_json_raw).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
     let challenge = parsed["challenge"].as_str().unwrap_or_default();
+
+    // let msg = Message::try_from_slice(challenge.as_bytes())?;
+    // // check if timestamp is within 30 seconds
+    // require!(
+    //     msg.timestamp.saturating_sub(30) <= Clock::get()?.unix_timestamp,
+    //     LazorKitError::InvalidTimestamp
+    // );
+
+    // // check if nonce is greater than last nonce
+    // require!(
+    //     msg.nonce == smart_wallet_config.last_nonce,
+    //     LazorKitError::InvalidNonce
+    // );
 
     verify_secp256r1_instruction(
         &secp_ix,
@@ -141,10 +155,9 @@ pub fn execute_instruction(
                 )?;
             } else {
                 // --- Generic CPI with wallet signer ---
-                let wallet = &ctx.accounts.smart_wallet_config;
                 let wallet_signer = PdaSigner {
-                    seeds: [SMART_WALLET_SEED, wallet.id.to_le_bytes().as_ref()].concat(),
-                    bump: wallet.bump,
+                    seeds: [SMART_WALLET_SEED, smart_wallet_config.id.to_le_bytes().as_ref()].concat(),
+                    bump: smart_wallet_config.bump,
                 };
                 execute_cpi(
                     cpi_accounts,
@@ -159,7 +172,6 @@ pub fn execute_instruction(
             let old_rule_program_key = ctx.accounts.authenticator_program.key();
             let new_rule_program_key = ctx.accounts.cpi_program.key();
             let whitelist = &ctx.accounts.whitelist_rule_programs;
-            let wallet_config = &mut ctx.accounts.smart_wallet_config;
             let cpi_data = args
                 .cpi_data
                 .as_ref()
@@ -188,7 +200,7 @@ pub fn execute_instruction(
             );
 
             // --- Update rule program in config ---
-            wallet_config.rule_program = new_rule_program_key;
+            smart_wallet_config.rule_program = new_rule_program_key;
 
             // --- Destroy old rule program ---
             let rule_signer = get_pda_signer(
@@ -253,6 +265,9 @@ pub fn execute_instruction(
             // --- No-op: used for checking authenticator existence ---
         }
     }
+
+    // update last nonce
+    smart_wallet_config.last_nonce += 1;
 
     // --- Reimburse payer if balance changed ---
     let payer_balance_after = payer.lamports().saturating_sub(10000);

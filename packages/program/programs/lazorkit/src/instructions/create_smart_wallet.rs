@@ -12,6 +12,7 @@ use crate::{
 pub fn create_smart_wallet(
     ctx: Context<CreateSmartWallet>,
     passkey_pubkey: [u8; PASSKEY_SIZE],
+    credential_id: Vec<u8>,
     rule_data: Vec<u8>,
 ) -> Result<()> {
     let wallet_data = &mut ctx.accounts.smart_wallet_config;
@@ -21,6 +22,7 @@ pub fn create_smart_wallet(
     wallet_data.set_inner(SmartWalletConfig {
         rule_program: ctx.accounts.config.default_rule_program,
         id: sequence_account.seq,
+        last_nonce: 0,
         bump: ctx.bumps.smart_wallet,
     });
 
@@ -28,6 +30,7 @@ pub fn create_smart_wallet(
     smart_wallet_authenticator.set_inner(SmartWalletAuthenticator {
         passkey_pubkey,
         smart_wallet: ctx.accounts.smart_wallet.key(),
+        credential_id,
         bump: ctx.bumps.smart_wallet_authenticator,
     });
 

@@ -147,3 +147,6 @@ const createSmartWalletTxn = await lazorkitProgram.createSmartWalletTxn(
 4. Push to the branch
 5. Create a new Pull Request
 
+## License
+
+[Add your license information here]

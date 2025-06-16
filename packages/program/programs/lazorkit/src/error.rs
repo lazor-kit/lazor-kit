@@ -27,4 +27,8 @@ pub enum LazorKitError {
 
     #[msg("Invalid rule instruction provided")]
     InvalidRuleInstruction,
+
+    InvalidTimestamp,
+
+    InvalidNonce,
 }
