@@ -1,10 +1,13 @@
-# LazorKit 
+# Lazor Kit
 
-LazorKit is a collection of open-source packages for building Solana applications, including a smart wallet SDK, passkey sharing hub , and documentation.
+The open-source smart wallet infrastructure for Solana.
+
+> [!WARNING]
+>  Do not use in production. This repository is highly experimental.
 
 ## Packages
 
-This monorepo contains several packages:
+This repo contains several packages:
 
 - `@lazorkit/wallet`: Core SDK for Solana wallet functionality
 - `program`: Core smart contract framework for smart wallet
