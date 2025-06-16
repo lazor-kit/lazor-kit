@@ -22,7 +22,7 @@ const COMPRESSED_PUBKEY_SERIALIZED_SIZE = 33;
 const FIELD_SIZE = 32;
 
 const SECP256R1_NATIVE_PROGRAM = new anchor.web3.PublicKey(
-  "Secp256r1SigVerify1111111111111111111111111"
+  'Secp256r1SigVerify1111111111111111111111111'
 );
 
 // Order of secp256r1 curve (same as in Rust code)
@@ -129,7 +129,7 @@ export function createSecp256r1Instruction(
       pubkey.length !== COMPRESSED_PUBKEY_SERIALIZED_SIZE ||
       signature.length !== SIGNATURE_SERIALIZED_SIZE
     ) {
-      throw new Error("Invalid key or signature length");
+      throw new Error('Invalid key or signature length');
     }
 
     // Calculate total size and create instruction data

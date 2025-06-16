@@ -1,5 +1,5 @@
 {
-  "address": "HjgdxTNPqpL59KLRVDwQ28cqam2SxBirnNN5SFAFGHZ8",
+  "address": "5hr5cYAXKnnfTmxMSvqRgMJzjsHUSyPdvqWtU2kQqxPB",
   "metadata": {
     "name": "transfer_limit",
     "version": "0.1.0",
@@ -89,7 +89,7 @@
         },
         {
           "name": "lazorkit",
-          "address": "3CFG1eVGpUVAxMeuFnNw7CbBA1GQ746eQDdMWPoFTAD8"
+          "address": "B8borjSNa14VSvweUEQJPJDCYDCQ96u5p8jqf1Ho2txK"
         },
         {
           "name": "system_program",
@@ -188,7 +188,7 @@
         },
         {
           "name": "lazorkit",
-          "address": "3CFG1eVGpUVAxMeuFnNw7CbBA1GQ746eQDdMWPoFTAD8"
+          "address": "B8borjSNa14VSvweUEQJPJDCYDCQ96u5p8jqf1Ho2txK"
         }
       ],
       "args": [
@@ -364,7 +364,7 @@
         },
         {
           "name": "lazorkit",
-          "address": "3CFG1eVGpUVAxMeuFnNw7CbBA1GQ746eQDdMWPoFTAD8"
+          "address": "B8borjSNa14VSvweUEQJPJDCYDCQ96u5p8jqf1Ho2txK"
         },
         {
           "name": "system_program",
@@ -623,6 +623,13 @@
             "type": "pubkey"
           },
           {
+            "name": "credential_id",
+            "docs": [
+              "The credential ID this authenticator belongs to"
+            ],
+            "type": "bytes"
+          },
+          {
             "name": "bump",
             "docs": [
               "Bump seed for PDA derivation"
@@ -653,6 +660,10 @@
               "Optional rule program that governs this wallet's operations"
             ],
             "type": "pubkey"
+          },
+          {
+            "name": "last_nonce",
+            "type": "u64"
           },
           {
             "name": "bump",

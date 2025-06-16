@@ -1,5 +1,5 @@
 {
-  "address": "3CFG1eVGpUVAxMeuFnNw7CbBA1GQ746eQDdMWPoFTAD8",
+  "address": "B8borjSNa14VSvweUEQJPJDCYDCQ96u5p8jqf1Ho2txK",
   "metadata": {
     "name": "lazorkit",
     "version": "0.1.0",
@@ -210,6 +210,10 @@
           }
         },
         {
+          "name": "credential_id",
+          "type": "bytes"
+        },
+        {
           "name": "rule_data",
           "type": "bytes"
         }
@@ -386,6 +390,41 @@
           "optional": true,
           "pda": {
             "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  109,
+                  97,
+                  114,
+                  116,
+                  95,
+                  119,
+                  97,
+                  108,
+                  108,
+                  101,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  101,
+                  110,
+                  116,
+                  105,
+                  99,
+                  97,
+                  116,
+                  111,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "smart_wallet"
+              },
               {
                 "kind": "arg",
                 "path": "args.create_new_authenticator.unwrap_or([0;\n33]).to_hashed_bytes(smart_wallet"
@@ -706,6 +745,14 @@
       "code": 6009,
       "name": "InvalidRuleInstruction",
       "msg": "Invalid rule instruction provided"
+    },
+    {
+      "code": 6010,
+      "name": "InvalidTimestamp"
+    },
+    {
+      "code": 6011,
+      "name": "InvalidNonce"
     }
   ],
   "types": [
@@ -793,7 +840,11 @@
             "type": "bytes"
           },
           {
-            "name": "message",
+            "name": "client_data_json_raw",
+            "type": "bytes"
+          },
+          {
+            "name": "authenticator_data_raw",
             "type": "bytes"
           },
           {
@@ -868,6 +919,13 @@
             "type": "pubkey"
           },
           {
+            "name": "credential_id",
+            "docs": [
+              "The credential ID this authenticator belongs to"
+            ],
+            "type": "bytes"
+          },
+          {
             "name": "bump",
             "docs": [
               "Bump seed for PDA derivation"
@@ -898,6 +956,10 @@
               "Optional rule program that governs this wallet's operations"
             ],
             "type": "pubkey"
+          },
+          {
+            "name": "last_nonce",
+            "type": "u64"
           },
           {
             "name": "bump",

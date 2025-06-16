@@ -5,7 +5,7 @@
  * IDL can be found at `target/idl/transfer_limit.json`.
  */
 export type TransferLimit = {
-  "address": "HjgdxTNPqpL59KLRVDwQ28cqam2SxBirnNN5SFAFGHZ8",
+  "address": "5hr5cYAXKnnfTmxMSvqRgMJzjsHUSyPdvqWtU2kQqxPB",
   "metadata": {
     "name": "transferLimit",
     "version": "0.1.0",
@@ -95,7 +95,7 @@ export type TransferLimit = {
         },
         {
           "name": "lazorkit",
-          "address": "3CFG1eVGpUVAxMeuFnNw7CbBA1GQ746eQDdMWPoFTAD8"
+          "address": "B8borjSNa14VSvweUEQJPJDCYDCQ96u5p8jqf1Ho2txK"
         },
         {
           "name": "systemProgram",
@@ -194,7 +194,7 @@ export type TransferLimit = {
         },
         {
           "name": "lazorkit",
-          "address": "3rbtPcL1S88YU67v8u7avBEP6YriswGtaRvuj7z2KLUY"
+          "address": "B8borjSNa14VSvweUEQJPJDCYDCQ96u5p8jqf1Ho2txK"
         }
       ],
       "args": [
@@ -370,7 +370,7 @@ export type TransferLimit = {
         },
         {
           "name": "lazorkit",
-          "address": "3CFG1eVGpUVAxMeuFnNw7CbBA1GQ746eQDdMWPoFTAD8"
+          "address": "B8borjSNa14VSvweUEQJPJDCYDCQ96u5p8jqf1Ho2txK"
         },
         {
           "name": "systemProgram",
@@ -629,6 +629,13 @@ export type TransferLimit = {
             "type": "pubkey"
           },
           {
+            "name": "credentialId",
+            "docs": [
+              "The credential ID this authenticator belongs to"
+            ],
+            "type": "bytes"
+          },
+          {
             "name": "bump",
             "docs": [
               "Bump seed for PDA derivation"
@@ -659,6 +666,10 @@ export type TransferLimit = {
               "Optional rule program that governs this wallet's operations"
             ],
             "type": "pubkey"
+          },
+          {
+            "name": "lastNonce",
+            "type": "u64"
           },
           {
             "name": "bump",

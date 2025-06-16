@@ -5,7 +5,7 @@
  * IDL can be found at `target/idl/lazorkit.json`.
  */
 export type Lazorkit = {
-  "address": "3CFG1eVGpUVAxMeuFnNw7CbBA1GQ746eQDdMWPoFTAD8",
+  "address": "B8borjSNa14VSvweUEQJPJDCYDCQ96u5p8jqf1Ho2txK",
   "metadata": {
     "name": "lazorkit",
     "version": "0.1.0",
@@ -216,6 +216,10 @@ export type Lazorkit = {
           }
         },
         {
+          "name": "credentialId",
+          "type": "bytes"
+        },
+        {
           "name": "ruleData",
           "type": "bytes"
         }
@@ -392,6 +396,41 @@ export type Lazorkit = {
           "optional": true,
           "pda": {
             "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  109,
+                  97,
+                  114,
+                  116,
+                  95,
+                  119,
+                  97,
+                  108,
+                  108,
+                  101,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  101,
+                  110,
+                  116,
+                  105,
+                  99,
+                  97,
+                  116,
+                  111,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "smartWallet"
+              },
               {
                 "kind": "arg",
                 "path": "args.create_new_authenticator.unwrap_or([0;\n33]).to_hashed_bytes(smart_wallet"
@@ -712,6 +751,14 @@ export type Lazorkit = {
       "code": 6009,
       "name": "invalidRuleInstruction",
       "msg": "Invalid rule instruction provided"
+    },
+    {
+      "code": 6010,
+      "name": "invalidTimestamp"
+    },
+    {
+      "code": 6011,
+      "name": "invalidNonce"
     }
   ],
   "types": [
@@ -799,7 +846,11 @@ export type Lazorkit = {
             "type": "bytes"
           },
           {
-            "name": "message",
+            "name": "clientDataJsonRaw",
+            "type": "bytes"
+          },
+          {
+            "name": "authenticatorDataRaw",
             "type": "bytes"
           },
           {
@@ -874,6 +925,13 @@ export type Lazorkit = {
             "type": "pubkey"
           },
           {
+            "name": "credentialId",
+            "docs": [
+              "The credential ID this authenticator belongs to"
+            ],
+            "type": "bytes"
+          },
+          {
             "name": "bump",
             "docs": [
               "Bump seed for PDA derivation"
@@ -904,6 +962,10 @@ export type Lazorkit = {
               "Optional rule program that governs this wallet's operations"
             ],
             "type": "pubkey"
+          },
+          {
+            "name": "lastNonce",
+            "type": "u64"
           },
           {
             "name": "bump",
