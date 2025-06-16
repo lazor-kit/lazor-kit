@@ -1,3 +1,8 @@
+packages:
+  - packages/sdk
+  - packages/program
+  - packages/portal
+
 ignoredBuiltDependencies:
   - bufferutil
   - esbuild

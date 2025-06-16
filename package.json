@@ -4,33 +4,24 @@
   "description": "Lazorkit | Opensource smart wallet sdk for Solana",
   "author": "Lazorkit",
   "license": "MIT",
-  "main": "./dist/index.js",
-  "module": "./dist/index.mjs",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "require": "./dist/index.js",
-      "import": "./dist/index.mjs",
-      "types": "./dist/index.d.ts"
-    }
-  },
-  "files": [
-    "dist",
-    "README.md"
+  "private": true,
+  "workspaces": [
+    "packages/*"
   ],
   "scripts": {
-    "build": "tsup",
-    "dev": "tsup --watch",
-    "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run clean && npm run build"
+    "build": "pnpm -r build",
+    "dev": "pnpm -r dev",
+    "clean": "pnpm -r clean",
+    "typecheck": "pnpm -r typecheck",
+    "prepublishOnly": "pnpm -r prepublishOnly"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.31.1",
     "@solana/web3.js": "^1.98.2",
     "eventemitter3": "^5.0.1",
     "tsup": "^8.5.0",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "zustand": "^5.0.5"
   },
   "keywords": [
     "wallet",
@@ -45,6 +36,7 @@
     "url": "https://github.com/lazor/sdk"
   },
   "devDependencies": {
-    "@types/bs58": "^5.0.0"
+    "@types/bs58": "^5.0.0",
+    "@types/node": "^24.0.0"
   }
 }
