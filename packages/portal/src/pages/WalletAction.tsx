@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "../components/ui/card"
 import { Credential, getStoredCredentials, saveCredential } from "../utils/storage"
-import { createPasskey, authenticateWithPasskey, signMessage } from "../utils/webauthn"
+import { authenticateWithPasskey, signMessage, signIn, signUp } from "../utils/webauthn"
 import { detectPlatform, applyPlatformOptimizations, PlatformInfo } from "../utils/platform-detector"
 import { quickPlatformTest } from "../utils/platform-tester"
 import { useRedirect } from '../hooks/useRedirect'
@@ -278,29 +278,26 @@ const detectEnvironment = (): "browser" | "expo" | "unknown" => {
     }
   }
 
-  // Handle universal connect action
+  // Handle universal connect action - just prepares the environment for authentication
   const handleUniversalConnect = async (environment: string = 'browser', expoParam?: string) => {
-    try {
-      setIsLoading(true)
-      setStatus({ message: `Connecting via ${environment}...`, type: 'info' })
-      
-      const authData = await authenticateWithPasskey(displayStatus)
-      
-      const responseData = {
-        ...authData,
-        expo: expoParam || null,
-        timestamp: new Date().toISOString(),
-        connectionType: 'universal',
-        environment,
-        platform: environment === 'expo' ? 'mobile' : 'web'
-      }
-
-      await handleSuccess(responseData, `Connected successfully via ${environment}!`)
-      
-    } catch (err) {
-      handleError(`Failed to authenticate via ${environment}`, err, false)
-    } finally {
-      setIsLoading(false)
+    // Just set the environment parameters and prepare UI
+    setCurrentEnvironment(environment)
+    setCurrentExpoParam(expoParam || null)
+    
+    const credentialId = localStorage.getItem("CREDENTIAL_ID")
+    
+    if (!credentialId) {
+      // If no credential ID exists, show appropriate message for sign in/sign up
+      setStatus({ 
+        message: 'No passkey found. Please sign in with an existing passkey or create a new one.', 
+        type: 'info' 
+      })
+    } else {
+      // If credential exists, show message prompting user to click Sign In
+      setStatus({ 
+        message: 'Passkey found. Please click Sign In to connect.', 
+        type: 'info' 
+      })
     }
   }
 
@@ -333,86 +330,160 @@ const detectEnvironment = (): "browser" | "expo" | "unknown" => {
     }
   }
 
-  // Handle create passkey action
-  const handleCreatePasskey = async () => {
-    setIsLoading(true)
-    setStatus({ message: 'Creating passkey...', type: 'info' })
-
-    try {
-      const credential = await createPasskey(displayStatus)
-      await saveCredential(credential.credentialId, credential.publickey)
-      const updatedCreds = await getStoredCredentials()
-      setCredentials(updatedCreds)
-      setStatus({ message: 'Passkey created successfully', type: 'success' })
-
-    } catch (error) {
-      console.error('❌ Create passkey error:', error)
-      setStatus({ 
-        message: error instanceof Error ? error.message : 'Failed to create passkey', 
-        type: 'error' 
-      })
-    }
-
-    setIsLoading(false)
-  }
+  // This was previously handleCreatePasskey, now handled directly by handleSignUp
 
   const isCustomTabsOpen = () => {
     return platformInfo?.type === 'android' && platformInfo.browser === 'chrome'
   }
 
   const checkWebAuthnSupport = () => {
-    return typeof window !== 'undefined' && !!window.PublicKeyCredential
+    return typeof window !== 'undefined' && !!(window.PublicKeyCredential)
   }
 
-  // Render loading state
-  if (isLoading) {
-    return <LoadingState message={status.message || "Processing..."} />
+  // Loading state will be handled in the main return statement
+
+  // Function to handle sign in option
+  const handleSignIn = async (environment: string = 'browser', expoParam?: string) => {
+    try {
+      setIsLoading(true)
+      setStatus({ message: 'Signing in with passkey...', type: 'info' })
+      
+      const signInData = await signIn(displayStatus)
+      
+      // Save credential ID to local storage
+      // Note: We're saving with empty public key for now
+      await saveCredential(signInData.credentialId, '')
+      const updatedCreds = await getStoredCredentials()
+      setCredentials(updatedCreds)
+      
+      // Create response data and proceed to success
+      const responseData = {
+        credentialId: signInData.credentialId,
+        expo: expoParam || null,
+        timestamp: new Date().toISOString(),
+        connectionType: 'universal',
+        environment,
+        platform: environment === 'expo' ? 'mobile' : 'web'
+      }
+
+      await handleSuccess(responseData, `Signed in successfully via ${environment}!`)
+    } catch (err) {
+      handleError('Failed to sign in', err, false)
+      setIsLoading(false)
+    }
   }
+  
+  // Function to handle sign up option
+  const handleSignUp = async (environment: string = 'browser', expoParam?: string) => {
+    try {
+      setIsLoading(true)
+      setStatus({ message: 'Creating new passkey...', type: 'info' })
+      
+      const signUpData = await signUp(displayStatus)
+      
+      // Save credential ID and public key to local storage
+      await saveCredential(signUpData.credentialId, signUpData.publickey)
+      const updatedCreds = await getStoredCredentials()
+      setCredentials(updatedCreds)
+      
+      const responseData = {
+        credentialId: signUpData.credentialId,
+        publickey: signUpData.publickey,
+        expo: expoParam || null,
+        timestamp: new Date().toISOString(),
+        connectionType: 'universal',
+        environment,
+        platform: environment === 'expo' ? 'mobile' : 'web',
+        status: signUpData.status
+      }
+      
+      await handleSuccess(responseData, `New account created successfully!`)
+    } catch (err) {
+      handleError('Failed to create new account', err, false)
+      setIsLoading(false)
+    }
+  }
+  
+  // Function to authenticate with existing passkey
+  const handleAuthenticate = async (environment: string = 'browser', expoParam?: string) => {
+    try {
+      setIsLoading(true)
+      setStatus({ message: 'Authenticating with passkey...', type: 'info' })
+      
+      // Use authenticateWithPasskey for existing credentials
+      const authData = await authenticateWithPasskey(displayStatus)
+      
+      const responseData = {
+        ...authData,
+        expo: expoParam || null,
+        timestamp: new Date().toISOString(),
+        connectionType: 'universal',
+        environment,
+        platform: environment === 'expo' ? 'mobile' : 'web'
+      }
+
+      await handleSuccess(responseData, `Connected successfully via ${environment}!`)
+    } catch (err) {
+      handleError(`Failed to authenticate`, err, false)
+      setIsLoading(false)
+    }
+  }
+  
+  // Store environment and expoParam for Sign In/Sign Up handlers
+  const [currentEnvironment, setCurrentEnvironment] = useState('browser')
+  const [currentExpoParam, setCurrentExpoParam] = useState<string | null>(null)
 
   // Render credential management UI
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4 space-y-4">
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <CardTitle className="flex items-center justify-between">
-            <span>Wallet Actions</span>
-            {credentials.length > 0 && (
-              <span className="text-sm text-muted-foreground">
-                {credentials.length} Passkey{credentials.length !== 1 ? 's' : ''}
-              </span>
-            )}
-          </CardTitle>
-          <CardDescription>
-            Manage your wallet credentials and perform actions
-          </CardDescription>
-        </CardHeader>
+      {isLoading ? (
+        <LoadingState message={status.message || "Processing..."} />
+      ) : (
+        <Card className="w-full max-w-md">
+          <CardHeader>
+            <CardTitle className="flex items-center justify-between">
+              <span>Wallet Actions</span>
+              {credentials.length > 0 && (
+                <span className="text-sm text-muted-foreground">
+                  {credentials.length} Passkey{credentials.length !== 1 ? 's' : ''}
+                </span>
+              )}
+            </CardTitle>
+            <CardDescription>
+              Manage your wallet credentials and perform actions
+            </CardDescription>
+          </CardHeader>
 
-        <CardContent className="space-y-4">
-          <StatusAlert status={status} />
-          
-          <PlatformWarnings 
-            isCustomTabs={isCustomTabsOpen()} 
-            webAuthnSupport={{
-              supported: checkWebAuthnSupport(),
-              reason: "Your browser does not support WebAuthn. Please use a modern browser that supports passkeys."
-            }}
-            platformInfo={platformInfo}
-          />
+          <CardContent className="space-y-4">
+            <StatusAlert status={status} />
+            
+            <PlatformWarnings 
+              isCustomTabs={isCustomTabsOpen()} 
+              webAuthnSupport={{
+                supported: checkWebAuthnSupport(),
+                reason: "Your browser does not support WebAuthn. Please use a modern browser that supports passkeys."
+              }}
+              platformInfo={platformInfo}
+            />
 
-          <CredentialList credentials={credentials} />
-        </CardContent>
+            <CredentialList credentials={credentials} />
+          </CardContent>
 
-        <CardFooter className="flex flex-col space-y-2">
-          <ActionButtons 
-            hasCredentials={credentials.length > 0}
-            isLoading={isLoading}
-            hasMessage={!!message}
-            onCreatePasskey={handleCreatePasskey}
-            onConnect={() => handleUniversalConnect()}
-            onSign={handleSign}
-          />
-        </CardFooter>
-      </Card>
+          <CardFooter className="flex flex-col space-y-2">
+            <ActionButtons 
+              hasCredentials={credentials.length > 0}
+              isLoading={isLoading}
+              hasMessage={!!message}
+              onSign={handleSign}
+              onSignIn={() => credentials.length > 0 
+                ? handleAuthenticate(currentEnvironment, currentExpoParam || undefined)
+                : handleSignIn(currentEnvironment, currentExpoParam || undefined)
+              }
+              onSignUp={() => handleSignUp(currentEnvironment, currentExpoParam || undefined)}
+            />
+          </CardFooter>
+        </Card>
+      )}
     </div>
   )
 }
