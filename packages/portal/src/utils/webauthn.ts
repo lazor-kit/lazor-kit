@@ -95,14 +95,13 @@ function handleWebAuthnError(error: unknown, operation: string, displayStatus: (
 }
 
 // Main WebAuthn Functions
-export async function createPasskey(
+export async function signUp(
   displayStatus: (message: string, type: string) => void
 ): Promise<WalletResult> {
   try {
     const { isCustomTabs, options } = getWebAuthnEnvironment();
     const authenticatorSelection = buildAuthenticatorSelection(options);
     const userData = generateRandomChallenge();
-    const userName = `user_${Date.now()}`;
 
     displayStatus(
       isCustomTabs ? "Creating passkey for Custom Tabs..." : "Creating passkey...", 
@@ -114,19 +113,27 @@ export async function createPasskey(
       authenticatorSelection,
       timeout: options.timeout
     });
-
+    console.log(window.location.hostname)
     const credential = (await navigator.credentials.create({
       publicKey: {
         challenge: DEFAULT_CHALLENGE,
-        rp: { name: "test" },
-        user: { id: userData, name: userName, displayName: userName },
+        rp: {
+           name: "Passkey Sharing Hub",
+           id: window.location.hostname
+        },
+        user: { id: userData, name: "Passkey Sharing Hub", displayName: "Passkey Sharing Hub" },
         pubKeyCredParams: [
-          { type: "public-key", alg: -7 },   // ES256
+          { type: "public-key", alg: -7 },  
           { type: "public-key", alg: -257 }, // RS256
         ],
-        authenticatorSelection,
-        timeout: options.timeout,
-        attestation: options.attestation
+        authenticatorSelection: {
+          authenticatorAttachment: "platform",
+          residentKey: "required",         
+          requireResidentKey: true,        
+          userVerification: "required"    
+        },
+        attestation: "none",
+        timeout: 60000
       },
     })) as PublicKeyCredential;
 
@@ -164,7 +171,17 @@ export async function authenticateWithPasskey(
     if (!credentialId || !publickey) {
       throw new Error("No stored credentials found. Please create a passkey first.");
     }
-
+    const credential = (await navigator.credentials.get({
+      publicKey: {
+        challenge: DEFAULT_CHALLENGE,
+        allowCredentials: [{
+          type: "public-key",
+          id: new Uint8Array(Buffer.from(credentialId, "base64"))
+        }],
+      },
+    })) as PublicKeyCredential;
+    const response = credential.response as AuthenticatorAssertionResponse;
+    console.log(response)
     displayStatus("Wallet connected successfully!", "success");
     return { publickey, credentialId };
 
@@ -221,4 +238,23 @@ export async function signMessage(
   }
 }
 
-
+export async function signIn(
+  displayStatus: (message: string, type: string) => void
+): Promise<{ credentialId: string }> {
+  try {
+    const credential = (await navigator.credentials.get({
+      publicKey: {
+        challenge: DEFAULT_CHALLENGE,
+        userVerification: "required",
+        timeout: DEFAULT_TIMEOUT
+      }
+    })) as PublicKeyCredential;
+    
+    if (!credential) throw new Error("No key returned");
+    const credentialId = Buffer.from(credential.rawId).toString("base64");
+    return { credentialId };
+    
+  } catch (error) {
+    return handleWebAuthnError(error, "Passkey creation", displayStatus);
+  }
+}

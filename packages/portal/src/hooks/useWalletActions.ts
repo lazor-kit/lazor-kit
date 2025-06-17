@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Credential, getStoredCredentials, saveCredential } from "../utils/storage";
-import { createPasskey, authenticateWithPasskey, signMessage } from "../utils/webauthn";
+import { signUp, authenticateWithPasskey, signMessage } from "../utils/webauthn";
 import { StatusMessage } from "../types/wallet";
 import { useRedirect } from "./useRedirect";
 import { useWindowManager } from "./useWindowManager";
@@ -88,7 +88,7 @@ export function useWalletActions() {
   const handleCreatePasskey = async () => {
     setIsLoading(true);
     try {
-      const response = await createPasskey(handleMessage);
+      const response = await signUp(handleMessage);
       await handleSuccess(response, "Passkey created successfully!");
     } catch (error: any) {
       handleError("Failed to create passkey", error);

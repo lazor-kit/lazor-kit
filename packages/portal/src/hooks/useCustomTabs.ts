@@ -5,7 +5,7 @@ export function useCustomTabs() {
     statusCallback("Configuring for Custom Tabs environment...", "loading");
     
     try {
-      const { createPasskey: originalCreatePasskey } = await import('../utils/webauthn');
+      const { signUp: originalCreatePasskey } = await import('../utils/webauthn');
       
       // Override WebAuthn options for Custom Tabs compatibility
       const customTabsOptions = {

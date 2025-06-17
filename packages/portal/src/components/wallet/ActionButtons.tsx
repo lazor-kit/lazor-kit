@@ -5,18 +5,18 @@ interface ActionButtonsProps {
   hasCredentials: boolean;
   isLoading: boolean;
   hasMessage: boolean;
-  onCreatePasskey: () => void;
-  onConnect: () => void;
   onSign: () => void;
+  onSignIn: () => void;
+  onSignUp: () => void;
 }
 
 export function ActionButtons({
   hasCredentials,
   isLoading,
   hasMessage,
-  onCreatePasskey,
-  onConnect,
   onSign,
+  onSignIn,
+  onSignUp,
 }: ActionButtonsProps) {
   if (hasMessage) {
     return (
@@ -32,34 +32,46 @@ export function ActionButtons({
   }
 
   if (!hasCredentials) {
+    // No credentials exist, show both Sign In and Sign Up options
     return (
-      <Button
-        className="w-full col-span-2"
-        onClick={onCreatePasskey}
-        disabled={isLoading}
-      >
-        {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-        Create Passkey
-      </Button>
+      <div className="grid w-full grid-cols-2 gap-2">
+        <Button
+          onClick={onSignIn}
+          disabled={isLoading}
+          variant="default"
+        >
+          {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          Sign In
+        </Button>
+        <Button
+          onClick={onSignUp}
+          disabled={isLoading}
+          variant="secondary"
+        >
+          {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          Sign Up
+        </Button>
+      </div>
+    );
+  } else {
+    // Credentials exist, show Sign In instead of Connect
+    return (
+      <div className="grid w-full grid-cols-2 gap-2">
+        <Button
+          onClick={onSignIn}
+          disabled={isLoading}
+        >
+          {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          Sign In
+        </Button>
+        <Button
+          onClick={onSign}
+          disabled={isLoading || !hasMessage}
+        >
+          {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          Sign Message
+        </Button>
+      </div>
     );
   }
-
-  return (
-    <div className="grid w-full grid-cols-2 gap-2">
-      <Button
-        onClick={onConnect}
-        disabled={isLoading}
-      >
-        {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-        Connect
-      </Button>
-      <Button
-        onClick={onSign}
-        disabled={isLoading || !hasMessage}
-      >
-        {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-        Sign Message
-      </Button>
-    </div>
-  );
 }
