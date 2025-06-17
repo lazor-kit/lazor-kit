@@ -1,6 +1,6 @@
 {
   "name": "@lazorkit/wallet",
-  "version": "1.0.0",
+  "version": "1.3.5",
   "description": "Lazorkit Wallet SDK for Solana",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
