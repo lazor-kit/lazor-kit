@@ -1,5 +1,5 @@
 {
-  "address": "B8borjSNa14VSvweUEQJPJDCYDCQ96u5p8jqf1Ho2txK",
+  "address": "6Jh4kA4rkZquv9XofKqgbyrRcTDF19uM5HL4xyh6gaSo",
   "metadata": {
     "name": "lazorkit",
     "version": "0.1.0",
@@ -167,6 +167,41 @@
           "pda": {
             "seeds": [
               {
+                "kind": "const",
+                "value": [
+                  115,
+                  109,
+                  97,
+                  114,
+                  116,
+                  95,
+                  119,
+                  97,
+                  108,
+                  108,
+                  101,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  101,
+                  110,
+                  116,
+                  105,
+                  99,
+                  97,
+                  116,
+                  111,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "smart_wallet"
+              },
+              {
                 "kind": "arg",
                 "path": "passkey_pubkey.to_hashed_bytes(smart_wallet"
               }
@@ -328,6 +363,41 @@
           "name": "smart_wallet_authenticator",
           "pda": {
             "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  109,
+                  97,
+                  114,
+                  116,
+                  95,
+                  119,
+                  97,
+                  108,
+                  108,
+                  101,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  101,
+                  110,
+                  116,
+                  105,
+                  99,
+                  97,
+                  116,
+                  111,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "smart_wallet"
+              },
               {
                 "kind": "arg",
                 "path": "args.passkey_pubkey.to_hashed_bytes(smart_wallet"
@@ -576,9 +646,30 @@
       ],
       "accounts": [
         {
-          "name": "signer",
+          "name": "authority",
           "writable": true,
-          "signer": true
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "whitelist_rule_programs",
@@ -615,10 +706,6 @@
               }
             ]
           }
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
         }
       ],
       "args": [
@@ -784,6 +871,10 @@
       "type": {
         "kind": "struct",
         "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
           {
             "name": "create_smart_wallet_fee",
             "type": "u64"
