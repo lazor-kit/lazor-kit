@@ -176,3 +176,25 @@ export function createSecp256r1Instruction(
     throw new Error(`Failed to create secp256r1 instruction: ${error}`);
   }
 }
+
+/**
+ * Convenience helper: convert a {@link anchor.web3.TransactionInstruction}'s `keys`
+ * array into the `AccountMeta` objects Anchor expects for
+ * `remainingAccounts(...)`.
+ *
+ * The mapping uses the original `isWritable` flag from the instruction and
+ * marks the account as a signer if either:
+ *  • the instruction already flagged it as signer, or
+ *  • the account equals the provided {@link payer} (the wallet paying for the
+ *    transaction).
+ */
+export function instructionToAccountMetas(
+  ix: anchor.web3.TransactionInstruction,
+  payer: anchor.web3.PublicKey
+): anchor.web3.AccountMeta[] {
+  return ix.keys.map((k) => ({
+    pubkey: k.pubkey,
+    isWritable: k.isWritable,
+    isSigner: k.pubkey.equals(payer),
+  }));
+}

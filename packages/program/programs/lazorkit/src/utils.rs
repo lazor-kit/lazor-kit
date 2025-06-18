@@ -13,10 +13,17 @@ const SECP_PUBKEY_SIZE: u16 = 33;
 const SECP_SIGNATURE_SIZE: u16 = 64;
 const SECP_HEADER_TOTAL: usize = 16;
 
-/// Represents a Program Derived Address signer with its seeds and bump
-#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+/// Convenience wrapper to pass PDA seeds & bump into [`execute_cpi`].
+///
+/// Anchor expects PDA seeds as `&[&[u8]]` when calling `invoke_signed`.  Generating that slice of
+/// byte-slices at every call-site is error-prone, so we hide the details behind this struct.  The
+/// helper converts the `Vec<Vec<u8>>` into the required `&[&[u8]]` on the stack just before the
+/// CPI.
+#[derive(Clone)]
 pub struct PdaSigner {
-    pub seeds: Vec<u8>,
+    /// PDA derivation seeds **without** the trailing bump.
+    pub seeds: Vec<Vec<u8>>,
+    /// The bump associated with the PDA.
     pub bump: u8,
 }
 
@@ -26,18 +33,33 @@ pub fn slice_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x == y)
 }
 
-/// Execute a Cross-Program Invocation (CPI) with optional PDA signing
+/// Execute a Cross-Program Invocation (CPI).
+///
+/// * `accounts` – slice of `AccountInfo` that will be forwarded to the target program.
+/// * `data` – raw instruction data **as a slice**; passing a slice removes the need for the
+///   caller to allocate a new `Vec<u8>` every time a CPI is performed.  A single allocation is
+///   still required internally when constructing the `Instruction`, but this change avoids an
+///   additional clone at every call-site.
+/// * `program` – account info of the program to invoke.
+/// * `signer` – optional PDA signer information.  When provided, the seeds are appended with the
+///   bump and the CPI is invoked with `invoke_signed`.
 pub fn execute_cpi(
     accounts: &[AccountInfo],
-    data: Vec<u8>,
+    data: &[u8],
     program: &AccountInfo,
     signer: Option<PdaSigner>,
 ) -> Result<()> {
-    let ix = create_cpi_instruction(accounts, data, program, &signer);
+    // Allocate a single Vec<u8> for the instruction – unavoidable because the SDK expects owned
+    // data.  This keeps the allocation inside the helper and eliminates clones at the call-site.
+    let ix = create_cpi_instruction(accounts, data.to_vec(), program, &signer);
+
     match signer {
         Some(s) => {
-            let seeds = [s.seeds.as_slice(), &[s.bump]];
-            invoke_signed(&ix, accounts, &[&seeds])
+            // Build seed slice **once** to avoid repeated heap allocations.
+            let mut seed_slices: Vec<&[u8]> = s.seeds.iter().map(|s| s.as_slice()).collect();
+            let bump_slice = [s.bump];
+            seed_slices.push(&bump_slice);
+            invoke_signed(&ix, accounts, &[&seed_slices])
         }
         None => invoke(&ix, accounts),
     }
@@ -51,15 +73,18 @@ fn create_cpi_instruction(
     program: &AccountInfo,
     pda_signer: &Option<PdaSigner>,
 ) -> Instruction {
+    let pda_pubkey = pda_signer.as_ref().map(|pda| {
+        let seed_slices: Vec<&[u8]> = pda.seeds.iter().map(|s| s.as_slice()).collect();
+        Pubkey::find_program_address(&seed_slices, &ID).0
+    });
+
     Instruction {
         program_id: program.key(),
         accounts: accounts
             .iter()
             .map(|acc| {
-                let is_signer = if let Some(pda) = pda_signer {
-                    let seeds = &[pda.seeds.as_slice()][..];
-                    let (pda_pubkey, _) = Pubkey::find_program_address(seeds, &ID);
-                    acc.is_signer || *acc.key == pda_pubkey
+                let is_signer = if let Some(pda_key) = pda_pubkey {
+                    acc.is_signer || *acc.key == pda_key
                 } else {
                     acc.is_signer
                 };
@@ -85,7 +110,7 @@ pub fn verify_secp256r1_instruction(
     let expected_len =
         (SECP_DATA_START + SECP_PUBKEY_SIZE + SECP_SIGNATURE_SIZE) as usize + msg.len();
     if ix.program_id != SECP256R1_ID || !ix.accounts.is_empty() || ix.data.len() != expected_len {
-        return Err(LazorKitError::InvalidLengthForVerification.into());
+        return Err(LazorKitError::Secp256r1InvalidLength.into());
     }
     verify_secp256r1_data(&ix.data, pubkey, msg, sig)
 }
@@ -101,11 +126,11 @@ fn verify_secp256r1_data(
     let offsets = calculate_secp_offsets(msg_len);
 
     if !verify_secp_header(data, &offsets) {
-        return Err(LazorKitError::VerifyHeaderMismatchError.into());
+        return Err(LazorKitError::Secp256r1HeaderMismatch.into());
     }
 
     if !verify_secp_data(data, &public_key, &signature, &message) {
-        return Err(LazorKitError::VerifyDataMismatchError.into());
+        return Err(LazorKitError::Secp256r1DataMismatch.into());
     }
 
     Ok(())
@@ -171,6 +196,10 @@ impl PasskeyExt for [u8; SECP_PUBKEY_SIZE as usize] {
 /// Transfer SOL from a PDA-owned account
 #[inline]
 pub fn transfer_sol_from_pda(from: &AccountInfo, to: &AccountInfo, amount: u64) -> Result<()> {
+    // Ensure the 'from' account is owned by this program
+    if *from.owner != ID {
+        return Err(ProgramError::IllegalOwner.into());
+    }
     // Debit from source account
     **from.try_borrow_mut_lamports()? -= amount;
     // Credit to destination account
@@ -196,13 +225,17 @@ pub fn get_account_slice<'a>(
 ) -> Result<&'a [AccountInfo<'a>]> {
     accounts
         .get(start as usize..(start as usize + len as usize))
-        .ok_or(crate::error::LazorKitError::InvalidAccountInput.into())
+        .ok_or(crate::error::LazorKitError::AccountSliceOutOfBounds.into())
 }
 
 /// Helper: Create a PDA signer struct
 pub fn get_pda_signer(passkey: &[u8; 33], wallet: Pubkey, bump: u8) -> PdaSigner {
     PdaSigner {
-        seeds: passkey.to_hashed_bytes(wallet).to_vec(),
+        seeds: vec![
+            crate::state::SmartWalletAuthenticator::PREFIX_SEED.to_vec(),
+            wallet.to_bytes().to_vec(),
+            passkey.to_hashed_bytes(wallet).to_vec(),
+        ],
         bump,
     }
 }
@@ -214,7 +247,7 @@ pub fn check_whitelist(
 ) -> Result<()> {
     require!(
         whitelist.list.contains(program),
-        crate::error::LazorKitError::InvalidRuleProgram
+        crate::error::LazorKitError::RuleProgramNotWhitelisted
     );
     Ok(())
 }

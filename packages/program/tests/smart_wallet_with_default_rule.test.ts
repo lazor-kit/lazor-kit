@@ -7,7 +7,7 @@ import {
   sendAndConfirmTransaction,
 } from '@solana/web3.js';
 import * as dotenv from 'dotenv';
-import { bs58 } from '@coral-xyz/anchor/dist/cjs/utils/bytes';
+import { base64, bs58 } from '@coral-xyz/anchor/dist/cjs/utils/bytes';
 import { LazorKitProgram } from '../sdk/lazor-kit';
 import { DefaultRuleProgram } from '../sdk/default-rule-program';
 import { createNewMint, mintTokenTo } from './utils';
@@ -88,7 +88,8 @@ describe('Test smart wallet with default rule', () => {
     const createSmartWalletTxn = await lazorkitProgram.createSmartWalletTxn(
       pubkey,
       initRuleIns,
-      payer.publicKey
+      payer.publicKey,
+      base64.encode(Buffer.from('test'))
     );
 
     const sig = await sendAndConfirmTransaction(

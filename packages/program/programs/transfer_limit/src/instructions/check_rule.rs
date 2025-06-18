@@ -20,34 +20,51 @@ pub fn check_rule(
     let member = &ctx.accounts.member;
     let rule_data = &ctx.accounts.rule_data;
 
-    // check if admin or not initialized
+    // Admins can bypass the transfer limit check
+    if member.member_type == MemberType::Admin {
+        return Ok(());
+    }
+
     require!(
         member.is_initialized,
         TransferLimitError::MemberNotInitialized
     );
+    require!(rule_data.is_initialized, TransferLimitError::UnAuthorize);
 
-    if member.member_type != MemberType::Admin && rule_data.is_initialized {
-        // check program_id must equal system program, token program or token 2022 program
-        if program_id != SYSTEM_ID && program_id != SPL_TOKEN {
-            return Err(TransferLimitError::UnAuthorize.into());
+    let amount = if program_id == SYSTEM_ID {
+        if let Some(discriminator) = cpi_data.get(0..4) {
+            if discriminator == SOL_TRANSFER_DISCRIMINATOR {
+                u64::from_le_bytes(cpi_data[4..12].try_into().unwrap())
+            } else {
+                return Err(TransferLimitError::UnAuthorize.into());
+            }
         } else {
-            if cpi_data.get(0..4) == Some(&SOL_TRANSFER_DISCRIMINATOR) && program_id == SYSTEM_ID {
-                let amount = u64::from_le_bytes(cpi_data[4..12].try_into().unwrap());
-                if amount > rule_data.limit_amount {
-                    return Err(TransferLimitError::TransferAmountExceedLimit.into());
-                }
-            } else if cpi_data.get(0..4) == Some(&SOL_TRANSFER_DISCRIMINATOR)
-                && program_id == SPL_TOKEN
-            {
-                let amount = u64::from_le_bytes(cpi_data[4..12].try_into().unwrap());
-                if amount > rule_data.limit_amount {
-                    return Err(TransferLimitError::TransferAmountExceedLimit.into());
+            return Err(TransferLimitError::UnAuthorize.into());
+        }
+    } else if program_id == SPL_TOKEN {
+        // Handle SPL token transfer instruction (transfer: instruction 3)
+        if let Some(&instruction_index) = cpi_data.get(0) {
+            if instruction_index == 3 {
+                // This is a Transfer instruction
+                if cpi_data.len() >= 9 {
+                    u64::from_le_bytes(cpi_data[1..9].try_into().unwrap())
+                } else {
+                    return Err(TransferLimitError::UnAuthorize.into());
                 }
             } else {
                 return Err(TransferLimitError::UnAuthorize.into());
             }
+        } else {
+            return Err(TransferLimitError::UnAuthorize.into());
         }
+    } else {
+        return Err(TransferLimitError::UnAuthorize.into());
+    };
+
+    if amount > rule_data.limit_amount {
+        return Err(TransferLimitError::TransferAmountExceedLimit.into());
     }
+
     Ok(())
 }
 
