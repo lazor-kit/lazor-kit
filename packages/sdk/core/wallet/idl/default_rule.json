@@ -1,5 +1,5 @@
 {
-  "address": "FE8HcdPRYmi5oe6E2MHrZXCK7t5ZFzUV4bCXMt4C1RWN",
+  "address": "7H16pVKG2stkkhQ6H9LyXvnHLpXjfB7LLShGjXhYmEWs",
   "metadata": {
     "name": "default_rule",
     "version": "0.1.0",
@@ -115,7 +115,7 @@
         },
         {
           "name": "lazorkit",
-          "address": "B8borjSNa14VSvweUEQJPJDCYDCQ96u5p8jqf1Ho2txK"
+          "address": "6Jh4kA4rkZquv9XofKqgbyrRcTDF19uM5HL4xyh6gaSo"
         },
         {
           "name": "system_program",

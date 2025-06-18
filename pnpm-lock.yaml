@@ -146,6 +146,9 @@ importers:
       '@types/bn.js':
         specifier: ^5.1.0
         version: 5.2.0
+      '@types/bs58':
+        specifier: ^5.0.0
+        version: 5.0.0
       '@types/chai':
         specifier: ^4.3.0
         version: 4.3.20

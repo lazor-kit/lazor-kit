@@ -1,14 +1,9 @@
-import * as anchor from "@coral-xyz/anchor";
-import { sha256 } from "js-sha256";
+import * as anchor from '@coral-xyz/anchor';
+import { sha256 } from 'js-sha256';
+import { Buffer } from 'buffer';
 
-export function hashSeeds(
-  passkey: number[],
-  smartWallet: anchor.web3.PublicKey
-): Buffer {
-  const rawBuffer = Buffer.concat([
-    Buffer.from(passkey),
-    smartWallet.toBuffer(),
-  ]);
+export function hashSeeds(passkey: number[], smartWallet: anchor.web3.PublicKey): Buffer {
+  const rawBuffer = Buffer.concat([Buffer.from(passkey), smartWallet.toBuffer()]);
   const hash = sha256.arrayBuffer(rawBuffer);
   return Buffer.from(hash).subarray(0, 32);
 }
@@ -27,19 +22,17 @@ const SECP256R1_NATIVE_PROGRAM = new anchor.web3.PublicKey(
 
 // Order of secp256r1 curve (same as in Rust code)
 const SECP256R1_ORDER = new Uint8Array([
-  0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff,
-  0xff, 0xff, 0xff, 0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84, 0xf3, 0xb9,
-  0xca, 0xc2, 0xfc, 0x63, 0x25, 0x51,
+  0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+  0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84, 0xf3, 0xb9, 0xca, 0xc2, 0xfc, 0x63, 0x25, 0x51,
 ]);
 
 // Half order of secp256r1 curve (same as in Rust code)
 const SECP256R1_HALF_ORDER = new Uint8Array([
-  0x7f, 0xff, 0xff, 0xff, 0x80, 0x00, 0x00, 0x00, 0x7f, 0xff, 0xff, 0xff, 0xff,
-  0xff, 0xff, 0xff, 0xde, 0x73, 0x7d, 0x56, 0xd3, 0x8b, 0xcf, 0x42, 0x79, 0xdc,
-  0xe5, 0x61, 0x7e, 0x31, 0x92, 0xa8,
+  0x7f, 0xff, 0xff, 0xff, 0x80, 0x00, 0x00, 0x00, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+  0xde, 0x73, 0x7d, 0x56, 0xd3, 0x8b, 0xcf, 0x42, 0x79, 0xdc, 0xe5, 0x61, 0x7e, 0x31, 0x92, 0xa8,
 ]);
 
-interface Secp256r1SignatureOffsets {
+type Secp256r1SignatureOffsets = {
   signature_offset: number;
   signature_instruction_index: number;
   public_key_offset: number;
@@ -47,7 +40,7 @@ interface Secp256r1SignatureOffsets {
   message_data_offset: number;
   message_data_size: number;
   message_instruction_index: number;
-}
+};
 
 function bytesOf(data: any): Uint8Array {
   if (data instanceof Uint8Array) {
@@ -134,10 +127,7 @@ export function createSecp256r1Instruction(
 
     // Calculate total size and create instruction data
     const totalSize =
-      DATA_START +
-      SIGNATURE_SERIALIZED_SIZE +
-      COMPRESSED_PUBKEY_SERIALIZED_SIZE +
-      message.length;
+      DATA_START + SIGNATURE_SERIALIZED_SIZE + COMPRESSED_PUBKEY_SERIALIZED_SIZE + message.length;
 
     const instructionData = new Uint8Array(totalSize);
 
@@ -175,4 +165,26 @@ export function createSecp256r1Instruction(
   } catch (error) {
     throw new Error(`Failed to create secp256r1 instruction: ${error}`);
   }
+}
+
+/**
+ * Convenience helper: convert a {@link anchor.web3.TransactionInstruction}'s `keys`
+ * array into the `AccountMeta` objects Anchor expects for
+ * `remainingAccounts(...)`.
+ *
+ * The mapping uses the original `isWritable` flag from the instruction and
+ * marks the account as a signer if either:
+ *  • the instruction already flagged it as signer, or
+ *  • the account equals the provided {@link payer} (the wallet paying for the
+ *    transaction).
+ */
+export function instructionToAccountMetas(
+  ix: anchor.web3.TransactionInstruction,
+  payer: anchor.web3.PublicKey
+): anchor.web3.AccountMeta[] {
+  return ix.keys.map((k) => ({
+    pubkey: k.pubkey,
+    isWritable: k.isWritable,
+    isSigner: k.pubkey.equals(payer),
+  }));
 }
