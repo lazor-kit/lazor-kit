@@ -1,11 +1,11 @@
-import * as anchor from "@coral-xyz/anchor";
-import { TransferLimit } from "../target/types/transfer_limit";
-import * as types from "./types";
-import * as constants from "./constants";
+import * as anchor from '@coral-xyz/anchor';
+import { TransferLimit } from '../target/types/transfer_limit';
+import * as types from './types';
+import * as constants from './constants';
 
 export class TransferLimitProgram {
   private connection: anchor.web3.Connection;
-  private Idl: anchor.Idl = require("../target/idl/transfer_limit.json");
+  private Idl: anchor.Idl = require('../target/idl/transfer_limit.json');
 
   constructor(connection: anchor.web3.Connection) {
     this.connection = connection;
@@ -57,20 +57,6 @@ export class TransferLimitProgram {
       [constants.RULE_DATA_SEED, smartWallet.toBuffer(), tokenMint.toBuffer()],
       this.programId
     )[0];
-  }
-
-  async initializeTxn(
-    payer: anchor.web3.PublicKey,
-    authority: anchor.web3.PublicKey
-  ) {
-    return new anchor.web3.Transaction().add(
-      await this.program.methods
-        .initialize(authority)
-        .accounts({
-          signer: payer,
-        })
-        .instruction()
-    );
   }
 
   async initRuleIns(

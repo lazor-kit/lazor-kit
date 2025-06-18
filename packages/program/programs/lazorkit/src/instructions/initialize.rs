@@ -9,7 +9,8 @@ pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
     let smart_wallet_seq = &mut ctx.accounts.smart_wallet_seq;
     smart_wallet_seq.seq = 0;
 
-    let config = &mut ctx.accounts.config;
+    let config: &mut Box<Account<'_, Config>> = &mut ctx.accounts.config;
+    config.authority = ctx.accounts.signer.key();
     config.create_smart_wallet_fee = 0; // LAMPORTS
     config.default_rule_program = ctx.accounts.default_rule_program.key();
     Ok(())
