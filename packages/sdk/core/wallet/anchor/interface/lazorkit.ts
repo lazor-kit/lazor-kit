@@ -1,12 +1,17 @@
-import * as anchor from "@coral-xyz/anchor";
-import IDL from "../idl/lazorkit.json";
-import { type Lazorkit } from "../types/lazorkit";
-import * as constants from "./constants";
-import { createSecp256r1Instruction, hashSeeds, instructionToAccountMetas } from "./utils";
-import * as types from "./types";
+import * as anchor from '@coral-xyz/anchor';
+import bs58 from 'bs58';
+import * as constants from '../constants';
+import IDL from '../idl/lazorkit.json';
+import { Lazorkit } from '../types/lazorkit';
+import * as types from '../types';
+import { createSecp256r1Instruction, hashSeeds, instructionToAccountMetas } from '../utils';
+import { DefaultRuleProgram } from './default_rule';
+// Polyfill for structuredClone if not available (for React Native/Expo)
+if (typeof globalThis.structuredClone !== 'function') {
+  globalThis.structuredClone = (obj: any) => JSON.parse(JSON.stringify(obj));
+}
+import { Buffer } from 'buffer';
 import { sha256 } from 'js-sha256';
-import { DefaultRuleProgram } from "./default-rule-program";
-import bs58 from "bs58";
 
 export class LazorKitProgram {
   /** Network connection used by all RPC / account queries */
@@ -244,9 +249,9 @@ export class LazorKitProgram {
       authenticatorDataRaw,
       Buffer.from(sha256.arrayBuffer(clientDataJsonRaw)),
     ]);
-
+    console.log(message.toString('base64'));
     const verifySignatureIx = createSecp256r1Instruction(
-      message,
+      message, 
       Buffer.from(passkeyPubkey),
       signature
     );
@@ -352,7 +357,7 @@ export class LazorKitProgram {
     buffer.writeBigUInt64LE(BigInt(smartWalletData.lastNonce.toString()), 0);
 
     // Write timestamp as little-endian i64
-    buffer.writeBigInt64LE(BigInt(Number(Date.now() / 1000)), 8);
+    buffer.writeBigInt64LE(BigInt(Math.floor(Date.now() / 1000)), 8);
 
     return buffer;
   }

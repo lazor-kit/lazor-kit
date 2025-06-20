@@ -1,6 +1,6 @@
 import * as anchor from '@coral-xyz/anchor';
 
-import { Lazorkit } from '../types/lazorkit';
+import { Lazorkit } from './lazorkit';
 
 export type CpiData = anchor.IdlTypes<Lazorkit>['cpiData'];
 export type SmartWalletSeq = anchor.IdlTypes<Lazorkit>['smartWalletSeq'];
