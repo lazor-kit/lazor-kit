@@ -1,12 +1,11 @@
-import * as anchor from "@coral-xyz/anchor";
-import { type DefaultRule } from "../types/default_rule";
-import * as constants from "./constants";
-import idl from "../idl/default_rule.json";
-
+import * as anchor from '@coral-xyz/anchor';
+import { DefaultRule } from '../types/default_rule';
+import * as constants from '../constants';
+import IDL from '../idl/default_rule.json';
 
 export class DefaultRuleProgram {
   private connection: anchor.web3.Connection;
-  private Idl: anchor.Idl = idl as anchor.Idl;
+  private Idl: DefaultRule = IDL as DefaultRule;
 
   constructor(connection: anchor.web3.Connection) {
     this.connection = connection;
@@ -30,10 +29,7 @@ export class DefaultRuleProgram {
   }
 
   get config(): anchor.web3.PublicKey {
-    return anchor.web3.PublicKey.findProgramAddressSync(
-      [constants.CONFIG_SEED],
-      this.programId
-    )[0];
+    return anchor.web3.PublicKey.findProgramAddressSync([constants.CONFIG_SEED], this.programId)[0];
   }
 
   async initRuleIns(
@@ -80,4 +76,3 @@ export class DefaultRuleProgram {
       .instruction();
   }
 }
-
