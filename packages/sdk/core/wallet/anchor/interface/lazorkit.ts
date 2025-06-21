@@ -361,4 +361,48 @@ export class LazorKitProgram {
 
     return buffer;
   }
+
+   /**
+   * Query the chain for the smart-wallet associated with a credential_id.
+   */
+  async getSmartWalletByCredentialId(credentialId: string): Promise<{
+    smartWallet: anchor.web3.PublicKey | null;
+    smartWalletAuthenticator: anchor.web3.PublicKey | null;
+  }> {
+    const discriminator = (IDL as any).accounts.find(
+      (a: any) => a.name === 'SmartWalletAuthenticator'
+    )!.discriminator;
+
+    // Convert credential_id to base64 buffer
+    const credentialIdBuffer = Buffer.from(credentialId, 'base64');
+
+    const accounts = await this.connection.getProgramAccounts(this.programId, {
+      dataSlice: {
+        offset: 8 + 33 + 32 + 4,
+        length: credentialIdBuffer.length,
+      },
+      filters: [
+        { memcmp: { offset: 0, bytes: bs58.encode(discriminator) } },
+        {
+          memcmp: {
+            offset: 8 + 33 + 32 + 4,
+            bytes: bs58.encode(credentialIdBuffer),
+          },
+        },
+      ],
+    });
+
+    if (accounts.length === 0) {
+      return { smartWalletAuthenticator: null, smartWallet: null };
+    }
+
+    const smartWalletAuthenticatorData =
+      await this.getSmartWalletAuthenticatorData(accounts[0].pubkey);
+
+    return {
+      smartWalletAuthenticator: accounts[0].pubkey,
+      smartWallet: smartWalletAuthenticatorData.smartWallet,
+    };
+  }
+  
 }
