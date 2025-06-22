@@ -9,7 +9,7 @@ export * from './types';
 
 
 // React exports
-export * from './react';
+export * from './core/react';
 
 // Utility exports
 export * from './utils';

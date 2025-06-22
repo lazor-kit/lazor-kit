@@ -252,6 +252,7 @@ export async function signIn(
     
     if (!credential) throw new Error("No key returned");
     const credentialId = Buffer.from(credential.rawId).toString("base64");
+    localStorage.setItem(CREDENTIAL_STORAGE_KEYS.id, credentialId);
     return { credentialId };
     
   } catch (error) {

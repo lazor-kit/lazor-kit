@@ -93,7 +93,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
           this.communicationHandler.off('error', errorHandler);
         }, 30000); // 30 second timeout
       });
-      
+      let smartWalletAddress = '';
       // Open the dialog for connection
       await this.communicationHandler.openDialog('connect');
       
@@ -109,45 +109,22 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
       if (!this.config.rpcUrl) {
         throw new SDKError(ErrorCode.INVALID_CONFIG, 'RPC URL is not defined');
       }
-      
-      // Validate public key
-      if (!publicKey) {
-        console.warn('Public key is undefined in connect response, checking localStorage');
-        const storedPublicKey = localStorage.getItem('PUBLIC_KEY');
-        if (storedPublicKey) {
-          console.log('Using public key from localStorage:', storedPublicKey);
-          publicKey = storedPublicKey;
-        } else {
-          throw new SDKError(ErrorCode.CONNECTION_FAILED, 'Public key not available');
-        }
-      }
-
-      // Store credentials in local storage immediately to ensure availability
-      StorageUtil.saveCredentials({
-        credentialId: credentialId,
-        publickey: publicKey, // Match the case used in reference implementation
-        smartWalletAddress: '', // Will be updated after smart wallet creation
-        timestamp: Date.now()
-      });
-
       // Initialize smart wallet right away
       this.smartWallet = new SmartWallet(
         this.paymaster, 
         new Connection(this.config.rpcUrl)
       );
-      // Share SmartWallet instance with CommunicationHandler for message operations
-      this.communicationHandler.setSmartWallet(this.smartWallet);
-      // Create smart wallet and get address
-      const smartWalletAddress = await this.smartWallet.createSmartWallet(publicKey, credentialId);
-      
-      // Update stored credentials with the smart wallet address
-      StorageUtil.saveCredentials({
-        credentialId: credentialId,
-        publickey: publicKey,
-        smartWalletAddress,
-        timestamp: Date.now()
-      });
-      
+      if (!publicKey) {
+        const smartWalletCredential = await this.smartWallet.getSmartWalletCredential(credentialId);
+        smartWalletAddress = smartWalletCredential;
+        StorageUtil.setItem('SMART_WALLET_ADDRESS', smartWalletAddress);
+      } else {
+        smartWalletAddress = await this.smartWallet.createSmartWallet(publicKey, credentialId);
+        StorageUtil.setItem('PUBLIC_KEY', publicKey);
+        StorageUtil.setItem('CREDENTIAL_ID', credentialId);
+      }
+
+      StorageUtil.setItem('SMART_WALLET_ADDRESS', smartWalletAddress);
       this.account = {
         publicKey,
         smartWallet: smartWalletAddress,
@@ -184,15 +161,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
       // Don't close the dialog until we're completely done
       let dialogClosed = false;
       
-      try {
-        // Serialize the instruction for signing
-        const serializedInstruction = Buffer.from(JSON.stringify(instruction)).toString('base64');
-        const message = {
-          instructions: serializedInstruction,
-          timestamp: Date.now(),
-          nonce: this.security.generateNonce()
-        };
-        
+      try {        
         // Make sure credentials are synced before opening dialog
         this.communicationHandler.syncCredentials(true);
         

@@ -2,6 +2,5 @@
 export * from './sdk.types';
 export * from './dialog.types';
 export * from './message.types';
-export * from './wallet.types';
-export * from './transaction.types';
 export * from './errors.types';
+export * from './wallet.types';

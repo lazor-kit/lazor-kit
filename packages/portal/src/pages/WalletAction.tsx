@@ -61,31 +61,32 @@ export default function WalletAction() {
     
     initializePlatform()
   }, [])
-// Legacy environment detection for backward compatibility
-const detectEnvironment = (): "browser" | "expo" | "unknown" => {
-  if (typeof window !== "undefined") {
-    if (window.navigator.userAgent.includes("Expo")) {
-      return "expo"
-    }
-    if (window.ReactNativeWebView) {
-      return "expo"
-    }
-    if (window.expo || window.__expo) {
-      return "expo"
+
+  // Legacy environment detection for backward compatibility
+  const detectEnvironment = (): "browser" | "expo" | "unknown" => {
+    if (typeof window !== "undefined") {
+      if (window.navigator.userAgent.includes("Expo")) {
+        return "expo"
+      }
+      if (window.ReactNativeWebView) {
+        return "expo"
+      }
+      if (window.expo || window.__expo) {
+        return "expo"
+      }
+      
+      // Additional checks for Expo
+      if (window.location.protocol === "file:" || 
+          window.navigator.userAgent.includes("expo") ||
+          window.navigator.userAgent.includes("ExponentJS")) {
+        return "expo"
+      }
+      
+      return "browser"
     }
     
-    // Additional checks for Expo
-    if (window.location.protocol === "file:" || 
-        window.navigator.userAgent.includes("expo") ||
-        window.navigator.userAgent.includes("ExponentJS")) {
-      return "expo"
-    }
-    
-    return "browser"
+    return "unknown"
   }
-  
-  return "unknown"
-}
   // Load stored credentials on mount with iframe support
   const loadCredentials = useCallback(async () => {
     try {
@@ -304,13 +305,10 @@ const detectEnvironment = (): "browser" | "expo" | "unknown" => {
   // Handle sign message action
   const handleSign = async () => {
     if (!message) return
-    if (!credentials.length) {
-      setStatus({ message: 'No credentials found. Please create a passkey first.', type: 'error' })
-      return
-    }
-
+    
     setIsLoading(true)
     try {
+    
       const cred = credentials[0]
       const signatureData = await signMessage(cred.credentialId, message, displayStatus)
       

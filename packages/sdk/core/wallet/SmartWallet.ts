@@ -10,16 +10,15 @@ import {
 import { Paymaster } from './Paymaster';
 import { SignResponse } from '../../types';
 import { LazorKitProgram } from './anchor/interface/lazorkit';
-import { DefaultRuleProgram } from './anchor/interface/default_rule';
 import { Buffer } from 'buffer';
 import { Logger } from '../../utils/logger';
+import { StorageUtil } from '../../utils/storage';
 
 export class SmartWallet {
   private paymaster: Paymaster;
   private lastestSmartWallet: PublicKey | null = null;
   private lazorkitProgram: LazorKitProgram;
   private logger = new Logger('SmartWallet');
-
   /**
    * Create a new SmartWallet instance
    * @param ownerPublicKey The owner's public key
@@ -29,6 +28,7 @@ export class SmartWallet {
   constructor(paymaster: Paymaster, connection: Connection) {
     this.paymaster = paymaster;
     this.lazorkitProgram = new LazorKitProgram(connection);
+    
   }
 
   /**
@@ -148,5 +148,22 @@ export class SmartWallet {
     return (await this.lazorkitProgram.getMessage(smartWallet)).toString('base64').replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');
+  }
+
+  async getSmartWalletCredential(credentialId: string): Promise<string> {
+    const pubkey = await this.lazorkitProgram.getSmartWalletByCredentialId(credentialId);
+    console.log(pubkey.smartWallet);
+    if (!pubkey.smartWallet) {
+      this.logger.error('Smart wallet address not found in local storage');
+      throw new Error('Smart wallet address not found');
+    }
+    if (!pubkey.smartWalletAuthenticator) {
+      this.logger.error('Smart wallet authenticator not found in local storage');
+      throw new Error('Smart wallet authenticator not found');
+    }
+    const smartwalletAuthenticatorData = await this.lazorkitProgram.getSmartWalletAuthenticatorData(new PublicKey(pubkey.smartWalletAuthenticator));
+    console.log(smartwalletAuthenticatorData.passkeyPubkey);
+    StorageUtil.setItem('PUBLIC_KEY', Buffer.from(smartwalletAuthenticatorData.passkeyPubkey).toString('base64'));
+    return pubkey.smartWallet.toBase58();
   }
 }

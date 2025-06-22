@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import { WalletAccount } from '../types';
-import { Lazorkit } from '../core/Lazorkit';
+import { WalletAccount } from '../../types';
+import { Lazorkit } from '../Lazorkit';
 
 interface LazorkitState {
   sdk: Lazorkit | null;
