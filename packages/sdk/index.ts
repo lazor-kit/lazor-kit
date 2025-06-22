@@ -1,7 +1,6 @@
 // src/index.ts
 // Core exports
 export * from './core/Lazorkit';
-export { DialogManager } from './core/dialog/DialogManager';
 export { SmartWallet } from './core/wallet/SmartWallet';
 export { Paymaster } from './core/wallet/Paymaster';
 

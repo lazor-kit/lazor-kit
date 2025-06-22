@@ -1,10 +1,8 @@
 import { EventEmitter } from 'eventemitter3';
 import { Connection, TransactionInstruction, Transaction } from '@solana/web3.js';
-import { DialogManager } from './dialog/DialogManager';
 import { SmartWallet } from './wallet/SmartWallet';
 import { Paymaster } from './wallet/Paymaster';
 import { Security } from './security/Security';
-import { MessageHandler } from './bridge/MessageHandler';
 import { validateConfig } from '../utils/validation';
 import { SDKError } from '../constants/errors';
 import { Buffer } from 'buffer';
@@ -16,19 +14,18 @@ import {
 } from '../types';
 import { ConnectResponse, SignResponse } from '../types/message.types';
 import { PublicKey } from '@solana/web3.js';
-import { CommunicationConfig } from './dialog/CommunicationHandler';
+import { CommunicationConfig } from './dialog/types/DialogTypes';
 import { StorageUtil } from '../utils/storage';
-
+import { CommunicationHandler } from './dialog/CommunicationHandler';
 /**
  * Lazorkit is the main entry point for the Lazor Kit SDK
  * It manages wallet connection, transaction signing, and communication with the Lazor portal
  */
 export class Lazorkit extends EventEmitter<SDKEvents> {
   private config: CommunicationConfig;
-  private dialogManager: DialogManager;
-  private messageHandler: MessageHandler;
   private security: Security;
   private paymaster: Paymaster;
+  private communicationHandler: CommunicationHandler;
   private smartWallet: SmartWallet | null = null;
   private account: WalletAccount | null = null;
   /**
@@ -42,7 +39,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
     this.config = config;
     this.security = new Security();
     this.paymaster = new Paymaster(config.paymasterUrl || 'https://paymaster.lazor.io');
-    
+    this.communicationHandler = new CommunicationHandler(config);
     // Create dialog manager with proper config
     // Create dialog manager with proper config
     const dialogConfig: CommunicationConfig = {
@@ -53,9 +50,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
       fallbackToPopup: config.fallbackToPopup
     };
 
-    this.dialogManager = new DialogManager(dialogConfig);
     
-    this.messageHandler = new MessageHandler();
     this.setupMessageHandler();
   }
 
@@ -72,18 +67,38 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
         return this.account;
       }
       
-      const challenge = this.security.generateChallenge();
-      await this.dialogManager.connect();
-    
-      const response = await this.messageHandler.request<ConnectResponse>(this.dialogManager, {
-        method: 'passkey:connect',
-        params: {
-          challenge,
-          origin: window.location.origin,
-          skipWarning: options?.skipWarning,
-          ...options
-        }
+      const connectPromise = new Promise<ConnectResponse>((resolve, reject) => {
+        // Set up a one-time event listener for the connect event
+        const connectHandler = (data: any) => {
+          // Remove the event listener once we get a response
+          this.communicationHandler.off('connect', connectHandler);
+          resolve(data);
+        };
+        
+        // Set up an error handler
+        const errorHandler = (error: Error) => {
+          // Remove both event listeners
+          this.communicationHandler.off('connect', connectHandler);
+          this.communicationHandler.off('error', errorHandler);
+          reject(error);
+        };
+        
+        // Register both event listeners
+        this.communicationHandler.on('connect', connectHandler);
+        this.communicationHandler.on('error', errorHandler);
+        
+        // Set a timeout to reject the promise if no response is received
+        setTimeout(() => {
+          this.communicationHandler.off('connect', connectHandler);
+          this.communicationHandler.off('error', errorHandler);
+        }, 30000); // 30 second timeout
       });
+      
+      // Open the dialog for connection
+      await this.communicationHandler.openDialog('connect');
+      
+      // Wait for the connect event to be emitted
+      const response = await connectPromise;
     
       if (!response) {
         throw new SDKError(ErrorCode.CONNECTION_FAILED, 'No response received from dialog');
@@ -120,8 +135,10 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
         this.paymaster, 
         new Connection(this.config.rpcUrl)
       );
+      // Share SmartWallet instance with CommunicationHandler for message operations
+      this.communicationHandler.setSmartWallet(this.smartWallet);
       // Create smart wallet and get address
-      const smartWalletAddress = await this.smartWallet.createSmartWallet(publicKey);
+      const smartWalletAddress = await this.smartWallet.createSmartWallet(publicKey, credentialId);
       
       // Update stored credentials with the smart wallet address
       StorageUtil.saveCredentials({
@@ -143,7 +160,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
       
       // Add a small delay before closing dialog to ensure events are processed
       setTimeout(() => {
-        this.dialogManager.close();
+        this.communicationHandler.closeDialog();
       }, 100);
       
       return this.account;
@@ -177,24 +194,47 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
         };
         
         // Make sure credentials are synced before opening dialog
-        this.dialogManager.syncCredentials(true);
+        this.communicationHandler.syncCredentials(true);
         
         // Open the dialog for signing
         console.log('Opening dialog for signing...');
-        await this.dialogManager.sign();
+        await this.communicationHandler.openDialog('sign');
         
         // IMPORTANT: We need to wait for the user to sign the transaction
         // The messageHandler.request will wait for the response from the dialog
         // and won't return until the user has signed or cancelled
-        console.log('Waiting for user to sign transaction...');
-        const signResponse = await this.messageHandler.request<SignResponse>(this.dialogManager, {
-          method: 'passkey:sign',
-          params: {
-            message: Buffer.from(JSON.stringify(message)).toString('base64'),
-            origin: window.location.origin
-          }
-        }, 60000); // 60 second timeout
-    
+        const connectPromise = new Promise<SignResponse>((resolve, reject) => {
+          // Set up a one-time event listener for the connect event
+          const connectHandler = (data: any) => {
+            // Remove the event listener once we get a response
+            this.communicationHandler.off('connect', connectHandler);
+            resolve(data);
+          };
+          
+          // Set up an error handler
+          const errorHandler = (error: Error) => {
+            // Remove both event listeners
+            this.communicationHandler.off('connect', connectHandler);
+            this.communicationHandler.off('error', errorHandler);
+            reject(error);
+          };
+          
+          // Register both event listeners
+          this.communicationHandler.on('connect', connectHandler);
+          this.communicationHandler.on('error', errorHandler);
+          
+          // Set a timeout to reject the promise if no response is received
+          setTimeout(() => {
+            this.communicationHandler.off('connect', connectHandler);
+            this.communicationHandler.off('error', errorHandler);
+          }, 30000); // 30 second timeout
+        });
+        
+        // Open the dialog for connection
+        await this.communicationHandler.openDialog('connect');
+        
+        // Wait for the connect event to be emitted
+        const signResponse = await connectPromise;
         console.log('Received signature response:', signResponse);
         
         if (!signResponse) {
@@ -219,7 +259,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
         
         console.log('Transaction built successfully, closing dialog');
         // Only close the dialog AFTER the transaction is fully built
-        this.dialogManager.close();
+        this.communicationHandler.closeDialog();
         dialogClosed = true;
         
         this.emit('transaction:success', signedTransaction);
@@ -228,7 +268,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
         console.error('Error during transaction signing:', innerError);
         if (!dialogClosed) {
           console.log('Closing dialog due to error');
-          this.dialogManager.close();
+          this.communicationHandler.closeDialog();
         }
         throw innerError;
       }
@@ -252,33 +292,49 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
       let dialogClosed = false;
       
       try {
-        // Serialize the instruction for signing
-        const serializedInstruction = Buffer.from(JSON.stringify(instruction)).toString('base64');
-        const message = {
-          instructions: serializedInstruction,
-          timestamp: Date.now(),
-          nonce: this.security.generateNonce()
-        };
-        
         // Make sure credentials are synced before opening dialog
-        this.dialogManager.syncCredentials(true);
+        this.communicationHandler.syncCredentials(true);
         
         // Open the dialog for signing
         console.log('Opening dialog for signing...');
-        await this.dialogManager.sign();
+        const signPromise = new Promise<SignResponse>((resolve, reject) => {
+          // Set up a one-time event listener for the sign event
+          const signHandler = (data: any) => {
+            // Remove the event listener once we get a response
+            this.communicationHandler.off('sign', signHandler);
+            console.log('Sign event received with data:', data);
+            resolve(data);
+          };
+          
+          // Set up an error handler
+          const errorHandler = (error: Error) => {
+            // Remove both event listeners
+            this.communicationHandler.off('sign', signHandler);
+            this.communicationHandler.off('error', errorHandler);
+            console.error('Error event received:', error);
+            reject(error);
+          };
+          
+          // Register both event listeners
+          console.log('Registering sign event handler');
+          this.communicationHandler.on('sign', signHandler);
+          this.communicationHandler.on('error', errorHandler);
+          
+          // Set a timeout to reject the promise if no response is received
+          setTimeout(() => {
+            console.log('Sign timeout reached, removing handlers');
+            this.communicationHandler.off('sign', signHandler);
+            this.communicationHandler.off('error', errorHandler);
+            reject(new Error('Signing timed out after 30 seconds'));
+          }, 30000); // 30 second timeout
+        });
+        await this.communicationHandler.openDialog('sign');
         
         // IMPORTANT: We need to wait for the user to sign the transaction
         // The messageHandler.request will wait for the response from the dialog
         // and won't return until the user has signed or cancelled
-        console.log('Waiting for user to sign transaction...');
-        const signResponse = await this.messageHandler.request<SignResponse>(this.dialogManager, {
-          method: 'passkey:sign',
-          params: {
-            message: Buffer.from(JSON.stringify(message)).toString('base64'),
-            origin: window.location.origin
-          }
-        }, 60000); // 60 second timeout
-    
+     
+        const signResponse = await signPromise;
         console.log('Received signature response:', signResponse);
         
         if (!signResponse) {
@@ -300,7 +356,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
         
         console.log('Transaction built successfully, closing dialog');
         // Only close the dialog AFTER the transaction is fully built
-        this.dialogManager.close();
+        this.communicationHandler.closeDialog();
         dialogClosed = true;
         
         const signedTransaction = await this.paymaster.sign(transaction);
@@ -317,7 +373,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
         console.error('Error during transaction signing or sending:', innerError);
         if (!dialogClosed) {
           console.log('Closing dialog due to error');
-          this.dialogManager.close();
+          this.communicationHandler.closeDialog();
         }
         throw innerError;
       }
@@ -332,7 +388,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
    * @returns Promise that resolves when disconnection is complete
    */
   async disconnect(): Promise<void> {
-    this.dialogManager.destroy();
+    this.communicationHandler.destroy();
     this.account = null;
     this.smartWallet = null;
     
@@ -372,7 +428,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
   destroy(): void {
     this.disconnect();
     this.removeAllListeners();
-    this.messageHandler.destroy();
+    this.communicationHandler.destroy();
   }
   
 
@@ -380,7 +436,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
    * Set up message handler to forward errors to SDK events
    */
   private setupMessageHandler(): void {
-    this.messageHandler.on('error', (error) => {
+    this.communicationHandler.on('error', (error: Error) => {
       this.emit('error', error);
     });
   }
