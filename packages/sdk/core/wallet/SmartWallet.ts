@@ -147,6 +147,6 @@ export class SmartWallet {
     }
     return (await this.lazorkitProgram.getMessage(smartWallet)).toString('base64').replace(/\+/g, '-')
     .replace(/\//g, '_')
-    .replace(/=+$/, '');;
+    .replace(/=+$/, '');
   }
 }
