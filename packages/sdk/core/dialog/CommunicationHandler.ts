@@ -45,7 +45,6 @@ export class CommunicationHandler extends EventEmitter {
     this.credentialManager = new CredentialManager();
     this.uiManager = new DialogUIManager(config);
     this.messageHandler = new MessageHandler(config, this.credentialManager);
-
     // Initialize components
     this.setupEventForwarding();
     this.initialize();

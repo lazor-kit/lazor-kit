@@ -1,4 +1,4 @@
-import { ShieldCheck } from "lucide-react";
+import { Shield } from "lucide-react";
 import { Badge } from "../ui/badge";
 
 interface Credential {
@@ -12,29 +12,28 @@ interface CredentialListProps {
 
 export function CredentialList({ credentials }: CredentialListProps) {
   if (credentials.length === 0) {
-    return null;
+    return (
+      <div className="text-center text-muted-foreground py-4">
+        <Shield className="h-8 w-8 mx-auto mb-2 opacity-50" />
+        <p>No passkeys found</p>
+      </div>
+    );
   }
 
   return (
     <div className="space-y-2">
-      <h3 className="text-sm font-medium">Your Passkeys</h3>
+      <h4 className="text-sm font-medium">Your Passkeys</h4>
       <div className="space-y-2">
-        {credentials.map((cred, index) => (
+        {credentials.map((cred, ) => (
           <div
             key={cred.credentialId}
-            className="p-2 border rounded-lg"
+            className="flex items-center gap-2 p-2 border rounded"
           >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-2">
-                <ShieldCheck className="w-4 h-4 text-green-500" />
-                <span className="text-sm font-medium">
-                  Passkey {index + 1}
-                </span>
-              </div>
-              <Badge variant="outline" className="text-xs">
-                Active
-              </Badge>
-            </div>
+            <Shield className="h-4 w-4" />
+            <span className="text-sm font-mono">{cred.credentialId.slice(0, 8)}...</span>
+            <Badge variant="outline" className="text-xs ml-auto">
+              Active
+            </Badge>
           </div>
         ))}
       </div>

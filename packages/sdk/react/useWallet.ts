@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { PublicKey, TransactionInstruction } from '@solana/web3.js';
 import { useLazorkitStore } from './store';
-import { WalletAccount } from '../../types';
+import { WalletAccount } from '../types';
 import { Transaction } from '@solana/web3.js';
 /**
  * Hook for interacting with the Lazorkit wallet

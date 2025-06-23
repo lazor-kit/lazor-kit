@@ -20,8 +20,11 @@ export const isIframe = () => {
   }
 };
 
-// Request credentials from parent window with retry mechanism
-export const requestCredentialsFromParent = (maxRetries = 5): Promise<Credential & { smartWalletAddress?: string } | null> => {
+// Request credentials from parent window for immediate use (no localStorage sync)
+export const requestCredentialsFromParent = (
+  maxRetries = 3,
+  onProgress?: (message: string, attempt?: number) => void
+): Promise<Credential & { smartWalletAddress?: string } | null> => {
   return new Promise((resolve) => {
     if (!isIframe()) {
       resolve(null);
@@ -49,17 +52,20 @@ export const requestCredentialsFromParent = (maxRetries = 5): Promise<Credential
           console.warn('Failed to send sync acknowledgment:', e);
         }
 
+        // Clean up and resolve
         clearTimeout(timeoutId);
         window.removeEventListener('message', handleResponse);
         
         const { credentialId, publickey, smartWalletAddress } = event.data.data;
-        if (credentialId && publickey) {
+        if (credentialId) {
+          onProgress?.('Credentials synced successfully!');
           resolve({
             credentialId,
-            publicKey: publickey, // Convert to camelCase for our internal use
+            publicKey: publickey || '',
             smartWalletAddress
           });
         } else {
+          onProgress?.('No valid credentials received');
           resolve(null);
         }
       }
@@ -67,7 +73,10 @@ export const requestCredentialsFromParent = (maxRetries = 5): Promise<Credential
 
     const sendRequest = () => {
       if (retryCount > 0) {
-        console.log(`🔁 Retrying credential sync (attempt ${retryCount}/${maxRetries})`);
+        onProgress?.(`Retrying sync (${retryCount}/${maxRetries})...`, retryCount);
+        console.log(`🔁 Retrying credential request (attempt ${retryCount}/${maxRetries})`);
+      } else {
+        onProgress?.('Requesting credentials from parent...');
       }
 
       // Set up listener for the response
@@ -82,11 +91,12 @@ export const requestCredentialsFromParent = (maxRetries = 5): Promise<Credential
         }, '*');
       } catch (error) {
         console.error('Error sending credential request:', error);
+        onProgress?.('Failed to send credential request');
       }
 
       // Set timeout for next retry or final resolution
       if (retryCount < maxRetries) {
-        const delay = Math.min(1000 * Math.pow(2, retryCount), 10000); // Exponential backoff, max 10s
+        const delay = Math.min(1000 * Math.pow(2, retryCount), 5000); // Reduced max delay
         timeoutId = setTimeout(() => {
           retryCount++;
           window.removeEventListener('message', handleResponse);
@@ -97,8 +107,107 @@ export const requestCredentialsFromParent = (maxRetries = 5): Promise<Credential
         timeoutId = setTimeout(() => {
           window.removeEventListener('message', handleResponse);
           console.warn('Timed out waiting for credentials from parent');
+          onProgress?.('Timed out waiting for credentials from parent');
           resolve(null);
-        }, 5000);
+        }, 3000); // Reduced timeout
+      }
+    };
+
+    // Start the first request
+    sendRequest();
+  });
+};
+
+// Request credentials from parent window for signing operations
+export const requestSigningCredentialsFromParent = (
+  maxRetries = 3,
+  onProgress?: (message: string, attempt?: number) => void
+): Promise<Credential & { smartWalletAddress?: string } | null> => {
+  return new Promise((resolve) => {
+    if (!isIframe()) {
+      resolve(null);
+      return;
+    }
+
+    const messageId = `signing-credential-request-${Date.now()}`;
+    let retryCount = 0;
+    let timeoutId: NodeJS.Timeout;
+
+    const handleResponse = (event: MessageEvent<SyncMessage>) => {
+      // Handle both direct SYNC_CREDENTIALS and response to our request
+      if ((event.data?.type === 'SYNC_CREDENTIALS' || 
+           event.data?.type === 'CREDENTIALS_RESPONSE') && 
+          event.data.data) {
+        
+        // Send acknowledgment back to parent
+        try {
+          window.parent.postMessage({
+            type: 'SYNC_CREDENTIALS_ACK',
+            requestId: event.data.requestId || messageId,
+            timestamp: Date.now()
+          }, '*');
+        } catch (e) {
+          console.warn('Failed to send sync acknowledgment:', e);
+        }
+
+        // Clean up and resolve
+        clearTimeout(timeoutId);
+        window.removeEventListener('message', handleResponse);
+        
+        const { credentialId, publickey, smartWalletAddress } = event.data.data;
+        if (credentialId) {
+          onProgress?.('Credentials synced successfully!');
+          resolve({
+            credentialId,
+            publicKey: publickey || '',
+            smartWalletAddress
+          });
+        } else {
+          onProgress?.('No valid credentials received');
+          resolve(null);
+        }
+      }
+    };
+
+    const sendRequest = () => {
+      if (retryCount > 0) {
+        onProgress?.(`Retrying sync (${retryCount}/${maxRetries})...`, retryCount);
+        console.log(`🔁 Retrying signing credential request (attempt ${retryCount}/${maxRetries})`);
+      } else {
+        onProgress?.('Requesting signing credentials from parent...');
+      }
+
+      // Set up listener for the response
+      window.addEventListener('message', handleResponse);
+
+      // Request credentials from parent
+      try {
+        window.parent.postMessage({
+          type: 'CREDENTIALS_REQUEST',
+          requestId: messageId,
+          timestamp: Date.now()
+        }, '*');
+      } catch (error) {
+        console.error('Error sending signing credential request:', error);
+        onProgress?.('Failed to send signing credential request');
+      }
+
+      // Set timeout for next retry or final resolution
+      if (retryCount < maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, retryCount), 5000); // Reduced max delay
+        timeoutId = setTimeout(() => {
+          retryCount++;
+          window.removeEventListener('message', handleResponse);
+          sendRequest();
+        }, delay);
+      } else {
+        // Final timeout
+        timeoutId = setTimeout(() => {
+          window.removeEventListener('message', handleResponse);
+          console.warn('Timed out waiting for signing credentials from parent');
+          onProgress?.('Timed out waiting for signing credentials from parent');
+          resolve(null);
+        }, 3000); // Reduced timeout
       }
     };
 

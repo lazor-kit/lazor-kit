@@ -5,7 +5,7 @@ export default function RootLayout() {
   return (
     <LazorKitWalletProvider
       rpcUrl={process.env.EXPO_PUBLIC_SOLANA_RPC_URL!}
-      ipfsUrl='https://portal.lazor.sh'
+      ipfsUrl='https://portal-one-tau.vercel.app'
       paymasterUrl='https://lazorkit-paymaster.onrender.com'
     >
       <Stack>

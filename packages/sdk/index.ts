@@ -1,4 +1,3 @@
-// src/index.ts
 // Core exports
 export * from './core/Lazorkit';
 export { SmartWallet } from './core/wallet/SmartWallet';
@@ -7,9 +6,8 @@ export { Paymaster } from './core/wallet/Paymaster';
 // Type exports
 export * from './types';
 
-
 // React exports
-export * from './core/react';
+export * from './react';
 
 // Utility exports
 export * from './utils';

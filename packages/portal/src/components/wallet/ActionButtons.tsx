@@ -1,77 +1,69 @@
-import { Button } from "../ui/button";
-import { Loader2 } from "lucide-react";
+"use client"
+
+import { Button } from "../ui/button"
+import { Loader2 } from "lucide-react"
 
 interface ActionButtonsProps {
-  hasCredentials: boolean;
-  isLoading: boolean;
-  hasMessage: boolean;
-  onSign: () => void;
-  onSignIn: () => void;
-  onSignUp: () => void;
+  hasCredentials: boolean
+  isLoading: boolean
+  hasMessage: boolean
+  isSigning: boolean
+  onSign: () => void
+  onSignIn: () => void
+  onSignUp: () => void
 }
 
 export function ActionButtons({
   hasCredentials,
   isLoading,
   hasMessage,
+  isSigning,
   onSign,
   onSignIn,
   onSignUp,
 }: ActionButtonsProps) {
+  const LoadingIcon = () => 
+    isLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null
+
+  // Show message signing button when there's a message to sign
   if (hasMessage) {
     return (
-      <Button 
-        onClick={onSign} 
-        disabled={isLoading} 
-        className="w-full"
-      >
-        {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-        Approve & Sign
-      </Button>
-    );
-  }
-
-  if (!hasCredentials) {
-    // No credentials exist, show both Sign In and Sign Up options
-    return (
-      <div className="grid w-full grid-cols-2 gap-2">
-        <Button
-          onClick={onSignIn}
-          disabled={isLoading}
+      <div className="w-full">
+        <Button 
+          onClick={onSign} 
+          disabled={isLoading || !hasCredentials} 
+          className="w-full"
           variant="default"
         >
-          {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          Sign In
-        </Button>
-        <Button
-          onClick={onSignUp}
-          disabled={isLoading}
-          variant="secondary"
-        >
-          {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          Sign Up
+          <LoadingIcon />
+          {isSigning ? 'Signing...' : 'Sign Message'}
         </Button>
       </div>
-    );
-  } else {
-    // Credentials exist, show Sign In instead of Connect
-    return (
-      <div className="grid w-full grid-cols-2 gap-2">
-        <Button
-          onClick={onSignIn}
-          disabled={isLoading}
-        >
-          {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          Sign In
-        </Button>
-        <Button
-          onClick={onSign}
-          disabled={isLoading || !hasMessage}
-        >
-          {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          Sign Message
-        </Button>
-      </div>
-    );
+    )
   }
+
+  // Standard authentication flow
+  return (
+    <div className="flex gap-2 w-full">
+      <Button
+        onClick={onSignIn}
+        disabled={isLoading}
+        variant="outline"
+        className="flex-1"
+      >
+        <LoadingIcon />
+        Sign In
+      </Button>
+      
+      <Button
+        onClick={onSignUp}
+        disabled={isLoading}
+        variant="default"
+        className="flex-1"
+      >
+        <LoadingIcon />
+        Sign Up
+      </Button>
+    </div>
+  )
 }

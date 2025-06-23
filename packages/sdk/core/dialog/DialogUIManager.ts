@@ -7,6 +7,7 @@ import { Logger } from '../../utils/logger';
 import { DialogAction, CommunicationConfig } from './types/DialogTypes';
 import { getDialogStyles } from './styles/DialogStyles';
 import { SmartWallet } from '../wallet/SmartWallet';
+
 export class DialogUIManager extends EventEmitter {
   private popupWindow: Window | null = null;
   private popupCloseInterval: ReturnType<typeof setInterval> | null = null;

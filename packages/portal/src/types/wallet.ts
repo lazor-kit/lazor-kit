@@ -5,6 +5,17 @@ export interface StatusMessage {
   type: string;
 }
 
+export interface Credential {
+  credentialId: string;
+  publicKey: string;
+  createdAt?: string;
+}
+
+export interface WebAuthnSupport {
+  supported: boolean;
+  reason: string;
+}
+
 export interface PlatformState {
   environment: "browser" | "expo" | "unknown";
   platformInfo: PlatformInfo | null;

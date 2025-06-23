@@ -2,12 +2,8 @@ import { EventEmitter } from 'eventemitter3';
 import { Connection, TransactionInstruction, Transaction } from '@solana/web3.js';
 import { SmartWallet } from './wallet/SmartWallet';
 import { Paymaster } from './wallet/Paymaster';
-import { Security } from './security/Security';
-import { validateConfig } from '../utils/validation';
 import { SDKError } from '../constants/errors';
-import { Buffer } from 'buffer';
 import {
-  SDKOptions,
   SDKEvents,
   WalletAccount,
   ErrorCode
@@ -23,7 +19,6 @@ import { CommunicationHandler } from './dialog/CommunicationHandler';
  */
 export class Lazorkit extends EventEmitter<SDKEvents> {
   private config: CommunicationConfig;
-  private security: Security;
   private paymaster: Paymaster;
   private communicationHandler: CommunicationHandler;
   private smartWallet: SmartWallet | null = null;
@@ -34,24 +29,11 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
    */
   constructor(config: CommunicationConfig) {
     super();
-    
-    validateConfig(config);
     this.config = config;
-    this.security = new Security();
     this.paymaster = new Paymaster(config.paymasterUrl || 'https://paymaster.lazor.io');
     this.communicationHandler = new CommunicationHandler(config);
-    // Create dialog manager with proper config
-    // Create dialog manager with proper config
-    const dialogConfig: CommunicationConfig = {
-      url: config.url,
-      mode: config.mode || 'dialog',
-      rpcUrl: config.rpcUrl,
-      paymasterUrl: config.paymasterUrl,
-      fallbackToPopup: config.fallbackToPopup
-    };
-
-    
     this.setupMessageHandler();
+
   }
 
   /**
@@ -59,7 +41,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
    * @param options Additional options for connection
    * @returns Connected wallet account information
    */
-  async connect(options?: SDKOptions): Promise<WalletAccount> {
+  async connect(): Promise<WalletAccount> {
     try {
       this.emit('connect:start');
       
@@ -123,7 +105,6 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
         StorageUtil.setItem('PUBLIC_KEY', publicKey);
         StorageUtil.setItem('CREDENTIAL_ID', credentialId);
       }
-
       StorageUtil.setItem('SMART_WALLET_ADDRESS', smartWalletAddress);
       this.account = {
         publicKey,
@@ -139,6 +120,9 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
       setTimeout(() => {
         this.communicationHandler.closeDialog();
       }, 100);
+      
+      // Set the SmartWallet reference in the communication handler after successful connection
+      this.communicationHandler.setSmartWallet(this.smartWallet);
       
       return this.account;
       
@@ -164,6 +148,13 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
       try {        
         // Make sure credentials are synced before opening dialog
         this.communicationHandler.syncCredentials(true);
+        
+        // Ensure SmartWallet is set before opening dialog for signing
+        if (this.smartWallet) {
+          this.communicationHandler.setSmartWallet(this.smartWallet);
+        } else {
+          throw new SDKError(ErrorCode.INVALID_CONFIG, 'Smart wallet is not initialized');
+        }
         
         // Open the dialog for signing
         console.log('Opening dialog for signing...');
@@ -198,8 +189,6 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
             this.communicationHandler.off('error', errorHandler);
           }, 30000); // 30 second timeout
         });
-        
-        // Open the dialog for connection
         await this.communicationHandler.openDialog('connect');
         
         // Wait for the connect event to be emitted
@@ -263,6 +252,13 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
       try {
         // Make sure credentials are synced before opening dialog
         this.communicationHandler.syncCredentials(true);
+        
+        // Ensure SmartWallet is set before opening dialog for signing
+        if (this.smartWallet) {
+          this.communicationHandler.setSmartWallet(this.smartWallet);
+        } else {
+          throw new SDKError(ErrorCode.INVALID_CONFIG, 'Smart wallet is not initialized');
+        }
         
         // Open the dialog for signing
         console.log('Opening dialog for signing...');
@@ -410,4 +406,3 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
     });
   }
 }
-

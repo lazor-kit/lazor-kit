@@ -2,6 +2,7 @@ import { Buffer } from 'buffer';
 import { generateRandomChallenge, SECP256R1_SPKI_HEADER } from './utils';
 import { secp256r1 } from '@noble/curves/p256';
 import { sha256 } from '@noble/hashes/sha256';
+import { saveCredentialId } from './storage';
 
 // Types and Interfaces
 export interface WalletResult {
@@ -162,15 +163,23 @@ export async function signUp(
 }
 
 export async function authenticateWithPasskey(
-  displayStatus: (message: string, type: string) => void
+  displayStatus: (message: string, type: string) => void,
+  options?: {
+    customErrorMessage?: string;
+    successMessage?: string;
+  }
 ): Promise<{ publickey: string; credentialId: string }> {
   try {
     const credentialId = localStorage.getItem(CREDENTIAL_STORAGE_KEYS.id);
     const publickey = localStorage.getItem(CREDENTIAL_STORAGE_KEYS.publicKey);
 
-    if (!credentialId || !publickey) {
-      throw new Error("No stored credentials found. Please create a passkey first.");
+    if (!credentialId) {
+      throw new Error(
+        options?.customErrorMessage || 
+        "No stored credentials found. Please create a passkey first."
+      );
     }
+    
     const credential = (await navigator.credentials.get({
       publicKey: {
         challenge: DEFAULT_CHALLENGE,
@@ -180,10 +189,20 @@ export async function authenticateWithPasskey(
         }],
       },
     })) as PublicKeyCredential;
+    
     const response = credential.response as AuthenticatorAssertionResponse;
     console.log(response)
-    displayStatus("Wallet connected successfully!", "success");
-    return { publickey, credentialId };
+    
+    displayStatus(
+      options?.successMessage || "Wallet connected successfully!", 
+      "success"
+    );
+    
+    // Return publickey even if empty (for signIn case)
+    return { 
+      publickey: publickey || '', 
+      credentialId 
+    };
 
   } catch (error) {
     return handleWebAuthnError(error, "Authentication", displayStatus);
@@ -252,7 +271,7 @@ export async function signIn(
     
     if (!credential) throw new Error("No key returned");
     const credentialId = Buffer.from(credential.rawId).toString("base64");
-    localStorage.setItem(CREDENTIAL_STORAGE_KEYS.id, credentialId);
+    saveCredentialId(credentialId);
     return { credentialId };
     
   } catch (error) {

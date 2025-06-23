@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import type { ReactNode } from 'react';
-import { Lazorkit } from '../Lazorkit';
+import { Lazorkit } from '../core/Lazorkit';
 import { useLazorkitStore } from './store';
 
 interface LazorkitProviderProps {
