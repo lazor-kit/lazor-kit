@@ -5,7 +5,7 @@ use anchor_lang::prelude::*;
 pub struct Config {
     pub authority: Pubkey,
     pub create_smart_wallet_fee: u64,
-    pub default_rule_program: Pubkey,
+    pub execute_instruction_fee: u64,
 }
 
 impl Config {

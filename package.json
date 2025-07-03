@@ -1,6 +1,6 @@
 {
-  "name": "@lazorkit/wallet",
-  "version": "1.0.0",
+  "name": "@lazorkit/monorepo",
+  "version": "1.3.7",
   "description": "Lazorkit | Opensource smart wallet sdk for Solana",
   "author": "Lazorkit",
   "license": "MIT",

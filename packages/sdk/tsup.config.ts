@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: ['index.ts'],
+  entry: ['src/index.ts'],
   format: ['cjs', 'esm'],
   dts: true,
   splitting: false,
@@ -9,13 +9,7 @@ export default defineConfig({
   clean: true,
   minify: true,
   treeshake: true,
-  external: [
-    '@solana/web3.js',
-    'react',
-    'react/jsx-runtime',
-    'bs58',
-    'js-sha256'
-  ],
+  external: ['@solana/web3.js'],
   noExternal: ['eventemitter3'],
   esbuildOptions(options) {
     options.banner = {

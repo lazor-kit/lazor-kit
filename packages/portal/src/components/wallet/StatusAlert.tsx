@@ -1,57 +1,32 @@
-import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
-import { Info, CheckCircle2, XCircle, AlertTriangle } from "lucide-react";
-import { StatusMessage } from "../../types/wallet";
+"use client"
 
-interface StatusAlertProps {
-  status: StatusMessage;
-}
+import { Alert, AlertDescription } from "../ui/alert"
+import { AlertTriangle, CheckCircle, Info } from "lucide-react"
+import type { StatusMessage } from "../../types/wallet"
 
-export function StatusAlert({ status }: StatusAlertProps) {
-  if (!status.message) return null;
+export function StatusAlert({ status }: { status: StatusMessage }) {
+  const getIcon = () => {
+    switch (status.type) {
+      case "success":
+        return <CheckCircle className="h-4 w-4" />
+      case "error":
+        return <AlertTriangle className="h-4 w-4" />
+      case "warning":
+        return <AlertTriangle className="h-4 w-4" />
+      default:
+        return <Info className="h-4 w-4" />
+    }
+  }
 
-  type AlertType = 'success' | 'error' | 'info' | 'warning';
-  type AlertConfig = {
-    variant: 'default' | 'destructive';
-    icon: typeof CheckCircle2;
-    title: string;
-  };
-
-  const getAlertConfig = (type: string): AlertConfig => {
-    const configs: Record<AlertType, AlertConfig> = {
-      success: {
-        variant: "default",
-        icon: CheckCircle2,
-        title: "Success"
-      },
-      error: {
-        variant: "destructive",
-        icon: XCircle,
-        title: "Error"
-      },
-      info: {
-        variant: "default",
-        icon: Info,
-        title: "Info"
-      },
-      warning: {
-        variant: "default",
-        icon: AlertTriangle,
-        title: "Warning"
-      }
-    };
-    
-    return configs[type as AlertType] || configs.info;
-  };
-
-  const alertConfig = getAlertConfig(status.type);
-
-  const Icon = alertConfig.icon;
+  if (!status.message) return null
 
   return (
-    <Alert variant={alertConfig.variant as any} className="mb-4">
-      <Icon className="h-4 w-4" />
-      <AlertTitle>{alertConfig.title}</AlertTitle>
+    <Alert
+      variant={status.type === "error" ? "destructive" : "default"}
+      className="mb-4"
+    >
+      {getIcon()}
       <AlertDescription>{status.message}</AlertDescription>
     </Alert>
-  );
+  )
 }

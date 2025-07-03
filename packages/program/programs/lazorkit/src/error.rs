@@ -40,36 +40,26 @@ pub enum LazorKitError {
     TimestampTooOld,
     #[msg("Message timestamp is too far in the future")]
     TimestampTooNew,
+    #[msg("Message slot is too far in the past")]
+    SlotTooOld,
+    #[msg("Message slot is too far in the future")]
+    SlotTooNew,
     #[msg("Nonce mismatch: expected different value")]
     NonceMismatch,
     #[msg("Nonce overflow: cannot increment further")]
     NonceOverflow,
 
-    // === Rule Program Errors ===
-    #[msg("Rule program not found in whitelist")]
-    RuleProgramNotWhitelisted,
-    #[msg("Invalid instruction discriminator for check_rule")]
-    InvalidCheckRuleDiscriminator,
-    #[msg("Invalid instruction discriminator for destroy")]
-    InvalidDestroyDiscriminator,
-    #[msg("Invalid instruction discriminator for init_rule")]
-    InvalidInitRuleDiscriminator,
-    #[msg("Old and new rule programs are identical")]
-    RuleProgramsIdentical,
-    #[msg("Neither old nor new rule program is the default")]
-    NoDefaultRuleProgram,
-
     // === Account & CPI Errors ===
     #[msg("CPI data is required but not provided")]
     CpiDataMissing,
-    #[msg("Insufficient remaining accounts for rule instruction")]
-    InsufficientRuleAccounts,
     #[msg("Insufficient remaining accounts for CPI instruction")]
     InsufficientCpiAccounts,
     #[msg("Account slice index out of bounds")]
     AccountSliceOutOfBounds,
     #[msg("SOL transfer requires at least 2 remaining accounts")]
     SolTransferInsufficientAccounts,
+    #[msg("CPI data provided is invalid")]
+    CpiDataInvalid,
     #[msg("New authenticator account is required but not provided")]
     NewAuthenticatorMissing,
     #[msg("New authenticator passkey is required but not provided")]

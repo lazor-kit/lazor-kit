@@ -6,8 +6,6 @@ use anchor_lang::prelude::*;
 pub struct SmartWalletSeq {
     /// Current sequence number, incremented for each new smart wallet
     pub seq: u64,
-    /// Bump seed for PDA derivation
-    pub bump: u8,
 }
 
 impl SmartWalletSeq {

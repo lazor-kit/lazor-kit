@@ -13,6 +13,7 @@
     "@noble/curves": "^1.8.1",
     "@noble/hashes": "^1.7.1",
     "@radix-ui/react-slot": "^1.2.3",
+    "@tailwindcss/postcss": "^4.1.10",
     "@tailwindcss/vite": "^4.1.8",
     "@types/react-router-dom": "^5.3.3",
     "buffer": "^6.0.3",

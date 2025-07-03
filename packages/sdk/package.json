@@ -1,6 +1,6 @@
 {
   "name": "@lazorkit/wallet",
-  "version": "1.0.0",
+  "version": "1.4.1",
   "description": "Lazorkit Wallet SDK for Solana",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -25,9 +25,11 @@
     "eventemitter3": "^5.0.1",
     "zustand": "^5.0.5",
     "bs58": "^6.0.0",
-    "js-sha256": "^0.11.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "js-sha256": "^0.11.0"
+  },
+  "peerDependencies": {
+    "react": "^18.3.1 || ^19.0.0",
+    "react-dom": "^18.3.1 || ^19.0.0"
   },
   "devDependencies": {
     "tsup": "^8.5.0",

@@ -1,18 +1,14 @@
 use anchor_lang::prelude::*;
 
-use crate::state::{Config, SmartWalletSeq, WhitelistRulePrograms};
+use crate::state::{Config, SmartWalletSeq};
 
 pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
-    let whitelist_rule_programs = &mut ctx.accounts.whitelist_rule_programs;
-    whitelist_rule_programs.list = vec![ctx.accounts.default_rule_program.key()];
+    ctx.accounts.smart_wallet_seq.seq = 0;
 
-    let smart_wallet_seq = &mut ctx.accounts.smart_wallet_seq;
-    smart_wallet_seq.seq = 0;
-
-    let config: &mut Box<Account<'_, Config>> = &mut ctx.accounts.config;
+    let config = &mut ctx.accounts.config;
     config.authority = ctx.accounts.signer.key();
-    config.create_smart_wallet_fee = 0; // LAMPORTS
-    config.default_rule_program = ctx.accounts.default_rule_program.key();
+    config.create_smart_wallet_fee = 0;
+    config.execute_instruction_fee = 0;
     Ok(())
 }
 
@@ -28,16 +24,7 @@ pub struct Initialize<'info> {
         seeds = [Config::PREFIX_SEED],
         bump,
     )]
-    pub config: Box<Account<'info, Config>>,
-
-    #[account(
-        init_if_needed,
-        payer = signer,
-        space = 8 + WhitelistRulePrograms::INIT_SPACE,
-        seeds = [WhitelistRulePrograms::PREFIX_SEED],
-        bump
-    )]
-    pub whitelist_rule_programs: Box<Account<'info, WhitelistRulePrograms>>,
+    pub config: Account<'info, Config>,
 
     #[account(
         init_if_needed,
@@ -46,10 +33,7 @@ pub struct Initialize<'info> {
         seeds = [SmartWalletSeq::PREFIX_SEED],
         bump
     )]
-    pub smart_wallet_seq: Box<Account<'info, SmartWalletSeq>>,
-
-    /// CHECK:
-    pub default_rule_program: UncheckedAccount<'info>,
+    pub smart_wallet_seq: Account<'info, SmartWalletSeq>,
 
     pub system_program: Program<'info, System>,
 }

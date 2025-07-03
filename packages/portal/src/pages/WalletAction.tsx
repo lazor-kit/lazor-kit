@@ -27,6 +27,7 @@ export default function WalletAction() {
   const [credentials, setCredentials] = useState<Credential[]>([])
   const [, setAction] = useState("")
   const [, setExpo] = useState("")
+  const [isSigning, setIsSigning] = useState(false)
   const [, setReadyToSign] = useState(false)
   const [, setEnvironment] = useState<"browser" | "expo" | "unknown">("unknown")
   const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null)
@@ -61,52 +62,41 @@ export default function WalletAction() {
     
     initializePlatform()
   }, [])
-// Legacy environment detection for backward compatibility
-const detectEnvironment = (): "browser" | "expo" | "unknown" => {
-  if (typeof window !== "undefined") {
-    if (window.navigator.userAgent.includes("Expo")) {
-      return "expo"
-    }
-    if (window.ReactNativeWebView) {
-      return "expo"
-    }
-    if (window.expo || window.__expo) {
-      return "expo"
-    }
-    
-    // Additional checks for Expo
-    if (window.location.protocol === "file:" || 
-        window.navigator.userAgent.includes("expo") ||
-        window.navigator.userAgent.includes("ExponentJS")) {
-      return "expo"
-    }
-    
-    return "browser"
-  }
-  
-  return "unknown"
-}
-  // Load stored credentials on mount with iframe support
-  const loadCredentials = useCallback(async () => {
-    try {
-      let storedCreds = await getStoredCredentials()
-      
-      // If in iframe and no local credentials, try to get from parent
-      if (isIframe() && storedCreds.length === 0) {
-        displayStatus('Requesting credentials from parent window...', 'info')
-        const parentCredential = await requestCredentialsFromParent()
-        if (parentCredential) {
-          storedCreds = [parentCredential]
-          await saveCredential(parentCredential.credentialId, parentCredential.publicKey)
-          displayStatus('Credentials synchronized from parent', 'success')
-        }
+
+  // Legacy environment detection for backward compatibility
+  const detectEnvironment = (): "browser" | "expo" | "unknown" => {
+    if (typeof window !== "undefined") {
+      if (window.navigator.userAgent.includes("Expo")) {
+        return "expo"
+      }
+      if (window.ReactNativeWebView) {
+        return "expo"
+      }
+      if (window.expo || window.__expo) {
+        return "expo"
       }
       
+      // Additional checks for Expo
+      if (window.location.protocol === "file:" || 
+          window.navigator.userAgent.includes("expo") ||
+          window.navigator.userAgent.includes("ExponentJS")) {
+        return "expo"
+      }
+      
+      return "browser"
+    }
+    
+    return "unknown"
+  }
+  // Load stored credentials on mount - NO iframe sync to localStorage
+  const loadCredentials = useCallback(async () => {
+    try {
+      // Only load from local storage, no cross-context sync
+      const storedCreds = await getStoredCredentials()
       setCredentials(storedCreds)
-      console.log('🔑 Loaded stored credentials:', storedCreds.length)
     } catch (error) {
-      console.error('❌ Failed to load credentials:', error)
-      displayStatus('Failed to load credentials', 'error')
+      console.error('Error loading credentials:', error)
+      setCredentials([])
     }
   }, [])
 
@@ -156,12 +146,30 @@ const detectEnvironment = (): "browser" | "expo" | "unknown" => {
             displayStatus('No Passkey found. Please create one.', 'info')
           }
         } else if ((actionParam === 'sign' || autoSign === 'true') && messageParam) {
-          // For sign action: check if iframe or standalone
+          // For sign action: Different handling for iframe vs standalone
           if (isIframe()) {
-            // Iframe: wait for credentials from parent
-            displayStatus('Waiting for wallet credentials from parent...', 'info')
+            // Iframe: request credentials from parent and show UI list
+            displayStatus('Connecting to parent window...', 'loading')
+            try {
+              const parentCredential = await requestCredentialsFromParent(3, (message, attempt) => {
+                if (attempt) {
+                  displayStatus(`${message} (Attempt ${attempt}/3)`, 'loading')
+                } else {
+                  displayStatus(message, 'loading')
+                }
+              })
+              if (parentCredential) {
+                setCredentials([parentCredential])
+                setReadyToSign(true)
+                displayStatus('Ready to sign. Click approve.', 'info')
+              } else {
+                handleError('Unable to get credentials from parent window', undefined, true)
+              }
+            } catch (error) {
+              handleError('Failed to sync credentials from parent', error, true)
+            }
           } else {
-            // Standalone/popup/expo: use stored credentials immediately
+            // Standalone/popup: use stored credentials immediately
             setCredentials(stored)
             if (stored.length > 0) {
               setReadyToSign(true)
@@ -301,22 +309,26 @@ const detectEnvironment = (): "browser" | "expo" | "unknown" => {
     }
   }
 
-  // Handle sign message action
+  // Handle sign message action - Use already loaded credentials
   const handleSign = async () => {
     if (!message) return
-    if (!credentials.length) {
-      setStatus({ message: 'No credentials found. Please create a passkey first.', type: 'error' })
-      return
-    }
-
+    
     setIsLoading(true)
+    setIsSigning(true)
     try {
-      const cred = credentials[0]
-      const signatureData = await signMessage(cred.credentialId, message, displayStatus)
+      // Use already loaded credentials (both iframe and standalone)
+      if (credentials.length === 0) {
+        throw new Error('No credentials available for signing')
+      }
+      
+      const credentialToUse = credentials[0]
+      
+      displayStatus('Signing message...', 'info')
+      const signatureData = await signMessage(credentialToUse.credentialId, message, displayStatus)
       
       const responseData = {
         data: signatureData,
-        credentialId: cred.credentialId,
+        credentialId: credentialToUse.credentialId,
         originalMessage: message,
         timestamp: new Date().toISOString(),
         type: 'SIGNATURE_CREATED'
@@ -327,6 +339,7 @@ const detectEnvironment = (): "browser" | "expo" | "unknown" => {
       handleError('Failed to sign message', error, true)
     } finally {
       setIsLoading(false)
+      setIsSigning(false)
     }
   }
 
@@ -350,9 +363,7 @@ const detectEnvironment = (): "browser" | "expo" | "unknown" => {
       
       const signInData = await signIn(displayStatus)
       
-      // Save credential ID to local storage
-      // Note: We're saving with empty public key for now
-      await saveCredential(signInData.credentialId, '')
+      // signIn function already saves credential, just refresh UI
       const updatedCreds = await getStoredCredentials()
       setCredentials(updatedCreds)
       
@@ -442,7 +453,7 @@ const detectEnvironment = (): "browser" | "expo" | "unknown" => {
         <Card className="w-full max-w-md">
           <CardHeader>
             <CardTitle className="flex items-center justify-between">
-              <span>Wallet Actions</span>
+              <span>Passkey Sharing Hub</span>
               {credentials.length > 0 && (
                 <span className="text-sm text-muted-foreground">
                   {credentials.length} Passkey{credentials.length !== 1 ? 's' : ''}
@@ -450,7 +461,7 @@ const detectEnvironment = (): "browser" | "expo" | "unknown" => {
               )}
             </CardTitle>
             <CardDescription>
-              Manage your wallet credentials and perform actions
+             Manage your passkeys on this device
             </CardDescription>
           </CardHeader>
 
@@ -474,6 +485,7 @@ const detectEnvironment = (): "browser" | "expo" | "unknown" => {
               hasCredentials={credentials.length > 0}
               isLoading={isLoading}
               hasMessage={!!message}
+              isSigning={isSigning}
               onSign={handleSign}
               onSignIn={() => credentials.length > 0 
                 ? handleAuthenticate(currentEnvironment, currentExpoParam || undefined)

@@ -9,22 +9,16 @@ import {
 } from '@solana/web3.js';
 import { Paymaster } from './Paymaster';
 import { SignResponse } from '../../types';
-import { LazorKitProgram } from './sdk/lazor-kit';
-import { DefaultRuleProgram } from './sdk/default-rule-program';
-import * as anchor from "@coral-xyz/anchor";
-import { LAMPORTS_PER_SOL } from "@solana/web3.js";
+import { LazorKitProgram } from './anchor/interface/lazorkit';
 import { Buffer } from 'buffer';
 import { Logger } from '../../utils/logger';
-import IDL from './idl/lazorkit.json';
-import bs58 from 'bs58';
+import { StorageUtil } from '../../utils/storage';
 
 export class SmartWallet {
   private paymaster: Paymaster;
   private lastestSmartWallet: PublicKey | null = null;
-  private defaultRuleProgram: DefaultRuleProgram;
   private lazorkitProgram: LazorKitProgram;
   private logger = new Logger('SmartWallet');
-
   /**
    * Create a new SmartWallet instance
    * @param ownerPublicKey The owner's public key
@@ -34,7 +28,7 @@ export class SmartWallet {
   constructor(paymaster: Paymaster, connection: Connection) {
     this.paymaster = paymaster;
     this.lazorkitProgram = new LazorKitProgram(connection);
-    this.defaultRuleProgram = new DefaultRuleProgram(connection);
+    
   }
 
   /**
@@ -55,7 +49,7 @@ export class SmartWallet {
    */
   async buildTransaction(
     instruction: TransactionInstruction,
-    signResponse: SignResponse
+    signResponse: SignResponse,
   ): Promise<{ transaction: Transaction }> {
     this.logger.debug('Building transaction with smart wallet');
     
@@ -82,31 +76,22 @@ export class SmartWallet {
     }
     this.logger.debug('Using smart wallet address', { address: this.lastestSmartWallet?.toBase58() });
     console.log(storedPublicKey);
-    const { smartWalletAuthenticator } = await this.getSmartWalletByPasskey(Array.from(Buffer.from(storedPublicKey, 'base64')));
-    if (!smartWalletAuthenticator) {
+    const smartWalletAuthenticator  = await this.lazorkitProgram.getSmartWalletByPasskey(Array.from(Buffer.from(storedPublicKey, 'base64')));
+    if (!smartWalletAuthenticator.smartWallet) {
       this.logger.error('Smart wallet authenticator not found');
       throw new Error('Smart wallet authenticator not found');
     }
-    // Get rule check instruction
-    const checkRule = await this.defaultRuleProgram.checkRuleIns(
-      this.lastestSmartWallet!,
-      smartWalletAuthenticator
-    );
-    
-    this.logger.debug('Check rule instruction created');
-    console.log(storedPublicKey);
-    console.log(msg);
-    console.log(normalized);
     
     // Create execution transaction with authenticated instruction
     const executeTxn = await this.lazorkitProgram.executeInstructionTxn(
       Array.from(Buffer.from(storedPublicKey, 'base64')),
-      Buffer.from(msg, 'base64'),
-      Buffer.from(normalized, 'base64'),
-      checkRule,
-      instruction,
+      Buffer.from(signResponse.clientDataJSONReturn, 'base64'),
+      Buffer.from(signResponse.authenticatorDataReturn, 'base64'),
+      Buffer.from(signResponse.normalized, 'base64'),
       payer,
-      this.lastestSmartWallet!
+      new PublicKey(smartWalletAuthenticator.smartWallet),
+      null,
+      instruction,
     );
 
     executeTxn.feePayer = payer;
@@ -120,132 +105,65 @@ export class SmartWallet {
    * @param ownerPublicKey The owner's public key as a base64 encoded string
    * @returns The smart wallet address as a base58 encoded string
    */
-  async createSmartWallet(ownerPublicKey: string): Promise<string> {
-    if (!ownerPublicKey) {
-      this.logger.error('Invalid owner public key provided to createSmartWallet');
-      // Try to get public key from localStorage as fallback
-      const storedPublicKey = localStorage.getItem('PUBLIC_KEY');
-      if (!storedPublicKey) {
-        throw new Error('Public key not found. Please reconnect your wallet.');
-      }
-      ownerPublicKey = storedPublicKey;
-      this.logger.debug('Using public key from localStorage as fallback');
-    }
-    
-    this.logger.debug('Creating smart wallet for owner', { keyLength: ownerPublicKey.length });
-    const { smartWallet } = await this.getSmartWalletByPasskey(Array.from(Buffer.from(ownerPublicKey, 'base64')));
+  async createSmartWallet(
+    ownerPublicKey: string,
+    credentialId: string
+  ): Promise<string> {
+    const { smartWallet } = await this.lazorkitProgram.getSmartWalletByPasskey(Array.from(Buffer.from(ownerPublicKey, 'base64')));
     if (smartWallet) {
       this.logger.debug('Smart wallet already exists', { address: smartWallet.toBase58() });
       return smartWallet.toBase58();
     }
     else {
       this.logger.debug('Smart wallet does not exist, creating...');
-       // Get wallet address
-    const smartWallet = await this.getAddress();
-    this.logger.debug('Got smart wallet address', { address: smartWallet });
-    
-    // Store the smart wallet address in local storage for immediate access
-    localStorage.setItem('SMART_WALLET_ADDRESS', smartWallet);
-    
-    // Get necessary components for transactions
-    const payer = await this.paymaster.getPayer();
-    const blockhash = await this.paymaster.getBlockhash();
-    const pubkey = Array.from(Buffer.from(ownerPublicKey, 'base64')) as number[];
-    
-    // Create authenticator for the smart wallet
-    const [smartWalletAuthenticator] = this.lazorkitProgram.smartWalletAuthenticator(
-      pubkey, 
-      new PublicKey(smartWallet)
-    );
-    this.logger.debug('Created smart wallet authenticator');
-   
-    // Step 1: Fund the smart wallet with a small amount of SOL
-    this.logger.debug('Funding smart wallet with SOL');
-    const depositSolIns = anchor.web3.SystemProgram.transfer({
-      fromPubkey: payer,
-      toPubkey: new PublicKey(smartWallet),
-      lamports: LAMPORTS_PER_SOL / 100, // 0.01 SOL
-    });
-    
-    const depositSolTxn = new anchor.web3.Transaction().add(depositSolIns);
-    depositSolTxn.recentBlockhash = blockhash;
-    depositSolTxn.feePayer = payer;
-    await this.paymaster.signAndSend(depositSolTxn);
-    this.logger.debug('Successfully funded smart wallet');
-    
-    // Step 2: Initialize rule for the smart wallet
-    this.logger.debug('Initializing rule for smart wallet');
-    const initRuleIns = await this.defaultRuleProgram.initRuleIns(
-      payer,
-      new PublicKey(smartWallet),
-      smartWalletAuthenticator
-    );
-    
-    // Step 3: Create the smart wallet using the rule instruction
-    this.logger.debug('Creating smart wallet transaction');
-    const createSmartWalletTxn = await this.lazorkitProgram.createSmartWalletTxn(
-      pubkey,
-      initRuleIns,
-      payer
-    );
-    
-    await this.paymaster.signAndSend(createSmartWalletTxn);
-    this.logger.debug('Smart wallet successfully created', { address: smartWallet });
-    
-    // Dispatch an event to notify that the smart wallet is ready
-    const event = new CustomEvent('lazorkit:smart-wallet-ready', {
-      detail: { address: smartWallet },
-      bubbles: true,
-      cancelable: true
-    });
-    window.dispatchEvent(event);
-    
-    return smartWallet;
+      // Get wallet address
+      const smartWallet = await this.getAddress();
+      this.logger.debug('Got smart wallet address', { address: smartWallet });
+      
+      // Store the smart wallet address in local storage for immediate access
+      localStorage.setItem('SMART_WALLET_ADDRESS', smartWallet);
+      
+      // Get necessary components for transactions
+      const payer = await this.paymaster.getPayer();
+      const pubkey = Array.from(Buffer.from(ownerPublicKey, 'base64')) as number[];
+      this.logger.debug('Creating smart wallet transaction');
+      const createSmartWalletTxn = await this.lazorkitProgram.createSmartWalletTxn(
+        pubkey,
+        null,
+        payer, 
+        credentialId
+      );
+      
+      await this.paymaster.signAndSend(createSmartWalletTxn);
+      this.logger.debug('Smart wallet successfully created', { address: smartWallet });
+      return smartWallet;
     }
   }
-
-  async getSmartWalletByPasskey(passkeyPubkey: number[]): Promise<{
-    smartWallet: anchor.web3.PublicKey | null;
-    smartWalletAuthenticator: anchor.web3.PublicKey | null;
-  }> {
-    // accounts
-    const discriminator = IDL.accounts.find(
-      (a) => a.name === 'SmartWalletAuthenticator'
-    )!.discriminator;
-
-    const accounts = await this.lazorkitProgram.connection.getProgramAccounts(this.lazorkitProgram.programId, {
-      dataSlice: {
-        offset: 8,
-        length: 33,
-      },
-      filters: [
-        {
-          memcmp: {
-            offset: 0,
-            bytes: bs58.encode(discriminator),
-          },
-        },
-        {
-          memcmp: {
-            offset: 8,
-            bytes: bs58.encode(passkeyPubkey),
-          },
-        },
-      ],
-    });
-    console.log('Found accounts:', accounts.length);
-
-    if (accounts.length === 0) {
-      return { smartWalletAuthenticator: null, smartWallet: null };
+  async getMessage(): Promise<string> {
+    const smartWallet = localStorage.getItem('SMART_WALLET_ADDRESS');
+    if (!smartWallet) {
+      this.logger.error('Smart wallet address not found in local storage');
+      throw new Error('Smart wallet address not found');
     }
+    return (await this.lazorkitProgram.getMessage(smartWallet)).toString('base64').replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+  }
 
-    const smartWalletAuthenticatorData = await this.lazorkitProgram.getSmartWalletAuthenticatorData(
-      accounts[0].pubkey
-    );
-
-    return {
-      smartWalletAuthenticator: accounts[0].pubkey,
-      smartWallet: smartWalletAuthenticatorData.smartWallet,
-    };
+  async getSmartWalletCredential(credentialId: string): Promise<string> {
+    const pubkey = await this.lazorkitProgram.getSmartWalletByCredentialId(credentialId);
+    console.log(pubkey.smartWallet);
+    if (!pubkey.smartWallet) {
+      this.logger.error('Smart wallet address not found in local storage');
+      throw new Error('Smart wallet address not found');
+    }
+    if (!pubkey.smartWalletAuthenticator) {
+      this.logger.error('Smart wallet authenticator not found in local storage');
+      throw new Error('Smart wallet authenticator not found');
+    }
+    const smartwalletAuthenticatorData = await this.lazorkitProgram.getSmartWalletAuthenticatorData(new PublicKey(pubkey.smartWalletAuthenticator));
+    console.log(smartwalletAuthenticatorData.passkeyPubkey);
+    StorageUtil.setItem('PUBLIC_KEY', Buffer.from(smartwalletAuthenticatorData.passkeyPubkey).toString('base64'));
+    return pubkey.smartWallet.toBase58();
   }
 }
