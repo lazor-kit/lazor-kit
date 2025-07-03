@@ -105,7 +105,7 @@ pub fn verify_secp256r1_instruction(
     ix: &Instruction,
     pubkey: [u8; SECP_PUBKEY_SIZE as usize],
     msg: Vec<u8>,
-    sig: Vec<u8>,
+    sig: &[u8],
 ) -> Result<()> {
     let expected_len =
         (SECP_DATA_START + SECP_PUBKEY_SIZE + SECP_SIGNATURE_SIZE) as usize + msg.len();
@@ -120,7 +120,7 @@ fn verify_secp256r1_data(
     data: &[u8],
     public_key: [u8; SECP_PUBKEY_SIZE as usize],
     message: Vec<u8>,
-    signature: Vec<u8>,
+    signature: &[u8],
 ) -> Result<()> {
     let msg_len = message.len() as u16;
     let offsets = calculate_secp_offsets(msg_len);
@@ -129,7 +129,7 @@ fn verify_secp256r1_data(
         return Err(LazorKitError::Secp256r1HeaderMismatch.into());
     }
 
-    if !verify_secp_data(data, &public_key, &signature, &message) {
+    if !verify_secp_data(data, &public_key, signature, &message) {
         return Err(LazorKitError::Secp256r1DataMismatch.into());
     }
 
@@ -193,7 +193,6 @@ impl PasskeyExt for [u8; SECP_PUBKEY_SIZE as usize] {
     }
 }
 
-/// Transfer SOL from a PDA-owned account
 #[inline]
 pub fn transfer_sol_from_pda(from: &AccountInfo, to: &AccountInfo, amount: u64) -> Result<()> {
     // Ensure the 'from' account is owned by this program
@@ -204,50 +203,5 @@ pub fn transfer_sol_from_pda(from: &AccountInfo, to: &AccountInfo, amount: u64) 
     **from.try_borrow_mut_lamports()? -= amount;
     // Credit to destination account
     **to.try_borrow_mut_lamports()? += amount;
-    Ok(())
-}
-
-/// Helper to get sighash for anchor instructions
-pub fn sighash(namespace: &str, name: &str) -> [u8; 8] {
-    let preimage = format!("{}:{}", namespace, name);
-    let mut out = [0u8; 8];
-    out.copy_from_slice(
-        &anchor_lang::solana_program::hash::hash(preimage.as_bytes()).to_bytes()[..8],
-    );
-    out
-}
-
-/// Helper: Get a slice of accounts from remaining_accounts
-pub fn get_account_slice<'a>(
-    accounts: &'a [AccountInfo<'a>],
-    start: u8,
-    len: u8,
-) -> Result<&'a [AccountInfo<'a>]> {
-    accounts
-        .get(start as usize..(start as usize + len as usize))
-        .ok_or(crate::error::LazorKitError::AccountSliceOutOfBounds.into())
-}
-
-/// Helper: Create a PDA signer struct
-pub fn get_pda_signer(passkey: &[u8; 33], wallet: Pubkey, bump: u8) -> PdaSigner {
-    PdaSigner {
-        seeds: vec![
-            crate::state::SmartWalletAuthenticator::PREFIX_SEED.to_vec(),
-            wallet.to_bytes().to_vec(),
-            passkey.to_hashed_bytes(wallet).to_vec(),
-        ],
-        bump,
-    }
-}
-
-/// Helper: Check if a program is in the whitelist
-pub fn check_whitelist(
-    whitelist: &crate::state::WhitelistRulePrograms,
-    program: &Pubkey,
-) -> Result<()> {
-    require!(
-        whitelist.list.contains(program),
-        crate::error::LazorKitError::RuleProgramNotWhitelisted
-    );
     Ok(())
 }

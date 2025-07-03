@@ -1,11 +1,9 @@
-use anchor_lang::prelude::*;
+use anchor_lang::{prelude::*, system_program};
 
 use crate::{
     constants::{PASSKEY_SIZE, SMART_WALLET_SEED},
-    state::{
-        Config, SmartWalletAuthenticator, SmartWalletConfig, SmartWalletSeq, WhitelistRulePrograms,
-    },
-    utils::{execute_cpi, transfer_sol_from_pda, PasskeyExt, PdaSigner},
+    state::{Config, SmartWalletAuthenticator, SmartWalletConfig, SmartWalletSeq},
+    utils::{transfer_sol_from_pda, PasskeyExt},
     ID,
 };
 
@@ -13,46 +11,33 @@ pub fn create_smart_wallet(
     ctx: Context<CreateSmartWallet>,
     passkey_pubkey: [u8; PASSKEY_SIZE],
     credential_id: Vec<u8>,
-    rule_data: Vec<u8>,
 ) -> Result<()> {
-    let wallet_data = &mut ctx.accounts.smart_wallet_config;
-    let sequence_account = &mut ctx.accounts.smart_wallet_seq;
-    let smart_wallet_authenticator = &mut ctx.accounts.smart_wallet_authenticator;
-
-    wallet_data.set_inner(SmartWalletConfig {
-        rule_program: ctx.accounts.config.default_rule_program,
-        id: sequence_account.seq,
-        last_nonce: 0,
-        bump: ctx.bumps.smart_wallet,
-    });
+    // Initialize the smart wallet config
+    let smart_wallet_config = &mut ctx.accounts.smart_wallet_config;
+    smart_wallet_config.id = ctx.accounts.smart_wallet_seq.seq;
+    smart_wallet_config.last_nonce = 0;
 
     // Initialize the smart wallet authenticator
-    smart_wallet_authenticator.set_inner(SmartWalletAuthenticator {
-        passkey_pubkey,
-        smart_wallet: ctx.accounts.smart_wallet.key(),
-        credential_id,
-        bump: ctx.bumps.smart_wallet_authenticator,
-    });
-    let signer = PdaSigner {
-        seeds: vec![
-            SmartWalletAuthenticator::PREFIX_SEED.to_vec(),
-            ctx.accounts.smart_wallet.key().as_ref().to_vec(),
-            passkey_pubkey
-                .to_hashed_bytes(ctx.accounts.smart_wallet.key())
-                .as_ref()
-                .to_vec(),
-        ],
-        bump: ctx.bumps.smart_wallet_authenticator,
-    };
+    let smart_wallet_authenticator = &mut ctx.accounts.smart_wallet_authenticator;
+    smart_wallet_authenticator.passkey_pubkey = passkey_pubkey;
+    smart_wallet_authenticator.smart_wallet = ctx.accounts.smart_wallet.key();
+    smart_wallet_authenticator.credential_id = credential_id;
+    smart_wallet_authenticator.bump = ctx.bumps.smart_wallet_authenticator;
 
-    execute_cpi(
-        &ctx.remaining_accounts,
-        &rule_data,
-        &ctx.accounts.default_rule_program,
-        Some(signer),
-    )?;
+    // Increment the sequence for the next smart wallet
+    ctx.accounts.smart_wallet_seq.seq += 1;
 
-    sequence_account.seq += 1;
+    // Transfer fee from signer to the config account, if any
+    let fee = ctx.accounts.config.create_smart_wallet_fee;
+    if fee > 0 {
+        let cpi_accounts = system_program::Transfer {
+            from: ctx.accounts.signer.to_account_info(),
+            to: ctx.accounts.config.to_account_info(),
+        };
+        let cpi_context =
+            CpiContext::new(ctx.accounts.system_program.to_account_info(), cpi_accounts);
+        system_program::transfer(cpi_context, fee)?;
+    }
 
     transfer_sol_from_pda(
         &ctx.accounts.smart_wallet,
@@ -69,7 +54,6 @@ pub struct CreateSmartWallet<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
 
-    /// CHECK: This account is only used for its public key and seeds.
     #[account(
         mut,
         seeds = [SmartWalletSeq::PREFIX_SEED],
@@ -78,20 +62,14 @@ pub struct CreateSmartWallet<'info> {
     pub smart_wallet_seq: Account<'info, SmartWalletSeq>,
 
     #[account(
-        seeds = [WhitelistRulePrograms::PREFIX_SEED],
-        bump,
-        owner = ID
-    )]
-    pub whitelist_rule_programs: Account<'info, WhitelistRulePrograms>,
-
-    #[account(
         init,
         payer = signer,
         space = 0,
         seeds = [SMART_WALLET_SEED, smart_wallet_seq.seq.to_le_bytes().as_ref()],
         bump
     )]
-    /// CHECK: This account is only used for its public key and seeds.
+    /// CHECK: This PDA acts as a signer for the smart wallet.
+    /// It is initialized with 0 space because its data is stored in SmartWalletConfig.
     pub smart_wallet: UncheckedAccount<'info>,
 
     #[account(
@@ -101,7 +79,7 @@ pub struct CreateSmartWallet<'info> {
         seeds = [SmartWalletConfig::PREFIX_SEED, smart_wallet.key().as_ref()],
         bump
     )]
-    pub smart_wallet_config: Box<Account<'info, SmartWalletConfig>>,
+    pub smart_wallet_config: Account<'info, SmartWalletConfig>,
 
     #[account(
         init,
@@ -117,17 +95,12 @@ pub struct CreateSmartWallet<'info> {
     pub smart_wallet_authenticator: Box<Account<'info, SmartWalletAuthenticator>>,
 
     #[account(
+        mut,
         seeds = [Config::PREFIX_SEED],
         bump,
         owner = ID
     )]
-    pub config: Box<Account<'info, Config>>,
-
-    #[account(
-        address = config.default_rule_program
-    )]
-    /// CHECK:
-    pub default_rule_program: UncheckedAccount<'info>,
+    pub config: Account<'info, Config>,
 
     pub system_program: Program<'info, System>,
 }

@@ -9,7 +9,7 @@ pub mod utils;
 use constants::PASSKEY_SIZE;
 use instructions::*;
 
-declare_id!("6Jh4kA4rkZquv9XofKqgbyrRcTDF19uM5HL4xyh6gaSo");
+declare_id!("9gJ7jZaAvUafgTFPoqkCwbuvC9kpZCPtHfHjMkQ66wu9");
 
 /// The Lazor Kit program provides smart wallet functionality with passkey authentication
 #[program]
@@ -26,9 +26,8 @@ pub mod lazorkit {
         ctx: Context<CreateSmartWallet>,
         passkey_pubkey: [u8; PASSKEY_SIZE],
         credential_id: Vec<u8>,
-        rule_data: Vec<u8>,
     ) -> Result<()> {
-        instructions::create_smart_wallet(ctx, passkey_pubkey, credential_id, rule_data)
+        instructions::create_smart_wallet(ctx, passkey_pubkey, credential_id)
     }
 
     /// Execute an instruction with passkey authentication
@@ -37,13 +36,5 @@ pub mod lazorkit {
         args: ExecuteInstructionArgs,
     ) -> Result<()> {
         instructions::execute_instruction(ctx, args)
-    }
-
-    /// Update the list of whitelisted rule programs
-    pub fn upsert_whitelist_rule_programs(
-        ctx: Context<UpsertWhitelistRulePrograms>,
-        program_id: Pubkey,
-    ) -> Result<()> {
-        instructions::upsert_whitelist_rule_programs(ctx, program_id)
     }
 }
