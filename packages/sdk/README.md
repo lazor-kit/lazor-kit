@@ -9,7 +9,7 @@
 
 <br />
 
-> **Seamless Web3 authentication for the web. A web wallet adapter that leverages passkey authentication, smart wallets, and gasless transactions for the Solana ecosystem.
+> Seamless Web3 authentication for the web. A web wallet adapter that leverages passkey authentication, smart wallets, and gasless transactions for the Solana ecosystem.
 
 ## 📚 Table of Contents
 
@@ -19,7 +19,6 @@
 - [Integration Guide](#-integration-guide)
 - [API Reference](#-api-reference)
 - [Advanced Usage](#-advanced-usage)
-- [Security](#-security)
 - [Support](#-support)
 
 ## 🌟 Overview
@@ -324,8 +323,8 @@ const {
     // Actions
     connect, // (options?: SDKOptions) => Promise<WalletInfo>
     disconnect, // () => Promise<void>
-    signTransaction, // (instruction: TransactionInstruction) => Promise<string>
-    signAndSendTransaction, // (instruction: TransactionInstruction) => Promise<Transaction>
+    signTransaction, // (instruction: TransactionInstruction) => Promise<Transaction> 
+    signAndSendTransaction, // (instruction: TransactionInstruction) => Promise<string>
 } = useWallet();
 
 ```
@@ -375,7 +374,7 @@ type ConnectResponse = {
 type SignResponse = {
   signature: string;              // Base64 encoded signature
   msg: string;                    // Original message
-  normalized: string;             // Normalized message
+  normalized: string;             // Normalized signature
   credentialId?: string;          // Credential ID used for signing
   publicKey?: string;             // Public key used for signing
   timestamp: number;              // Response timestamp
@@ -449,7 +448,7 @@ const signTransferSOL = async () => {
   });
 
   try {
-    // Sign only, returns transaction signature
+    // Sign only, returns transaction 
     const signature = await signTransaction(instruction);
     console.log('Transaction signed:', signature);
     return signature;
@@ -459,69 +458,6 @@ const signTransferSOL = async () => {
   }
 };
 ```
-
-### Multiple Instructions
-
-```tsx
-const executeMultipleInstructions = async () => {
-  if (!smartWalletPubkey) return;
-
-  // Create multiple instructions
-  const instructions = [
-    // Memo instruction
-    new anchor.web3.TransactionInstruction({
-      keys: [],
-      programId: new anchor.web3.PublicKey('Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo'),
-      data: Buffer.from('Batch transaction', 'utf-8'),
-    }),
-    // Add more instructions as needed
-  ];
-
-  // Sign each instruction
-  for (const instruction of instructions) {
-    try {
-      const signature = await signTransaction(instruction);
-      console.log('Instruction signed:', signature);
-    } catch (error) {
-      console.error('Batch execution failed:', error);
-      break;
-    }
-  }
-};
-
-// Or sign and send each instruction in one step
-const executeAndSendMultipleInstructions = async () => {
-  if (!smartWalletPubkey) return;
-
-  // Create multiple instructions
-  const instructions = [
-    // Memo instruction
-    new anchor.web3.TransactionInstruction({
-      keys: [],
-      programId: new anchor.web3.PublicKey('Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo'),
-      data: Buffer.from('First instruction', 'utf-8'),
-    }),
-    // Second instruction
-    new anchor.web3.TransactionInstruction({
-      keys: [],
-      programId: new anchor.web3.PublicKey('Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo'),
-      data: Buffer.from('Second instruction', 'utf-8'),
-    })
-  ];
-
-  // Sign and send each instruction
-  for (const instruction of instructions) {
-    try {
-      const signature = await signAndSendTransaction(instruction);
-      console.log('Instruction signed and sent:', signature);
-    } catch (error) {
-      console.error('Batch execution failed:', error);
-      break;
-    }
-  }
-};
-```
-
 ---
 
 ## 💾 Credential Storage and Syncing

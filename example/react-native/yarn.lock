@@ -1397,7 +1397,6 @@
   dependencies:
     "@jridgewell/resolve-uri" "^3.1.0"
     "@jridgewell/sourcemap-codec" "^1.4.14"
-
 "@lazorkit/wallet-mobile-adapter@1.2.70":
   version "1.2.70"
   resolved "https://registry.yarnpkg.com/@lazorkit/wallet-mobile-adapter/-/wallet-mobile-adapter-1.2.70.tgz#d2265a3be5d9f6c5aa657530988a82e574ae01f3"
