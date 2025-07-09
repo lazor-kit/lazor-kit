@@ -127,24 +127,17 @@ if (typeof window !== 'undefined') {
 
 1. Setup the Provider:
 ```tsx
-import { LazorKitProvider } from '@lazorkit/wallet';
+import { LazorkitProvider } from '@lazorkit/wallet';
 
 export default function App() {
   return (
-    <LazorKitProvider
+    <LazorkitProvider
       rpcUrl={process.env.LAZORKIT_RPC_URL}
-      portalUrl={process.env.LAZORKIT_PORTAL_URL}
+      ipfsUrl={process.env.LAZORKIT_PORTAL_URL}
       paymasterUrl={process.env.LAZORKIT_PAYMASTER_URL}
-      config={{
-        autoConnect: true,          // Auto-connect if credentials exist
-        persistCredentials: true,   // Save credentials to local storage
-        syncBetweenTabs: true,     // Sync wallet state between tabs
-        allowIframe: true,         // Enable iframe support
-        debug: true                // Enable debug logging
-      }}
     >
       <YourApp />
-    </LazorKitProvider>
+    </LazorkitProvider>
   );
 }
 ```
