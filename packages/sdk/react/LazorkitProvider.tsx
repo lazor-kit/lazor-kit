@@ -39,8 +39,42 @@ export const LazorkitProvider = (props: LazorkitProviderProps) => {
       setIsConnecting(false);
     });
 
+    // Disconnect event listeners
+    sdk.on('disconnect:start', () => setIsConnecting(true));
+    sdk.on('disconnect:success', () => {
+      setAccount(null);
+      setIsConnecting(false);
+      setError(null);
+    });
+    sdk.on('disconnect:error', (error) => {
+      setError(error);
+      setIsConnecting(false);
+    });
+
+    // Reconnect event listeners  
+    sdk.on('reconnect:start', () => setIsConnecting(true));
+    sdk.on('reconnect:success', (account) => {
+      setAccount(account);
+      setIsConnecting(false);
+      setError(null);
+    });
+    sdk.on('reconnect:error', (error) => {
+      setError(error);
+      setIsConnecting(false);
+    });
+
+    // Legacy disconnect event for backward compatibility
+    sdk.on('disconnect', () => {
+      setAccount(null);
+      setError(null);
+    });
+
     sdk.on('transaction:start', () => setIsSigning(true));
     sdk.on('transaction:success', () => {
+      setIsSigning(false);
+      setError(null);
+    });
+    sdk.on('transaction:sent', () => {
       setIsSigning(false);
       setError(null);
     });

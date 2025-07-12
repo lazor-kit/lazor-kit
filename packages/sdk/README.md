@@ -19,6 +19,7 @@
 - [Integration Guide](#-integration-guide)
 - [API Reference](#-api-reference)
 - [Advanced Usage](#-advanced-usage)
+- [Event System](#-event-system)
 - [Support](#-support)
 
 ## 🌟 Overview
@@ -28,6 +29,8 @@ LazorKit SDK enables web applications to integrate secure, passwordless wallet f
 - Passkey creation and authentication
 - Smart wallet deployment and management
 - Transaction signing and sending
+- **Automatic reconnection** with stored credentials
+- **Disconnect/reconnect functionality** without data loss
 - Cross-origin communication
 - Credential persistence
 - Gasless transactions via paymaster
@@ -43,13 +46,27 @@ LazorKit SDK enables web applications to integrate secure, passwordless wallet f
 
 ## ✨ Features
 
-🔐 **Passkey Authentication**
+🔐 **Enhanced Authentication**
 - WebAuthn-based wallet creation
+- **Auto-reconnection** with stored credentials
+- **Seamless disconnect/reconnect** without losing state
 - Secure key storage in hardware
 - Cross-device synchronization
 - Biometric authentication support
 
-💸 **Gasless Transactions**
+� **Improved Connection Management**
+- **Smart reconnection logic** - tries stored credentials first
+- **Preserves communication handler** on disconnect
+- **Proper state cleanup** while maintaining reconnection capability
+- **Comprehensive error handling** with automatic recovery
+
+⚡ **Flexible Wallet Creation**
+- **Separate passkey creation**: `createPasskeyOnly()`
+- **Separate smart wallet creation**: `createSmartWalletOnly(passkeyData)`
+- **Full wallet creation**: `connect()` (default)
+- Step-by-step wallet creation workflows
+
+�💸 **Gasless Transactions**
 - Built-in paymaster integration
 - Fee sponsorship options
 - Transaction bundling
@@ -61,11 +78,13 @@ LazorKit SDK enables web applications to integrate secure, passwordless wallet f
 - Message validation
 - Origin verification
 
-⚡ **Smart Wallet Features**
-- Automatic wallet creation
-- Transaction signing
-- Balance management
-- Key recovery options
+🎯 **Enhanced Event System**
+- **Connection events**: `connect:start`, `connect:success`, `connect:error`
+- **Disconnect events**: `disconnect:start`, `disconnect:success`, `disconnect:error`  
+- **Reconnect events**: `reconnect:start`, `reconnect:success`, `reconnect:error`
+- **Passkey events**: `passkey:start`, `passkey:success`, `passkey:error`
+- **Smart wallet events**: `smartwallet:start`, `smartwallet:success`, `smartwallet:error`
+- **Transaction events**: `transaction:start`, `transaction:success`, `transaction:sent`, `transaction:error`
 
 🔗 **Solana Integration**
 - Full Anchor support
@@ -74,16 +93,17 @@ LazorKit SDK enables web applications to integrate secure, passwordless wallet f
 - RPC configuration
 
 💾 **Credential Management**
-- Secure storage
+- **Persistent storage** across page refreshes
+- **Auto-reconnection** on app restart
 - Cross-component syncing
-- Persistence options
 - Recovery mechanisms
 
 🛡️ **Security Features**
 - Origin validation
 - Message encryption
 - Signature verification
-- Error handling
+- **Comprehensive error handling**
+- **Automatic cleanup** and memory management
 
 ---
 
@@ -127,24 +147,17 @@ if (typeof window !== 'undefined') {
 
 1. Setup the Provider:
 ```tsx
-import { LazorKitProvider } from '@lazorkit/wallet';
+import { LazorkitProvider } from '@lazorkit/wallet';
 
 export default function App() {
   return (
-    <LazorKitProvider
+    <LazorkitProvider
       rpcUrl={process.env.LAZORKIT_RPC_URL}
-      portalUrl={process.env.LAZORKIT_PORTAL_URL}
+      ipfsUrl={process.env.LAZORKIT_PORTAL_URL}
       paymasterUrl={process.env.LAZORKIT_PAYMASTER_URL}
-      config={{
-        autoConnect: true,          // Auto-connect if credentials exist
-        persistCredentials: true,   // Save credentials to local storage
-        syncBetweenTabs: true,     // Sync wallet state between tabs
-        allowIframe: true,         // Enable iframe support
-        debug: true                // Enable debug logging
-      }}
     >
       <YourApp />
-    </LazorKitProvider>
+    </LazorkitProvider>
   );
 }
 ```
@@ -152,107 +165,66 @@ export default function App() {
 2. Use the Wallet Hook:
 ```tsx
 import { useWallet } from '@lazorkit/wallet';
-import * as anchor from '@coral-xyz/anchor';
+import { SystemProgram, LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
 
 function WalletDemo() {
   const {
     // State
-    smartWalletPubkey: PublicKey | null;     // Smart wallet address
-    isConnected: boolean;                    // Connection status (!!account)
-    isLoading: boolean;                      // Loading state (isConnecting || isSigning)
-    isConnecting: boolean;                   // Connection in progress
-    isSigning: boolean;                      // Signing in progress
-    error: Error | null;                     // Latest error if any
-    account: WalletAccount | null;           // Wallet account data
+    smartWalletPubkey,    // PublicKey | null - Smart wallet address
+    isConnected,          // boolean - Connection status (!!account)
+    isLoading,            // boolean - Loading state (isConnecting || isSigning)
+    isConnecting,         // boolean - Connection in progress
+    isSigning,            // boolean - Signing in progress
+    error,                // Error | null - Latest error if any
+    account,              // WalletAccount | null - Wallet account data
 
     // Actions
-    connect: () => Promise<void>;            // Connect wallet
-    disconnect: () => void;                  // Disconnect wallet
-    signTransaction: (                       // Sign single transaction
-      transaction: Transaction
-    ) => Promise<string>;
-    signAndSendTransaction: (               // Sign and send transaction
-      transaction: Transaction
-    ) => Promise<string>;
+    connect,              // () => Promise<WalletAccount> - Connect wallet (auto-reconnect first)
+    disconnect,           // () => Promise<void> - Disconnect wallet (preserves communication)
+    signTransaction,      // (instruction: TransactionInstruction) => Promise<string>
+    signAndSendTransaction, // (instruction: TransactionInstruction) => Promise<string>
+    
+    // New methods for flexible workflows
+    createPasskeyOnly,    // () => Promise<ConnectResponse> - Create passkey only
+    createSmartWalletOnly, // (passkeyData: ConnectResponse) => Promise<{smartWalletAddress: string, account: WalletAccount}>
+    reconnect,            // () => Promise<WalletAccount> - Reconnect using stored credentials
   } = useWallet();
 
-  // 1. Connect wallet
+  // 1. Connect wallet (tries auto-reconnect first)
   const handleConnect = async () => {
     try {
-      await connect();
-      console.log('Connected:', smartWalletPubkey?.toString());
+      const account = await connect();
+      console.log('Connected:', account.smartWallet);
     } catch (error) {
       console.error('Connection failed:', error);
     }
   };
 
-  // 2. Sign and send a transaction
+  // 2. Sign and send transaction
   const handleTransfer = async () => {
     if (!smartWalletPubkey) return;
 
     try {
-      // Create transfer instruction
-      const transaction = new Transaction().add(
-        SystemProgram.transfer({
-          fromPubkey: smartWalletPubkey,
-          toPubkey: new PublicKey('...'),
-          lamports: LAMPORTS_PER_SOL * 0.1,
-        })
-      );
+      const instruction = SystemProgram.transfer({
+        fromPubkey: smartWalletPubkey,
+        toPubkey: new PublicKey('7BeWr6tVa1pYgrEddekYTnQENU22bBw9H8HYJUkbrN71'),
+        lamports: LAMPORTS_PER_SOL * 0.1,
+      });
 
-      // Sign and send transaction
-      const signature = await signAndSendTransaction(transaction);
+      const signature = await signAndSendTransaction(instruction);
       console.log('Transfer sent:', signature);
     } catch (error) {
       console.error('Transfer failed:', error);
     }
   };
 
-  // 3. Sign a transaction
-  const handleSign = async () => {
-    if (!smartWalletPubkey) return;
-
+  // 3. Disconnect (can reconnect later)
+  const handleDisconnect = async () => {
     try {
-      // Create transaction
-      const transaction = new Transaction().add(
-        // Add your instructions here
-      );
-
-      // Sign transaction
-      const signature = await signTransaction(transaction);
-      console.log('Transaction signed:', signature);
+      await disconnect();
+      console.log('Disconnected successfully');
     } catch (error) {
-      console.error('Signing failed:', error);
-    }
-  };
-
-  // 4. Handle multiple instructions
-  const handleBatchTransfer = async () => {
-    if (!smartWalletPubkey) return;
-
-    try {
-      // Create transaction with multiple instructions
-      const transaction = new Transaction();
-      
-      // Add transfer instructions
-      transaction.add(
-        SystemProgram.transfer({
-          fromPubkey: smartWalletPubkey,
-          toPubkey: new PublicKey('recipient1'),
-          lamports: LAMPORTS_PER_SOL * 0.1,
-        }),
-        SystemProgram.transfer({
-          fromPubkey: smartWalletPubkey,
-          toPubkey: new PublicKey('recipient2'),
-          lamports: LAMPORTS_PER_SOL * 0.2,
-        })
-      );
-
-      // Sign and send transaction
-      const signature = await signAndSendTransaction(transaction);
-      console.log('Batch sent:', signature);
-    } catch (error) {
-      console.error('Batch failed:', error);
+      console.error('Disconnect failed:', error);
     }
   };
 
@@ -272,19 +244,11 @@ function WalletDemo() {
           <p>Wallet: {smartWalletPubkey?.toString().slice(0, 8)}...</p>
           
           <button onClick={handleTransfer} disabled={isLoading}>
-            Transfer SOL
+            {isSigning ? 'Sending...' : 'Transfer SOL'}
           </button>
-          
-          <button onClick={handleSign} disabled={isLoading}>
-            Sign Transaction
-          </button>
-          
-          <button onClick={handleBatchTransfer} disabled={isLoading}>
-            Batch Transfer
-          </button>
-          
+
           <button 
-            onClick={disconnect}
+            onClick={handleDisconnect}
             style={{ backgroundColor: '#ff6b6b' }}
           >
             Disconnect
@@ -300,51 +264,76 @@ function WalletDemo() {
     </div>
   );
 }
+```
 
 ---
-```
+
 ## 📚 API Reference
 
-### `useWallet()`
-
-The main hook providing wallet functionality:
+### `useWallet()` Hook
 
 ```tsx
 const {
-   // State
-    smartWalletPubkey, // PublicKey | null - Smart wallet public key
-    isConnected: !!account, // boolean - Connection status
-    isLoading: isConnecting || isSigning, // boolean - General loading state
-    isConnecting, // boolean - Connection in progress
-    isSigning, // boolean - Transaction signing in progress
-    error, // Error | null - Last error that occurred
-    account, // WalletAccount | null - Connected wallet account
+  // State
+  smartWalletPubkey,     // PublicKey | null - Smart wallet public key
+  isConnected,           // boolean - Connection status (!!account)
+  isLoading,             // boolean - General loading state (isConnecting || isSigning)
+  isConnecting,          // boolean - Connection in progress
+  isSigning,             // boolean - Transaction signing in progress
+  error,                 // Error | null - Last error that occurred
+  account,               // WalletAccount | null - Connected wallet account
 
-    // Actions
-    connect, // (options?: SDKOptions) => Promise<WalletInfo>
-    disconnect, // () => Promise<void>
-    signTransaction, // (instruction: TransactionInstruction) => Promise<Transaction> 
-    signAndSendTransaction, // (instruction: TransactionInstruction) => Promise<string>
+  // Connection Actions
+  connect,               // () => Promise<WalletAccount> - Connect (auto-reconnect first)
+  disconnect,            // () => Promise<void> - Disconnect (preserves communication handler)
+  reconnect,             // () => Promise<WalletAccount> - Reconnect using stored credentials
+
+  // Transaction Actions
+  signTransaction,       // (instruction: TransactionInstruction) => Promise<string>
+  signAndSendTransaction, // (instruction: TransactionInstruction) => Promise<string>
+
+  // Advanced Wallet Creation
+  createPasskeyOnly,     // () => Promise<ConnectResponse> - Create passkey only
+  createSmartWalletOnly, // (passkeyData: ConnectResponse) => Promise<{smartWalletAddress: string, account: WalletAccount}>
 } = useWallet();
-
 ```
-### `LazorKitProvider`
 
-Provider component props:
+### Connection Workflow
 
-```tsx
-type ProviderProps = {
-  rpcUrl?: string;        // Solana RPC endpoint (default: devnet)
-  ipfsUrl?: string;       // LazorKit portal URL  
-  paymasterUrl?: string;  // Paymaster service URL
-  children: React.ReactNode;
-};
+```typescript
+// 1. Standard Connection (Recommended)
+const account = await connect();
+// → First tries reconnect() if stored credentials exist
+// → Falls back to new connection dialog if no credentials or reconnect fails
+// → Automatically cleans up corrupted credentials
+
+// 2. Manual Reconnection
+try {
+  const account = await reconnect();
+  console.log('Reconnected successfully');
+} catch (error) {
+  if (error.code === 'NO_STORED_CREDENTIALS') {
+    console.log('No stored credentials found');
+  } else if (error.code === 'INVALID_CREDENTIALS') {
+    console.log('Stored credentials are invalid');
+  }
+}
+
+// 3. Step-by-Step Wallet Creation
+// Step 1: Create passkey only
+const passkeyData = await createPasskeyOnly();
+console.log('Passkey created:', passkeyData.credentialId);
+
+// Step 2: Later create smart wallet using passkey data
+const { smartWalletAddress, account } = await createSmartWalletOnly(passkeyData);
+console.log('Smart wallet created:', smartWalletAddress);
 ```
+
 ### Type Definitions
 
 ```typescript
-// Wallet information returned after connection
-type WalletInfo = {
+// Wallet Account
+type WalletAccount = {
   credentialId: string;           // Passkey credential ID
   passkeyPubkey: number[];        // Passkey public key bytes
   smartWallet: string;            // Smart wallet address (base58)
@@ -353,50 +342,187 @@ type WalletInfo = {
   timestamp: number;              // Connection timestamp
 };
 
-// SDK Options for connection
-type SDKOptions = {
-  skipWarning?: boolean;          // Skip warning dialogs
-  mode?: 'popup' | 'dialog' | 'auto'; // Dialog display mode
-  fallbackToPopup?: boolean;      // Fallback to popup if dialog fails
-  origin?: string;                // Origin for the connection request
-};
-
-// Connect Response from the dialog
+// Connect Response (for createPasskeyOnly)
 type ConnectResponse = {
   publicKey: string;              // Base64 encoded public key
   credentialId: string;           // Credential ID
-  isCreated: boolean;             // Whether the credential was newly created
-  connectionType: 'create' | 'get'; // Type of connection
+  isCreated: boolean;             // Whether credential was newly created
+  connectionType: 'create' | 'get'; // Connection type
   timestamp: number;              // Response timestamp
 };
 
-// Sign Response from the dialog
-type SignResponse = {
-  signature: string;              // Base64 encoded signature
-  msg: string;                    // Original message
-  normalized: string;             // Normalized signature
-  credentialId?: string;          // Credential ID used for signing
-  publicKey?: string;             // Public key used for signing
-  timestamp: number;              // Response timestamp
+// Error Codes
+enum ErrorCode {
+  NOT_CONNECTED = 'NOT_CONNECTED',
+  NO_STORED_CREDENTIALS = 'NO_STORED_CREDENTIALS',
+  INVALID_CREDENTIALS = 'INVALID_CREDENTIALS',
+  CONNECTION_FAILED = 'CONNECTION_FAILED',
+  TRANSACTION_FAILED = 'TRANSACTION_FAILED',
+  // ... other error codes
+}
+```
+
+---
+
+## 🎯 Event System
+
+The SDK emits comprehensive events for all operations:
+
+### Connection Events
+```typescript
+sdk.on('connect:start', () => console.log('Connection starting...'));
+sdk.on('connect:success', (account) => console.log('Connected:', account));
+sdk.on('connect:error', (error) => console.log('Connection failed:', error));
+```
+
+### Disconnect Events
+```typescript
+sdk.on('disconnect:start', () => console.log('Disconnecting...'));
+sdk.on('disconnect:success', () => console.log('Disconnected successfully'));
+sdk.on('disconnect:error', (error) => console.log('Disconnect failed:', error));
+```
+
+### Reconnect Events
+```typescript
+sdk.on('reconnect:start', () => console.log('Reconnecting...'));
+sdk.on('reconnect:success', (account) => console.log('Reconnected:', account));
+sdk.on('reconnect:error', (error) => console.log('Reconnect failed:', error));
+```
+
+### Passkey Events
+```typescript
+sdk.on('passkey:start', () => console.log('Creating passkey...'));
+sdk.on('passkey:success', (data) => console.log('Passkey created:', data));
+sdk.on('passkey:error', (error) => console.log('Passkey creation failed:', error));
+```
+
+### Smart Wallet Events
+```typescript
+sdk.on('smartwallet:start', () => console.log('Creating smart wallet...'));
+sdk.on('smartwallet:success', (data) => console.log('Smart wallet created:', data));
+sdk.on('smartwallet:error', (error) => console.log('Smart wallet creation failed:', error));
+```
+
+### Transaction Events
+```typescript
+sdk.on('transaction:start', () => console.log('Transaction starting...'));
+sdk.on('transaction:success', () => console.log('Transaction signed'));
+sdk.on('transaction:sent', (signature) => console.log('Transaction sent:', signature));
+sdk.on('transaction:error', (error) => console.log('Transaction failed:', error));
+```
+
+---
+
+## 💡 Advanced Usage
+
+### Persistent State Across Page Refreshes
+
+```tsx
+// Option 1: Use built-in persistence (credentials auto-saved)
+const { connect } = useWallet();
+
+// On page refresh, call connect() - it will auto-reconnect
+useEffect(() => {
+  connect().catch(console.error);
+}, []);
+
+// Option 2: Enhanced Zustand store with persistence
+import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
+
+export const useLazorkitStore = create(
+  persist(
+    (set) => ({
+      account: null,
+      setAccount: (account) => set({ account }),
+    }),
+    {
+      name: 'lazorkit-store',
+      partialize: (state) => ({ account: state.account }),
+    }
+  )
+);
+```
+
+### Error Handling Best Practices
+
+```tsx
+const handleConnect = async () => {
+  try {
+    await connect();
+  } catch (error) {
+    switch (error.code) {
+      case 'NO_STORED_CREDENTIALS':
+        console.log('First time user - opening connection dialog');
+        break;
+      case 'INVALID_CREDENTIALS':
+        console.log('Credentials corrupted - will be cleared automatically');
+        break;
+      case 'CONNECTION_FAILED':
+        console.log('Network or dialog error - try again');
+        break;
+      default:
+        console.error('Unexpected error:', error);
+    }
+  }
+};
+```
+
+### Custom Transaction Flows
+
+```tsx
+// 1. Sign and Send (Recommended)
+const sendTransaction = async (instruction) => {
+  try {
+    const signature = await signAndSendTransaction(instruction);
+    console.log('Transaction sent:', signature);
+    return signature;
+  } catch (error) {
+    console.error('Transaction failed:', error);
+    throw error;
+  }
+};
+
+// 2. Sign Only (for custom sending logic)
+const signOnly = async (instruction) => {
+  try {
+    const signedTransaction = await signTransaction(instruction);
+    console.log('Transaction signed:', signedTransaction);
+    
+    // Custom sending logic here
+    // const signature = await connection.sendTransaction(signedTransaction);
+    
+    return signedTransaction;
+  } catch (error) {
+    console.error('Signing failed:', error);
+    throw error;
+  }
 };
 ```
 
 ---
 
-## 🔧 Configuration
+## � Configuration
 
-### Environment Setup
+### LazorkitProvider Props
 
 ```tsx
+type LazorkitProviderProps = {
+  rpcUrl?: string;        // Solana RPC endpoint (default: devnet)
+  ipfsUrl?: string;       // LazorKit portal URL  
+  paymasterUrl?: string;  // Paymaster service URL
+  children: React.ReactNode;
+};
+
 // Development (Devnet)
-<LazorKitProvider
+<LazorkitProvider
   rpcUrl="https://api.devnet.solana.com"
   ipfsUrl="https://portal.lazor.sh"
   paymasterUrl="https://lazorkit-paymaster.onrender.com"
 >
 
 // Custom RPC
-<LazorKitProvider
+<LazorkitProvider
   rpcUrl="https://your-custom-rpc.com"
   ipfsUrl="https://portal.lazor.sh"
   paymasterUrl="https://your-paymaster.com"
@@ -405,146 +531,87 @@ type SignResponse = {
 
 ---
 
-## 💡 Advanced Usage
+## 🐛 Troubleshooting
 
-### Sign and Send Transaction
+### Common Issues
 
-```tsx
-import { SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js';
+**1. Button stays disabled after transaction**
+- ✅ Fixed in latest version
+- Events `transaction:sent` and `transaction:success` both reset loading state
 
-const sendSOL = async () => {
-  if (!smartWalletPubkey) return;
+**2. Can't reconnect after disconnect**
+- ✅ Fixed in latest version  
+- `disconnect()` now preserves communication handler
+- `connect()` automatically tries `reconnect()` first
 
-  const instruction = SystemProgram.transfer({
-    fromPubkey: smartWalletPubkey,
-    toPubkey: new PublicKey('RECIPIENT_WALLET_ADDRESS'),
-    lamports: 0.1 * LAMPORTS_PER_SOL,
-  });
+**3. State not updating on disconnect**
+- ✅ Fixed in latest version
+- Added comprehensive event listeners in `LazorkitProvider`
 
-  try {
-    // Sign and send in one step
-    const signature = await signAndSendTransaction(instruction);
-    console.log('Transfer successful:', signature);
-    return signature;
-  } catch (error) {
-    console.error('Transaction failed:', error);
-    throw error;
-  }
-};
-```
+**4. Page refresh loses connection**
+- ✅ Auto-reconnection available
+- Call `connect()` on app start - it will use stored credentials
 
-### Custom Transaction (Sign Only)
+### Debug Mode
 
 ```tsx
-import { SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js';
+// Enable debug logging
+const sdk = new Lazorkit({
+  // ... other options
+  debug: true
+});
 
-const signTransferSOL = async () => {
-  if (!smartWalletPubkey) return;
-
-  const instruction = SystemProgram.transfer({
-    fromPubkey: smartWalletPubkey,
-    toPubkey: new PublicKey('RECIPIENT_WALLET_ADDRESS'),
-    lamports: 0.1 * LAMPORTS_PER_SOL,
-  });
-
-  try {
-    // Sign only, returns transaction 
-    const signature = await signTransaction(instruction);
-    console.log('Transaction signed:', signature);
-    return signature;
-  } catch (error) {
-    console.error('Signing failed:', error);
-    throw error;
-  }
-};
-```
----
-
-## 💾 Credential Storage and Syncing
-
-LazorKit implements a robust credential management system to ensure consistent access to credentials across different UI components:
-
-```typescript
-// StorageUtil provides consistent access to credentials
-class StorageUtil {
-  // Save credentials to local storage
-  static saveCredentials({
-    credentialId,
-    publickey,
-    smartWalletAddress
-  }: {
-    credentialId: string;
-    publickey: string;
-    smartWalletAddress: string;
-  }): void {
-    // Implementation details
-  }
-
-  // Get credentials from local storage
-  static getCredentials(): {
-    credentialId: string | null;
-    publickey: string | null;
-    smartWalletAddress: string | null;
-  } {
-    // Implementation details
-  }
-
-  // Clear credentials from local storage
-  static clearCredentials(): void {
-    // Implementation details
-  }
-}
-```
-
-### Credential Syncing Flow
-
-1. **Connection**: Credentials are saved after successful connection
-2. **Popup to Iframe**: Credentials are synced between popup and iframe
-3. **Pre-signing**: Credentials are synced before transaction signing
-4. **Storage Access**: Consistent storage access via StorageUtil
-
-## 🔒 Security Considerations
-
-- **Passkey Security**: Wallet creation relies on WebAuthn security
-- **Storage**: Credentials are stored securely and synced between popup and iframe
-- **Network**: Currently supports Solana Devnet only
-- **Validation**: Always validate transaction instructions before signing
-- **Error Handling**: Robust error handling for missing credentials
-
----
-
-## 📦 Development
-
-```bash
-pnpm install   # Install dependencies
-pnpm build     # Build all packages
+// Or check console for detailed event logs
 ```
 
 ---
 
-## 🤝 Contributing
+## 🆕 Migration Guide
 
-Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) for details on our code of conduct and development process.
+### From Previous Versions
+
+**Breaking Changes:**
+- `disconnect()` behavior changed - now preserves communication handler
+- New events added - update event listeners if using SDK directly
+- `connect()` now tries auto-reconnect first
+
+**New Features:**
+- ✅ `createPasskeyOnly()` and `createSmartWalletOnly()` methods
+- ✅ Auto-reconnection on `connect()`
+- ✅ Enhanced event system
+- ✅ Better error handling and recovery
+- ✅ Improved memory management
+
+**Migration Steps:**
+1. Update to latest version
+2. No code changes needed for basic usage
+3. Optional: Use new separate creation methods for advanced workflows
+4. Optional: Add new event listeners for better UX
 
 ---
 
-## 🆘 Support
+## � Changelog
 
-- 🐦 **Twitter**: [@lazorkit](https://twitter.com/lazorkit)
-- 🐛 **Issues**: [GitHub Issues](https://github.com/lazor-kit/lazor-kit/issues)
+### v2.1.0 (Latest)
+- ✅ **Fixed disconnect/reconnect functionality**
+- ✅ **Added auto-reconnection support**
+- ✅ **Separated passkey and smart wallet creation**
+- ✅ **Enhanced event system**
+- ✅ **Improved error handling and cleanup**
+- ✅ **Better code architecture and maintainability**
+
+### v2.0.0
+- Initial release with basic wallet functionality
 
 ---
 
-## 📄 License
+## 🤝 Support
 
-ISC © [LazorKit](https://github.com/lazor-kit)
+- **Documentation**: [docs.lazor.sh](https://docs.lazor.sh)
+- **Issues**: [GitHub Issues](https://github.com/lazorkit/sdk/issues)  
+- **Discord**: [LazorKit Community](https://discord.gg/lazorkit)
+- **Email**: support@lazor.sh
 
 ---
 
-<div align="center">
-  <p>Made with ❤️ by the LazorKit team</p>
-  <p>
-    <a href="https://lazorkit.xyz">🌐 Website</a> •
-    <a href="https://twitter.com/lazorkit">🐦 Twitter</a>
-  </p>
-</div>
+*Built with ❤️ by the LazorKit team*

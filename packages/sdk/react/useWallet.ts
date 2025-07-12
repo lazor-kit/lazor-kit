@@ -2,6 +2,8 @@ import { useCallback } from 'react';
 import { PublicKey, TransactionInstruction } from '@solana/web3.js';
 import { useLazorkitStore } from './store';
 import { WalletAccount } from '../types';
+import { ConnectResponse, SignResponse } from '../types/message.types';
+
 import { Transaction } from '@solana/web3.js';
 /**
  * Hook for interacting with the Lazorkit wallet
@@ -96,6 +98,19 @@ export const useWallet = () => {
     ? new PublicKey(account.smartWallet) 
     : null;
 
+  const createPasskeyOnly = useCallback(async (): Promise<ConnectResponse> => {
+    if (!sdk) {
+      throw new Error('Lazorkit SDK not initialized');
+    }
+    return sdk.createPasskeyOnly();
+  }, [sdk]);
+
+  const createSmartWalletOnly = useCallback(async (passkeyData: ConnectResponse): Promise<{ smartWalletAddress: string; account: WalletAccount }> => {
+    if (!sdk) {
+      throw new Error('Lazorkit SDK not initialized');
+    }
+    return sdk.createSmartWalletOnly(passkeyData);
+  }, [sdk]);
   return {
     // State
     smartWalletPubkey,
@@ -111,5 +126,7 @@ export const useWallet = () => {
     disconnect,
     signTransaction,
     signAndSendTransaction,
+    createPasskeyOnly,
+    createSmartWalletOnly,
   };
 };
