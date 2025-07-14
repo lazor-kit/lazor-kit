@@ -1,9 +1,37 @@
 packages:
-  - packages/sdk
-  - packages/program
-  - packages/portal
+  - "packages/*"
 
-ignoredBuiltDependencies:
+catalog:
+  # Core Solana dependencies
+  "@solana/web3.js": "^1.98.2"
+  "@coral-xyz/anchor": "^0.31.1"
+  
+  # Build and dev tools
+  "typescript": "^5.8.3"
+  "tsup": "^8.5.0"
+  "vite": "^6.0.7"
+  "@vitejs/plugin-react": "^4.6.0"
+  
+  # State management and utilities
+  "eventemitter3": "^5.0.1"
+  "zustand": "^5.0.5"
+  
+  # React ecosystem
+  "react": "^18.3.1"
+  "react-dom": "^18.3.1"
+  "@types/react": "^19.0.10"
+  "@types/react-dom": "^19.0.4"
+  
+  # Node types
+  "@types/node": "^24.0.13"
+  
+  # Documentation
+  "vocs": "^1.0.0"
+  
+  # Testing
+  "vitest": "^3.1.1"
+
+ignored:
   - bufferutil
   - esbuild
   - utf-8-validate

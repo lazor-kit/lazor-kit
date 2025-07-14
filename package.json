@@ -1,27 +1,52 @@
 {
   "name": "@lazorkit/monorepo",
   "version": "1.3.7",
-  "description": "Lazorkit | Opensource smart wallet sdk for Solana",
+  "description": "Lazorkit | Opensource smart wallet SDK for Solana",
   "author": "Lazorkit",
   "license": "MIT",
   "private": true,
-  "workspaces": [
-    "packages/*"
-  ],
+  "type": "module",
+  "packageManager": "pnpm@10.12.4",
   "scripts": {
-    "build": "pnpm -r build",
-    "dev": "pnpm -r dev",
+    "build": "pnpm clean && pnpm -r build",
+    "build:sdk": "pnpm --filter sdk build",
+    "build:portal": "pnpm --filter portal build",
+    "build:program": "pnpm --filter program build",
+    "build:docs": "pnpm --filter docs build",
     "clean": "pnpm -r clean",
-    "typecheck": "pnpm -r typecheck",
-    "prepublishOnly": "pnpm -r prepublishOnly"
+    "dev": "pnpm --filter sdk --filter portal --filter docs dev",
+    "dev:sdk": "pnpm --filter sdk dev",
+    "dev:portal": "pnpm --filter portal dev",
+    "dev:docs": "pnpm --filter docs dev",
+    "typecheck": "tsc -b && pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "format": "biome format --write",
+    "check": "biome check . --fix --unsafe",
+    "check:types": "pnpm run --r --parallel check:types && tsc -b",
+    "check:repo": "sherif --ignore-rule packages-without-package-json",
+    "check:knip": "knip --production",
+    "check:publint": "pnpm -r check:publint",
+    "changeset": "changeset",
+    "changeset:version": "changeset version && pnpm format",
+    "changeset:publish": "pnpm build && changeset publish",
+    "release": "pnpm changeset:publish",
+    "preinstall": "npx only-allow pnpm",
+    "postinstall": "pnpm preconstruct",
+    "preconstruct": "echo 'Running preconstruct setup'"
   },
-  "dependencies": {
-    "@coral-xyz/anchor": "^0.31.1",
-    "@solana/web3.js": "^1.98.2",
-    "eventemitter3": "^5.0.1",
-    "tsup": "^8.5.0",
-    "typescript": "^5.8.3",
-    "zustand": "^5.0.5"
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@changesets/changelog-github": "^0.5.0",
+    "@changesets/cli": "^2.27.7",
+    "@types/node": "catalog:",
+    "knip": "^5.38.0",
+    "only-allow": "^1.2.1",
+    "publint": "^0.2.12",
+    "sherif": "^1.0.0",
+    "tsup": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   },
   "keywords": [
     "wallet",
@@ -29,14 +54,11 @@
     "webauthn",
     "solana",
     "sdk",
-    "lazor"
+    "lazorkit",
+    "smart wallet"
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/lazor/sdk"
-  },
-  "devDependencies": {
-    "@types/bs58": "^5.0.0",
-    "@types/node": "^24.0.0"
+    "url": "https://github.com/lazor-kit/lazor-kit"
   }
 }
