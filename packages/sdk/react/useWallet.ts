@@ -2,7 +2,7 @@ import { useCallback } from 'react';
 import { PublicKey, TransactionInstruction } from '@solana/web3.js';
 import { useLazorkitStore } from './store';
 import { WalletAccount } from '../types';
-import { ConnectResponse, SignResponse } from '../types/message.types';
+import { ConnectResponse } from '../types/message.types';
 
 import { Transaction } from '@solana/web3.js';
 /**
