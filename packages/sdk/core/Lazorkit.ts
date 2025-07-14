@@ -89,7 +89,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
         StorageUtil.setItem('PUBLIC_KEY', publicKey);
         StorageUtil.setItem('CREDENTIAL_ID', credentialId);
       }
-
+      console.log(isCreated)
       this.emit('passkey:success', response);
       return response;
     } catch (error) {
@@ -418,7 +418,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
         cleanup();
         reject(error);
       };
-      
+      console.log(instruction)
       // Register event listeners
       this.communicationHandler.on('sign', signHandler);
       this.communicationHandler.on('error', errorHandler);
