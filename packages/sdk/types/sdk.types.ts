@@ -1,5 +1,6 @@
 import { WalletAccount } from "./wallet.types";
 import { Transaction } from '@solana/web3.js';
+import { ConnectResponse } from './message.types';
 
 export interface LazorSDKConfig {
   dialogUrl: string;
@@ -25,10 +26,22 @@ export interface SDKEvents {
   'connect:start': void;
   'connect:success': WalletAccount;
   'connect:error': Error;
+  'passkey:start': void;
+  'passkey:success': ConnectResponse;
+  'passkey:error': Error;
+  'smartwallet:start': void;
+  'smartwallet:success': { smartWalletAddress: string; account: WalletAccount };
+  'smartwallet:error': Error;
   'transaction:start': void;
   'transaction:success': Transaction;
   'transaction:sent': string;
   'transaction:error': Error;
-  'disconnect': void;
+  'disconnect:start': void;
+  'disconnect:success': void;
+  'disconnect:error': Error;
+  'reconnect:start': void;
+  'reconnect:success': WalletAccount;
+  'reconnect:error': Error;
+  'disconnect': void; // Legacy event for backward compatibility
   'error': Error;
 }
