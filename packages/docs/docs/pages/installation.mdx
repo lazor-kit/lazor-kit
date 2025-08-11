@@ -1,0 +1,180 @@
+# Installation
+
+## Package Installation
+
+Install the LazorKit SDK:
+
+```bash
+# Using npm
+npm install @lazorkit/wallet
+
+# Using yarn
+yarn add @lazorkit/wallet
+
+# Using pnpm
+pnpm add @lazorkit/wallet
+```
+
+The SDK includes all necessary Solana dependencies internally.
+
+
+
+## Environment Setup
+
+### 1. Environment Variables
+
+Configure the following environment variables for your application:
+
+```env
+# Solana RPC endpoint
+LAZORKIT_RPC_URL=https://api.devnet.solana.com
+
+# LazorKit portal URL
+LAZORKIT_PORTAL_URL=https://portal.lazor.sh
+
+# Paymaster service URL for gasless transactions
+LAZORKIT_PAYMASTER_URL=https://lazorkit-paymaster.onrender.com
+```
+
+### 2. Browser Polyfills (if needed)
+
+For some build environments, you may need to add Buffer polyfills:
+
+```js
+// polyfills.js
+import { Buffer } from 'buffer';
+
+if (typeof window !== 'undefined') {
+  window.Buffer = Buffer;
+}
+```
+
+Then import this file early in your application:
+
+```js
+// main.tsx or index.tsx
+import './polyfills';
+import React from 'react';
+// ... rest of your app
+```
+
+## Framework Integration
+
+### React Setup
+
+Wrap your application with the `LazorkitProvider`:
+
+```tsx
+import { LazorkitProvider } from '@lazorkit/wallet';
+
+export default function App() {
+  return (
+    <LazorkitProvider
+      rpcUrl={process.env.LAZORKIT_RPC_URL || 'https://api.devnet.solana.com'}
+      ipfsUrl={process.env.LAZORKIT_PORTAL_URL || 'https://portal.lazor.sh'}
+      paymasterUrl={process.env.LAZORKIT_PAYMASTER_URL || 'https://lazorkit-paymaster.onrender.com'}
+    >
+      <YourApp />
+    </LazorkitProvider>
+  );
+}
+```
+
+### TypeScript Configuration
+
+Ensure your `tsconfig.json` includes the necessary compiler options:
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true
+  }
+}
+```
+
+## Network Configuration
+
+### Devnet (Default)
+
+The SDK currently supports Solana Devnet by default:
+
+```tsx
+<LazorkitProvider
+  rpcUrl="https://api.devnet.solana.com"
+  paymasterUrl="https://lazorkit-paymaster.onrender.com"
+>
+```
+
+### Custom RPC
+
+You can use your own RPC endpoint:
+
+```tsx
+<LazorkitProvider
+  rpcUrl="https://your-custom-rpc.com"
+  paymasterUrl="https://your-paymaster.com"
+>
+```
+
+## Verification
+
+To verify your installation is working correctly, create a simple test component:
+
+```tsx
+import { useWallet } from '@lazorkit/wallet';
+
+function InstallationTest() {
+  const { connect, isConnected, smartWalletPubkey } = useWallet();
+
+  return (
+    <div>
+      <h2>LazorKit Installation Test</h2>
+      <p>Status: {isConnected ? 'Connected' : 'Disconnected'}</p>
+      {smartWalletPubkey && (
+        <p>Wallet: {smartWalletPubkey.toString().slice(0, 8)}...</p>
+      )}
+      <button onClick={connect} disabled={isConnected}>
+        Test Connection
+      </button>
+    </div>
+  );
+}
+```
+
+## Next Steps
+
+Once installation is complete:
+
+1. Read the [Getting Started](/getting-started) guide for basic usage
+2. Explore the [API Reference](/api/use-wallet) for detailed documentation
+3. Check out the [Integration Guide](/guides/integration) for advanced usage patterns
+
+## Troubleshooting
+
+### Common Issues
+
+**Build errors with Buffer/crypto**
+- Add the polyfills mentioned above
+- Check your bundler configuration
+
+**TypeScript errors**
+- Ensure all peer dependencies are installed
+- Update your `tsconfig.json` as shown above
+
+**Connection fails**
+- Verify your environment variables are set correctly
+- Check that you're using a WebAuthn-capable browser
+- Ensure you're testing on HTTPS (required for WebAuthn)

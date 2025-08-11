@@ -6,11 +6,91 @@ import { HomePage } from 'vocs/components'
 
 <HomePage.Root>
   <HomePage.Logo />
-  <HomePage.Tagline>My Awesome Docs</HomePage.Tagline>
-  <HomePage.InstallPackage name="vocs" type="init" />
-  <HomePage.Description>This is a description of my documentation website.</HomePage.Description>
+  <HomePage.Tagline>LazorKit SDK</HomePage.Tagline>
+  <HomePage.InstallPackage name="@lazorkit/wallet" />
+  <HomePage.Description>
+    Seamless Web3 authentication for the web. A wallet adapter that leverages passkey authentication, 
+    smart wallets, and gasless transactions for the Solana ecosystem.
+  </HomePage.Description>
   <HomePage.Buttons>
     <HomePage.Button href="/getting-started" variant="accent">Get started</HomePage.Button>
-    <HomePage.Button href="https://github.com/wevm/vocs">GitHub</HomePage.Button>
+    <HomePage.Button href="/installation">Installation</HomePage.Button>
+    <HomePage.Button href="https://github.com/lazorkit/sdk">GitHub</HomePage.Button>
   </HomePage.Buttons>
 </HomePage.Root>
+
+## Features
+
+🔐 **Enhanced Authentication**
+- WebAuthn-based wallet creation with passkeys
+- Auto-reconnection with stored credentials
+- Seamless disconnect/reconnect functionality
+- Secure key storage in hardware
+- Cross-device synchronization
+
+⚡ **Flexible Wallet Creation**
+- Separate passkey creation: `createPasskeyOnly()`
+- Separate smart wallet creation: `createSmartWalletOnly()`
+- Full wallet creation: `connect()`
+
+💸 **Gasless Transactions**
+- Built-in paymaster integration
+- Fee sponsorship options
+- Transaction bundling
+
+🌐 **Cross-Origin Support**
+- Secure iframe integration
+- Popup window handling
+- Message validation
+
+🎯 **Comprehensive Event System**
+- Connection, disconnect, and reconnect events
+- Passkey and smart wallet creation events
+- Transaction lifecycle events
+
+## Current Status
+
+:::warning
+This SDK is currently in **beta** and supports:
+- Solana Devnet only (Mainnet support coming soon)
+- WebAuthn-capable browsers
+- React applications
+
+Do not use in production!
+:::
+
+## Quick Start
+
+```tsx
+import { LazorkitProvider, useWallet } from '@lazorkit/wallet';
+
+// 1. Wrap your app with LazorkitProvider
+function App() {
+  return (
+    <LazorkitProvider
+      rpcUrl="https://api.devnet.solana.com"
+      paymasterUrl="https://lazorkit-paymaster.onrender.com"
+    >
+      <WalletDemo />
+    </LazorkitProvider>
+  );
+}
+
+// 2. Use the wallet in your components
+function WalletDemo() {
+  const { connect, disconnect, isConnected, smartWalletPubkey } = useWallet();
+
+  return (
+    <div>
+      {!isConnected ? (
+        <button onClick={connect}>Connect Wallet</button>
+      ) : (
+        <div>
+          <p>Wallet: {smartWalletPubkey?.toString()}</p>
+          <button onClick={disconnect}>Disconnect</button>
+        </div>
+      )}
+    </div>
+  );
+}
+```

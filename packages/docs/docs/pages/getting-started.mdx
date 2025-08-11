@@ -1,3 +1,170 @@
-# Get started
+# Getting Started
 
-Hello world!
+Welcome to LazorKit! This guide will help you integrate Web3 authentication with passkeys into your React application.
+
+## Overview
+
+LazorKit enables seamless wallet functionality using WebAuthn passkeys, eliminating the need for traditional seed phrases or browser extensions. Users can authenticate using biometrics, security keys, or device authentication.
+
+## Prerequisites
+
+- Node.js 18+ 
+- React 18+
+- WebAuthn-capable browser
+- HTTPS environment (required for WebAuthn)
+
+## Basic Setup
+
+### 1. Install LazorKit
+
+```bash
+npm install @lazorkit/wallet
+```
+
+### 2. Provider Setup
+
+Wrap your application with `LazorkitProvider`:
+
+```tsx
+import { LazorkitProvider } from '@lazorkit/wallet';
+
+function App() {
+  return (
+    <LazorkitProvider
+      rpcUrl="https://api.devnet.solana.com"
+      paymasterUrl="https://lazorkit-paymaster.onrender.com"
+    >
+      <YourApp />
+    </LazorkitProvider>
+  );
+}
+```
+
+### 3. Use the Wallet Hook
+
+```tsx
+import { useWallet } from '@lazorkit/wallet';
+import { SystemProgram, LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
+
+function WalletComponent() {
+  const {
+    // State
+    smartWalletPubkey,
+    isConnected,
+    isLoading,
+    error,
+    
+    // Actions
+    connect,
+    disconnect,
+    signAndSendTransaction,
+  } = useWallet();
+
+  const handleConnect = async () => {
+    try {
+      await connect();
+    } catch (error) {
+      console.error('Connection failed:', error);
+    }
+  };
+
+  const handleTransfer = async () => {
+    if (!smartWalletPubkey) return;
+
+    try {
+      const instruction = SystemProgram.transfer({
+        fromPubkey: smartWalletPubkey,
+        toPubkey: new PublicKey('7BeWr6tVa1pYgrEddekYTnQENU22bBw9H8HYJUkbrN71'),
+        lamports: LAMPORTS_PER_SOL * 0.1,
+      });
+
+      const signature = await signAndSendTransaction(instruction);
+      console.log('Transfer completed:', signature);
+    } catch (error) {
+      console.error('Transfer failed:', error);
+    }
+  };
+
+  return (
+    <div>
+      {!isConnected ? (
+        <button onClick={handleConnect} disabled={isLoading}>
+          {isLoading ? 'Connecting...' : 'Connect Wallet'}
+        </button>
+      ) : (
+        <div>
+          <p>Connected: {smartWalletPubkey?.toString().slice(0, 8)}...</p>
+          <button onClick={handleTransfer} disabled={isLoading}>
+            Transfer 0.1 SOL
+          </button>
+          <button onClick={disconnect}>Disconnect</button>
+        </div>
+      )}
+      
+      {error && <p style={{ color: 'red' }}>Error: {error.message}</p>}
+    </div>
+  );
+}
+```
+
+## Key Concepts
+
+### Auto-Reconnection
+
+LazorKit automatically handles reconnection using stored credentials:
+
+```tsx
+// connect() tries reconnection first, then falls back to new connection
+const account = await connect();
+```
+
+### Flexible Wallet Creation
+
+You can separate passkey creation from smart wallet deployment:
+
+```tsx
+// Step 1: Create passkey only
+const passkeyData = await createPasskeyOnly();
+
+// Step 2: Later create smart wallet
+const { smartWalletAddress } = await createSmartWalletOnly(passkeyData);
+```
+
+### Event Handling
+
+The SDK emits events for all operations:
+
+```tsx
+// Events are automatically handled by the provider
+// But you can listen to them directly if using the SDK directly
+sdk.on('connect:success', (account) => {
+  console.log('Connected:', account);
+});
+```
+
+## Transaction Patterns
+
+### Sign and Send (Recommended)
+
+```tsx
+const signature = await signAndSendTransaction(instruction);
+```
+
+### Sign Only
+
+```tsx
+const signedTransaction = await signTransaction(instruction);
+// Handle sending yourself
+```
+
+## Next Steps
+
+- Explore [API Reference](/api/use-wallet) for complete documentation
+- Read [Integration Guide](/guides/integration) for advanced patterns
+- Check [Transaction Handling](/guides/transactions) for complex workflows
+
+## Need Help?
+
+- Check the [troubleshooting section](/installation#troubleshooting)
+- Review the [examples repository](https://github.com/lazorkit/examples)
+- Join our [Discord community](https://discord.gg/lazorkit)
