@@ -1,0 +1,265 @@
+# Types
+
+LazorKit exports several TypeScript types for wallet accounts, responses, and configuration.
+
+## Core Types
+
+### WalletAccount
+
+Represents a connected wallet account.
+
+```typescript
+interface WalletAccount {
+  publicKey: string;          // Passkey public key
+  smartWallet: string;        // Smart wallet address (base58)
+  isConnected: boolean;       // Connection status
+  isCreated: boolean;         // Whether wallet was newly created
+}
+```
+
+**Usage:**
+```tsx
+const { account } = useWallet();
+
+if (account) {
+  console.log('Wallet Address:', account.smartWallet);
+  console.log('Public Key:', account.publicKey);
+  console.log('Is New Wallet:', account.isCreated);
+}
+```
+
+### ConnectResponse
+
+Response from passkey creation operations.
+
+```typescript
+interface ConnectResponse {
+  publicKey: string;           // Base64 encoded public key
+  credentialId: string;        // Passkey credential ID
+  isCreated: boolean;          // Whether credential was newly created
+  connectionType: 'create' | 'get'; // Connection type
+  timestamp: number;           // Response timestamp
+}
+```
+
+**Usage:**
+```tsx
+const passkeyData: ConnectResponse = await createPasskeyOnly();
+console.log('Credential ID:', passkeyData.credentialId);
+console.log('Is New Credential:', passkeyData.isCreated);
+```
+
+### PassKeyCredential
+
+Represents a WebAuthn passkey credential.
+
+```typescript
+interface PassKeyCredential {
+  id: string;                  // Credential identifier
+  publicKey: string;           // Public key data
+  algorithm: number;           // Cryptographic algorithm
+  transports?: string[];       // Available transports
+}
+```
+
+### SmartWalletConfig
+
+Configuration for smart wallet operations.
+
+```typescript
+interface SmartWalletConfig {
+  programId: PublicKey;        // Smart wallet program ID
+  authority: PublicKey;        // Wallet authority
+}
+```
+
+## Provider Types
+
+### LazorkitProviderProps
+
+Props for the LazorkitProvider component.
+
+```typescript
+interface LazorkitProviderProps {
+  children: ReactNode;         // React components
+  rpcUrl: string;             // Solana RPC endpoint
+  ipfsUrl?: string;           // Portal URL (optional)
+  paymasterUrl: string;       // Paymaster service URL
+}
+```
+
+**Usage:**
+```tsx
+const providerProps: LazorkitProviderProps = {
+  children: <App />,
+  rpcUrl: "https://api.devnet.solana.com",
+  paymasterUrl: "https://lazorkit-paymaster.onrender.com"
+};
+
+<LazorkitProvider {...providerProps} />
+```
+
+## Hook Return Types
+
+### UseWalletReturn
+
+Return type of the useWallet hook.
+
+```typescript
+interface UseWalletReturn {
+  // State
+  smartWalletPubkey: PublicKey | null;
+  isConnected: boolean;
+  isLoading: boolean;
+  isConnecting: boolean;
+  isSigning: boolean;
+  error: Error | null;
+  account: WalletAccount | null;
+
+  // Actions
+  connect: () => Promise<WalletAccount>;
+  disconnect: () => Promise<void>;
+  reconnect: () => Promise<WalletAccount>;
+  signTransaction: (instruction: TransactionInstruction) => Promise<Transaction>;
+  signAndSendTransaction: (instruction: TransactionInstruction) => Promise<string>;
+  createPasskeyOnly: () => Promise<ConnectResponse>;
+  createSmartWalletOnly: (passkeyData: ConnectResponse) => Promise<{
+    smartWalletAddress: string;
+    account: WalletAccount;
+  }>;
+}
+```
+
+## Configuration Types
+
+### LazorkitConfig
+
+SDK configuration options.
+
+```typescript
+interface LazorkitConfig {
+  url: string;                 // Portal URL
+  rpcUrl: string;             // Solana RPC URL
+  paymasterUrl: string;       // Paymaster URL
+  mode: 'popup' | 'iframe';   // Dialog mode
+  debug?: boolean;            // Enable debug logging
+}
+```
+
+## Message Types
+
+### DialogMessage
+
+Messages exchanged between SDK and portal.
+
+```typescript
+interface DialogMessage {
+  type: string;               // Message type
+  data: any;                  // Message payload
+  timestamp: number;          // Message timestamp
+  origin: string;             // Sender origin
+}
+```
+
+### ErrorResponse
+
+Error response structure.
+
+```typescript
+interface ErrorResponse {
+  code: string;               // Error code
+  message: string;            // Error message
+  details?: any;              // Additional error details
+}
+```
+
+## Solana Re-exports
+
+LazorKit re-exports commonly used Solana types for convenience:
+
+```typescript
+// From @solana/web3.js
+export {
+  PublicKey,
+  Transaction,
+  TransactionInstruction,
+  Connection,
+  Keypair
+} from '@solana/web3.js';
+```
+
+**Usage:**
+```tsx
+import { PublicKey, SystemProgram } from '@lazorkit/wallet';
+
+const recipient = new PublicKey('7BeWr6tVa1pYgrEddekYTnQENU22bBw9H8HYJUkbrN71');
+const instruction = SystemProgram.transfer({
+  fromPubkey: smartWalletPubkey,
+  toPubkey: recipient,
+  lamports: 1000000,
+});
+```
+
+## Error Codes
+
+Common error codes you might encounter:
+
+```typescript
+enum ErrorCode {
+  NOT_CONNECTED = 'NOT_CONNECTED',
+  NO_STORED_CREDENTIALS = 'NO_STORED_CREDENTIALS',
+  INVALID_CREDENTIALS = 'INVALID_CREDENTIALS',
+  CONNECTION_FAILED = 'CONNECTION_FAILED',
+  TRANSACTION_FAILED = 'TRANSACTION_FAILED',
+  PASSKEY_CREATION_FAILED = 'PASSKEY_CREATION_FAILED',
+  SMART_WALLET_CREATION_FAILED = 'SMART_WALLET_CREATION_FAILED',
+}
+```
+
+**Usage:**
+```tsx
+try {
+  await connect();
+} catch (error) {
+  switch (error.code) {
+    case 'NO_STORED_CREDENTIALS':
+      console.log('First time user');
+      break;
+    case 'INVALID_CREDENTIALS':
+      console.log('Credentials corrupted');
+      break;
+    default:
+      console.error('Unexpected error:', error);
+  }
+}
+```
+
+## Type Guards
+
+Utility functions for type checking:
+
+```typescript
+// Check if account is connected
+function isConnected(account: WalletAccount | null): account is WalletAccount {
+  return account !== null && account.isConnected;
+}
+
+// Check if error has specific code
+function hasErrorCode(error: any, code: string): boolean {
+  return error && error.code === code;
+}
+```
+
+**Usage:**
+```tsx
+const { account, error } = useWallet();
+
+if (isConnected(account)) {
+  // TypeScript knows account is WalletAccount here
+  console.log('Wallet:', account.smartWallet);
+}
+
+if (hasErrorCode(error, 'NO_STORED_CREDENTIALS')) {
+  console.log('No stored credentials found');
+}
+```

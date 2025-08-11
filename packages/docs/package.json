@@ -9,12 +9,12 @@
     "preview": "vocs preview"
   },
   "dependencies": {
-    "react": "latest",
-    "react-dom": "latest",
-    "vocs": "latest"
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vocs": "^1.0.0"
   },
   "devDependencies": {
-    "@types/react": "latest",
-    "typescript": "latest"
+    "@types/react": "^18.3.11",
+    "typescript": "^5.8.0"
   }
 }
