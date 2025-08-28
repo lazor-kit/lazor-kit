@@ -1,18 +1,49 @@
 import { EventEmitter } from 'eventemitter3';
 import { Connection, TransactionInstruction, Transaction } from '@solana/web3.js';
-import { SmartWallet } from './wallet/SmartWallet';
+import { SmartWallet, SignResponse } from './wallet/SmartWallet';
 import { Paymaster } from './wallet/Paymaster';
-import { SDKError } from '../constants/errors';
-import {
-  SDKEvents,
-  WalletAccount,
-  ErrorCode
-} from '../types';
-import { ConnectResponse, SignResponse } from '../types/message.types';
+import { SDKError, ErrorCode } from '../constants/errors';
 import { PublicKey } from '@solana/web3.js';
-import { CommunicationConfig } from './dialog/types/DialogTypes';
+import { CommunicationConfig } from './portal/types/DialogTypes';
 import { StorageUtil } from '../utils/storage';
 import { CommunicationHandler } from './dialog/CommunicationHandler';
+
+// Types
+export interface ConnectResponse {
+  publicKey?: string;
+  credentialId: string;
+  isCreated: boolean;
+}
+
+export interface WalletAccount {
+  smartWallet: string;
+  publicKey: string;
+  isConnected: boolean;
+  isCreated: boolean;
+}
+
+export interface SDKEvents {
+  'connect:start': () => void;
+  'connect:success': (account: WalletAccount) => void;
+  'connect:error': (error: Error) => void;
+  'passkey:start': () => void;
+  'passkey:success': (response: ConnectResponse) => void;
+  'passkey:error': (error: Error) => void;
+  'smartwallet:start': () => void;
+  'smartwallet:success': (result: { smartWalletAddress: string; account: WalletAccount }) => void;
+  'smartwallet:error': (error: Error) => void;
+  'transaction:start': () => void;
+  'transaction:success': (transaction: Transaction) => void;
+  'transaction:sent': (txHash: string) => void;
+  'transaction:error': (error: Error) => void;
+  'disconnect:start': () => void;
+  'disconnect:success': () => void;
+  'disconnect:error': (error: Error) => void;
+  'reconnect:start': () => void;
+  'reconnect:success': (account: WalletAccount) => void;
+  'reconnect:error': (error: Error) => void;
+  'error': (error: Error) => void;
+}
 
 /**
  * Lazorkit is the main entry point for the Lazor Kit SDK
@@ -54,7 +85,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
         try {
           return await this.reconnect();
         } catch (error) {
-          console.log('Reconnection failed, falling back to new connection:', error);
+
           // Clear corrupted credentials and continue with new connection
           StorageUtil.clearCredentials();
         }
@@ -82,14 +113,14 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
       this.emit('passkey:start');
       
       const response = await this.executeConnectDialog();
-      const { publicKey, isCreated, credentialId } = response;
+      const { publicKey , credentialId } = response;
       
       // Store passkey data for later use
       if (publicKey && credentialId) {
         StorageUtil.setItem('PUBLIC_KEY', publicKey);
         StorageUtil.setItem('CREDENTIAL_ID', credentialId);
       }
-      console.log(isCreated)
+
       this.emit('passkey:success', response);
       return response;
     } catch (error) {
@@ -418,7 +449,7 @@ export class Lazorkit extends EventEmitter<SDKEvents> {
         cleanup();
         reject(error);
       };
-      console.log(instruction)
+
       // Register event listeners
       this.communicationHandler.on('sign', signHandler);
       this.communicationHandler.on('error', errorHandler);

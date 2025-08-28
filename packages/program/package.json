@@ -1,6 +1,12 @@
 {
+  "name": "@lazorkit/program",
+  "private": true,
   "license": "ISC",
   "scripts": {
+    "build": "anchor build",
+    "test": "anchor test",
+    "clean": "anchor clean",
+    "typecheck": "tsc --noEmit",
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
   },

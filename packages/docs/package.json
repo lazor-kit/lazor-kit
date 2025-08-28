@@ -1,11 +1,13 @@
 {
-  "name": "lazor",
+  "name": "@lazorkit/docs",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "vocs dev",
     "build": "vocs build",
+    "clean": "rm -rf dist",
+    "typecheck": "echo 'No TypeScript check needed for docs'",
     "preview": "vocs preview"
   },
   "dependencies": {

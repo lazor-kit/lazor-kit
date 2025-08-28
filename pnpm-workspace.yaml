@@ -2,6 +2,7 @@ packages:
   - packages/sdk
   - packages/program
   - packages/portal
+  - packages/docs
 
 ignoredBuiltDependencies:
   - bufferutil
