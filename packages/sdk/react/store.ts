@@ -1,29 +1,93 @@
+/**
+ * Wallet Store - Zustand store with integrated business logic
+ * Includes state management, persistence, and wallet actions
+ */
+
+import { Connection } from '@solana/web3.js';
 import { create } from 'zustand';
-import { WalletAccount } from '../types';
-import { Lazorkit } from '../core/Lazorkit';
+import { createJSONStorage, persist } from 'zustand/middleware';
+import { WalletState, connectAction, disconnectAction, signAndSendTransactionAction } from '../actions';
+import { WalletInfo, WalletConfig, storage } from '../core/storage';
+import { DEFAULTS, DEFAULT_COMMITMENT } from '../config';
 
-interface LazorkitState {
-  sdk: Lazorkit | null;
-  account: WalletAccount | null;
-  isConnecting: boolean;
-  isSigning: boolean;
-  error: Error | null;
-  setSdk: (sdk: Lazorkit) => void;
-  setAccount: (account: WalletAccount | null) => void;
-  setIsConnecting: (isConnecting: boolean) => void;
-  setIsSigning: (isSigning: boolean) => void;
-  setError: (error: Error | null) => void;
-}
+/**
+ * Create wallet store with integrated business logic and persistence
+ */
+export const useWalletStore = create<WalletState>()(
+  persist(
+    (set, get) => ({
+      // State
+      wallet: null,
+      config: {
+        portalUrl: DEFAULTS.PORTAL_URL,
+        paymasterUrl: DEFAULTS.PAYMASTER_URL,
+        rpcUrl: DEFAULTS.RPC_ENDPOINT,
+      },
+      connection: new Connection(DEFAULTS.RPC_ENDPOINT!, DEFAULT_COMMITMENT),
+      isLoading: false,
+      isConnecting: false,
+      isSigning: false,
+      error: null,
 
-export const useLazorkitStore = create<LazorkitState>((set) => ({
-  sdk: null,
-  account: null,
-  isConnecting: false,
-  isSigning: false,
-  error: null,
-  setSdk: (sdk) => set({ sdk }),
-  setAccount: (account) => set({ account }),
-  setIsConnecting: (isConnecting) => set({ isConnecting }),
-  setIsSigning: (isSigning) => set({ isSigning }),
-  setError: (error) => set({ error })
-}));
+      // State setters
+      setConfig: (config: WalletConfig) => {
+        try {
+          const connection = new Connection(
+            config.rpcUrl || DEFAULTS.RPC_ENDPOINT!,
+            DEFAULT_COMMITMENT
+          );
+          set({ config, connection });
+        } catch (error) {
+          console.error('Failed to update wallet configuration:', error, { config });
+          throw new Error(`Failed to update configuration: ${error}`);
+        }
+      },
+
+      setWallet: (wallet: WalletInfo | null) => {
+        try {
+          set({ wallet });
+        } catch (error) {
+          console.error('Failed to set wallet:', error, { wallet });
+          throw error;
+        }
+      },
+
+      setLoading: (isLoading: boolean) => set({ isLoading }),
+      setConnecting: (isConnecting: boolean) => set({ isConnecting }),
+      setSigning: (isSigning: boolean) => set({ isSigning }),
+      
+      setConnection: (connection: Connection) => {
+        try {
+          set({ connection });
+        } catch (error) {
+          console.error('Failed to set connection:', error, { endpoint: connection?.rpcEndpoint });
+          throw error;
+        }
+      },
+      
+      setError: (error: Error | null) => {
+        set({ error });
+        if (error) {
+          console.error('Error state set:', error);
+        }
+      },
+      
+      clearError: () => {
+        set({ error: null });
+      },
+
+      // Wallet actions
+      connect: () => connectAction(get, set),
+      disconnect: () => disconnectAction(set),
+      signAndSendTransaction: (instruction) => signAndSendTransactionAction(get, set, instruction),
+    }),
+    {
+      name: 'lazorkit-wallet-store',
+      storage: createJSONStorage(() => storage),
+      partialize: (state: WalletState) => ({
+        wallet: state.wallet,
+        config: state.config,
+      }),
+    }
+  )
+);

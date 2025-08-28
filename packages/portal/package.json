@@ -1,11 +1,13 @@
 {
-  "name": "portal",
+  "name": "@lazorkit/portal",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "preview": "vite preview"
   },

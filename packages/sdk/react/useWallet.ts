@@ -1,132 +1,102 @@
+/**
+ * Wallet Hook - Provides clean interface to wallet functionality
+ * Business logic is handled by store actions
+ */
+
 import { useCallback } from 'react';
 import { PublicKey, TransactionInstruction } from '@solana/web3.js';
-import { useLazorkitStore } from './store';
-import { WalletAccount } from '../types';
-import { ConnectResponse } from '../types/message.types';
+import { useWalletStore } from './store';
+import { WalletInfo } from '../core/storage';
 
-import { Transaction } from '@solana/web3.js';
+export interface WalletHookInterface {
+  // State
+  smartWalletPubkey: PublicKey | null;
+  isConnected: boolean;
+  isLoading: boolean;
+  isConnecting: boolean;
+  isSigning: boolean;
+  error: Error | null;
+  wallet: WalletInfo | null;
+
+  // Actions
+  connect: () => Promise<WalletInfo>;
+  disconnect: () => Promise<void>;
+  signAndSendTransaction: (instruction: TransactionInstruction) => Promise<string>;
+}
+
 /**
  * Hook for interacting with the Lazorkit wallet
- * Provides wallet state and methods for connecting, disconnecting, and signing transactions
+ * Simplified interface for wallet functionality
  */
-export const useWallet = () => {
-  const { sdk, account, isConnecting, isSigning, error } = useLazorkitStore();
+export const useWallet = (): WalletHookInterface => {
+  const {
+    wallet,
+    isLoading,
+    isConnecting,
+    isSigning,
+    error,
+    connect,
+    disconnect,
+    signAndSendTransaction,
+  } = useWalletStore();
 
   /**
-   * Connect to the wallet
-   * @returns Promise resolving to wallet account information
+   * Handle wallet connection
    */
-  const connect = useCallback(async (): Promise<WalletAccount> => {
-    if (!sdk) {
-      throw new Error('Lazorkit SDK not initialized');
-    }
-
+  const handleConnect = useCallback(async (): Promise<WalletInfo> => {
     try {
-      const account = await sdk.connect();
-      return account;
+      return await connect();
     } catch (error) {
       console.error('Failed to connect wallet:', error);
       throw error;
     }
-  }, [sdk]);
+  }, [connect]);
 
   /**
-   * Disconnect from the wallet
+   * Handle wallet disconnection
    */
-  const disconnect = useCallback(async (): Promise<void> => {
-    if (!sdk) {
-      throw new Error('Lazorkit SDK not initialized');
-    }
-
+  const handleDisconnect = useCallback(async (): Promise<void> => {
     try {
-      await sdk.disconnect();
+      await disconnect();
     } catch (error) {
       console.error('Failed to disconnect wallet:', error);
       throw error;
     }
-  }, [sdk]);
+  }, [disconnect]);
 
   /**
-   * Sign a transaction instruction
-   * @param instruction Transaction instruction to sign
-   * @returns Promise resolving to transaction signature
+   * Handle transaction signing and sending
    */
-  const signTransaction = useCallback(
-    async (instruction: TransactionInstruction): Promise<Transaction> => {
-      if (!sdk) {
-        throw new Error('Lazorkit SDK not initialized');
-      }
-
-      if (!account) {
-        throw new Error('Wallet not connected');
-      }
-
-      try {
-        const signature = await sdk.signTransaction(instruction);
-        return signature;
-      } catch (error) {
-        console.error('Failed to sign transaction:', error);
-        throw error;
-      }
-    },
-    [sdk, account]
-  );
-
-  const signAndSendTransaction = useCallback(
+  const handleSignAndSendTransaction = useCallback(
     async (instruction: TransactionInstruction): Promise<string> => {
-      if (!sdk) {
-        throw new Error('Lazorkit SDK not initialized');
-      }
-
-      if (!account) {
-        throw new Error('Wallet not connected');
-      }
-
       try {
-        const signature = await sdk.signAndSendTransaction(instruction);
-        return signature;
+        return await signAndSendTransaction(instruction);
       } catch (error) {
         console.error('Failed to sign and send transaction:', error);
         throw error;
       }
     },
-    [sdk, account]
+    [signAndSendTransaction]
   );
 
-  // Get the smart wallet public key from the account if available
-  const smartWalletPubkey = account?.smartWallet 
-    ? new PublicKey(account.smartWallet) 
+  // Get the smart wallet public key from the wallet if available
+  const smartWalletPubkey = wallet?.smartWallet 
+    ? new PublicKey(wallet.smartWallet) 
     : null;
 
-  const createPasskeyOnly = useCallback(async (): Promise<ConnectResponse> => {
-    if (!sdk) {
-      throw new Error('Lazorkit SDK not initialized');
-    }
-    return sdk.createPasskeyOnly();
-  }, [sdk]);
-
-  const createSmartWalletOnly = useCallback(async (passkeyData: ConnectResponse): Promise<{ smartWalletAddress: string; account: WalletAccount }> => {
-    if (!sdk) {
-      throw new Error('Lazorkit SDK not initialized');
-    }
-    return sdk.createSmartWalletOnly(passkeyData);
-  }, [sdk]);
   return {
     // State
     smartWalletPubkey,
-    isConnected: !!account,
-    isLoading: isConnecting || isSigning,
+    isConnected: !!wallet,
+    isLoading: isLoading || isConnecting || isSigning,
     isConnecting,
     isSigning,
     error,
-    account,
+    wallet,
 
     // Actions
-    connect,
-    disconnect,
-    signTransaction,
-    signAndSendTransaction,
-    createPasskeyOnly,
-    createSmartWalletOnly,
+    connect: handleConnect,
+    disconnect: handleDisconnect,
+    signAndSendTransaction: handleSignAndSendTransaction,
   };
 };
