@@ -324,7 +324,12 @@ export class DialogManager extends EventEmitter {
           break;
         case 'sign-result':
         case 'SIGNATURE_CREATED':
-          this.emit('sign-result', data);
+          const transformedDataSignResult: SignResult = {
+            signature: data.normalized,
+            clientDataJsonBase64: data.clientDataJSONReturn,
+            authenticatorDataBase64: data.authenticatorDataReturn,
+          };
+          this.emit('sign-result', transformedDataSignResult);
           this.closeDialog();
           break;
         case 'error':
