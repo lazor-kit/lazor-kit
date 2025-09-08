@@ -1,12 +1,14 @@
 # Integration Guide
 
-This guide covers advanced integration patterns and best practices for LazorKit SDK.
+> **⚠️ Development Documentation - Production Use Not Recommended**
+> 
+> This guide contains experimental features and integration patterns. Thoroughly test all implementations before considering production use.
 
-## Project Setup
+Simple integration patterns and best practices for LazorKit.
 
-### 1. Provider Configuration
+## Quick Setup
 
-Set up the provider at your application root:
+### 1. Provider Setup
 
 ```tsx
 // App.tsx
@@ -14,606 +16,309 @@ import { LazorkitProvider } from '@lazorkit/wallet';
 
 const config = {
   rpcUrl: process.env.REACT_APP_RPC_URL || 'https://api.devnet.solana.com',
-  paymasterUrl: process.env.REACT_APP_PAYMASTER_URL || 'https://lazorkit-paymaster.onrender.com',
-  ipfsUrl: process.env.REACT_APP_PORTAL_URL || 'https://portal.lazor.sh',
+  paymasterUrl: process.env.REACT_APP_PAYMASTER_URL!,
+  ipfsUrl: process.env.REACT_APP_PORTAL_URL!,
 };
 
 export default function App() {
   return (
     <LazorkitProvider {...config}>
-      <Router>
-        <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/wallet" element={<WalletPage />} />
-        </Routes>
-      </Router>
+      <YourApp />
     </LazorkitProvider>
   );
 }
 ```
 
-### 2. Environment Configuration
-
-Create environment files for different environments:
+### 2. Environment Variables
 
 ```bash
-# .env.development
+# .env
 REACT_APP_RPC_URL=https://api.devnet.solana.com
-REACT_APP_PAYMASTER_URL=https://lazorkit-paymaster.onrender.com
-REACT_APP_PORTAL_URL=https://portal.lazor.sh
-
-# .env.production (when mainnet is available)
-REACT_APP_RPC_URL=https://api.mainnet-beta.solana.com
-REACT_APP_PAYMASTER_URL=https://your-mainnet-paymaster.com
-REACT_APP_PORTAL_URL=https://portal.lazor.sh
+REACT_APP_PAYMASTER_URL=your-paymaster-url
+REACT_APP_PORTAL_URL=your-portal-url
 ```
 
 ## Connection Patterns
 
-### Auto-Reconnection on App Start
-
-Implement automatic reconnection when your app loads:
+### Auto-Connect Hook
 
 ```tsx
 // hooks/useAutoConnect.ts
-import { useEffect, useCallback } from 'react';
+import { useEffect } from 'react';
 import { useWallet } from '@lazorkit/wallet';
 
 export function useAutoConnect() {
   const { connect, isConnected } = useWallet();
 
-  const autoConnect = useCallback(async () => {
-    if (isConnected) return;
-
-    try {
-      // connect() automatically tries reconnection first
-      await connect();
-    } catch (error) {
-      // Only log if it's not a "no credentials" error
-      if (error.code !== 'NO_STORED_CREDENTIALS') {
-        console.error('Auto-connect failed:', error);
-      }
+  useEffect(() => {
+    if (!isConnected) {
+      connect().catch(error => {
+        // Ignore "no credentials" errors (new users)
+        if (error.code !== 'NO_STORED_CREDENTIALS') {
+          console.error('Auto-connect failed:', error);
+        }
+      });
     }
   }, [connect, isConnected]);
-
-  useEffect(() => {
-    autoConnect();
-  }, [autoConnect]);
 }
 
-// Usage in App component
+// Usage
 function App() {
   useAutoConnect();
-  
-  return (
-    <div>
-      {/* Your app content */}
-    </div>
-  );
+  return <YourApp />;
 }
 ```
 
-### Connection State Management
-
-Create a custom hook for managing connection states:
+### Error Handling Hook
 
 ```tsx
-// hooks/useWalletConnection.ts
-import { useState, useCallback } from 'react';
-import { useWallet } from '@lazorkit/wallet';
-
-export function useWalletConnection() {
-  const { connect, disconnect, isConnected, isConnecting, error } = useWallet();
-  const [connectionError, setConnectionError] = useState<string | null>(null);
-
-  const handleConnect = useCallback(async () => {
-    setConnectionError(null);
-    
-    try {
-      await connect();
-    } catch (error) {
-      const message = getConnectionErrorMessage(error);
-      setConnectionError(message);
+// hooks/useWalletErrors.ts
+export function useWalletErrors() {
+  const getErrorMessage = (error) => {
+    switch (error.code) {
+      case 'NO_STORED_CREDENTIALS':
+        return 'Ready to create your first wallet?';
+      case 'USER_CANCELLED':
+        return 'Authentication was cancelled';
+      case 'CONNECTION_FAILED':
+        return 'Connection failed. Please try again';
+      case 'PASSKEY_CREATION_FAILED':
+        return 'Failed to create passkey. Check browser settings';
+      default:
+        return error.message || 'Something went wrong';
     }
-  }, [connect]);
-
-  const handleDisconnect = useCallback(async () => {
-    try {
-      await disconnect();
-      setConnectionError(null);
-    } catch (error) {
-      console.error('Disconnect failed:', error);
-    }
-  }, [disconnect]);
-
-  return {
-    connect: handleConnect,
-    disconnect: handleDisconnect,
-    isConnected,
-    isConnecting,
-    error: connectionError || error?.message,
   };
-}
 
-function getConnectionErrorMessage(error: any): string {
-  switch (error.code) {
-    case 'CONNECTION_FAILED':
-      return 'Failed to connect. Please try again.';
-    case 'PASSKEY_CREATION_FAILED':
-      return 'Failed to create passkey. Please check your browser settings.';
-    default:
-      return error.message || 'Connection failed';
-  }
+  return { getErrorMessage };
 }
 ```
 
-## Wallet Components
+## UI Components
 
-### Wallet Connection Button
-
-Create a reusable wallet connection component:
+### Simple Wallet Button
 
 ```tsx
 // components/WalletButton.tsx
-import { useWalletConnection } from '../hooks/useWalletConnection';
-
-interface WalletButtonProps {
-  className?: string;
-  connectText?: string;
-  disconnectText?: string;
-}
-
-export function WalletButton({ 
-  className = '',
-  connectText = 'Connect Wallet',
-  disconnectText = 'Disconnect'
-}: WalletButtonProps) {
-  const { connect, disconnect, isConnected, isConnecting, error } = useWalletConnection();
-
-  return (
-    <div className={className}>
-      {!isConnected ? (
-        <button
-          onClick={connect}
-          disabled={isConnecting}
-          className="bg-blue-500 hover:bg-blue-600 disabled:bg-gray-400 px-4 py-2 rounded text-white"
-        >
-          {isConnecting ? 'Connecting...' : connectText}
-        </button>
-      ) : (
-        <button
-          onClick={disconnect}
-          className="bg-red-500 hover:bg-red-600 px-4 py-2 rounded text-white"
-        >
-          {disconnectText}
-        </button>
-      )}
-      
-      {error && (
-        <p className="text-red-500 text-sm mt-2">{error}</p>
-      )}
-    </div>
-  );
-}
-```
-
-### Wallet Info Display
-
-Display wallet information when connected:
-
-```tsx
-// components/WalletInfo.tsx
 import { useWallet } from '@lazorkit/wallet';
+import { useWalletErrors } from '../hooks/useWalletErrors';
 
-export function WalletInfo() {
-  const { isConnected, smartWalletPubkey, account } = useWallet();
+export function WalletButton() {
+  const { connect, disconnect, account, isConnecting } = useWallet();
+  const { getErrorMessage } = useWalletErrors();
+  const [error, setError] = useState(null);
 
-  if (!isConnected || !smartWalletPubkey) {
-    return <div>Wallet not connected</div>;
-  }
-
-  const formatAddress = (address: string) => 
-    `${address.slice(0, 4)}...${address.slice(-4)}`;
-
-  return (
-    <div className="bg-gray-100 p-4 rounded">
-      <h3 className="font-semibold mb-2">Wallet Info</h3>
-      <div className="space-y-1 text-sm">
-        <div>
-          <span className="font-medium">Address: </span>
-          <span className="font-mono">{formatAddress(smartWalletPubkey.toString())}</span>
-        </div>
-        <div>
-          <span className="font-medium">Type: </span>
-          <span>{account?.isCreated ? 'New Wallet' : 'Existing Wallet'}</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-```
-
-## Transaction Handling
-
-### Transaction Hook
-
-Create a hook for handling transactions:
-
-```tsx
-// hooks/useTransactions.ts
-import { useCallback, useState } from 'react';
-import { useWallet } from '@lazorkit/wallet';
-import { TransactionInstruction } from '@solana/web3.js';
-
-export function useTransactions() {
-  const { signAndSendTransaction, isConnected, isSigning } = useWallet();
-  const [lastSignature, setLastSignature] = useState<string | null>(null);
-  const [transactionError, setTransactionError] = useState<string | null>(null);
-
-  const sendTransaction = useCallback(async (instruction: TransactionInstruction) => {
-    if (!isConnected) {
-      throw new Error('Wallet not connected');
-    }
-
-    setTransactionError(null);
-    setLastSignature(null);
-
+  const handleConnect = async () => {
     try {
-      const signature = await signAndSendTransaction(instruction);
-      setLastSignature(signature);
-      return signature;
-    } catch (error) {
-      const message = error.message || 'Transaction failed';
-      setTransactionError(message);
-      throw error;
-    }
-  }, [signAndSendTransaction, isConnected]);
-
-  return {
-    sendTransaction,
-    isSigning,
-    lastSignature,
-    error: transactionError,
-    clearError: () => setTransactionError(null),
-  };
-}
-```
-
-### SOL Transfer Component
-
-Example transfer component:
-
-```tsx
-// components/TransferSOL.tsx
-import { useState } from 'react';
-import { SystemProgram, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
-import { useWallet } from '@lazorkit/wallet';
-import { useTransactions } from '../hooks/useTransactions';
-
-export function TransferSOL() {
-  const { smartWalletPubkey, isConnected } = useWallet();
-  const { sendTransaction, isSigning, error } = useTransactions();
-  const [recipient, setRecipient] = useState('');
-  const [amount, setAmount] = useState('');
-
-  const handleTransfer = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (!smartWalletPubkey || !recipient || !amount) return;
-
-    try {
-      const recipientPubkey = new PublicKey(recipient);
-      const lamports = parseFloat(amount) * LAMPORTS_PER_SOL;
-
-      const instruction = SystemProgram.transfer({
-        fromPubkey: smartWalletPubkey,
-        toPubkey: recipientPubkey,
-        lamports,
-      });
-
-      const signature = await sendTransaction(instruction);
-      console.log('Transfer completed:', signature);
-      
-      // Reset form
-      setRecipient('');
-      setAmount('');
-    } catch (error) {
-      console.error('Transfer failed:', error);
+      setError(null);
+      await connect();
+    } catch (err) {
+      setError(getErrorMessage(err));
     }
   };
 
-  if (!isConnected) {
-    return <div>Please connect your wallet first</div>;
+  if (account) {
+    return (
+      <div>
+        <p className="text-sm">Connected: {account.smartWallet.slice(0, 8)}...</p>
+        <button onClick={disconnect}>Disconnect</button>
+      </div>
+    );
   }
 
   return (
-    <form onSubmit={handleTransfer} className="space-y-4">
-      <div>
-        <label className="block text-sm font-medium mb-1">
-          Recipient Address
-        </label>
-        <input
-          type="text"
-          value={recipient}
-          onChange={(e) => setRecipient(e.target.value)}
-          placeholder="Enter Solana address"
-          className="w-full p-2 border rounded"
-          required
-        />
-      </div>
-      
-      <div>
-        <label className="block text-sm font-medium mb-1">
-          Amount (SOL)
-        </label>
-        <input
-          type="number"
-          step="0.001"
-          min="0"
-          value={amount}
-          onChange={(e) => setAmount(e.target.value)}
-          placeholder="0.1"
-          className="w-full p-2 border rounded"
-          required
-        />
-      </div>
-
-      <button
-        type="submit"
-        disabled={isSigning || !recipient || !amount}
-        className="w-full bg-green-500 hover:bg-green-600 disabled:bg-gray-400 text-white py-2 px-4 rounded"
-      >
-        {isSigning ? 'Sending...' : 'Send SOL'}
+    <div>
+      <button onClick={handleConnect} disabled={isConnecting}>
+        {isConnecting ? 'Connecting...' : 'Connect Wallet'}
       </button>
-
-      {error && (
-        <p className="text-red-500 text-sm">{error}</p>
-      )}
-    </form>
+      {error && <p className="text-red-500 text-sm">{error}</p>}
+    </div>
   );
 }
 ```
 
-## Advanced Patterns
-
-### Step-by-Step Wallet Creation
-
-For complex onboarding flows:
+### Wallet Status
 
 ```tsx
-// components/OnboardingFlow.tsx
-import { useState } from 'react';
-import { useWallet } from '@lazorkit/wallet';
+// components/WalletStatus.tsx
+export function WalletStatus() {
+  const { account, isConnected } = useWallet();
 
-type OnboardingStep = 'welcome' | 'passkey' | 'wallet' | 'complete';
+  if (!isConnected) return <div>Not connected</div>;
 
-export function OnboardingFlow() {
-  const { createPasskeyOnly, createSmartWalletOnly } = useWallet();
-  const [step, setStep] = useState<OnboardingStep>('welcome');
-  const [passkeyData, setPasskeyData] = useState(null);
-  const [isLoading, setIsLoading] = useState(false);
-
-  const handleCreatePasskey = async () => {
-    setIsLoading(true);
-    try {
-      const data = await createPasskeyOnly();
-      setPasskeyData(data);
-      setStep('wallet');
-    } catch (error) {
-      console.error('Passkey creation failed:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleCreateWallet = async () => {
-    if (!passkeyData) return;
-    
-    setIsLoading(true);
-    try {
-      await createSmartWalletOnly(passkeyData);
-      setStep('complete');
-    } catch (error) {
-      console.error('Wallet creation failed:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  switch (step) {
-    case 'welcome':
-      return (
-        <div className="text-center">
-          <h2 className="text-2xl font-bold mb-4">Welcome to LazorKit</h2>
-          <p className="mb-6">Create your secure wallet using passkeys</p>
-          <button
-            onClick={() => setStep('passkey')}
-            className="bg-blue-500 text-white px-6 py-2 rounded"
-          >
-            Get Started
-          </button>
+  return (
+    <div className="bg-green-50 p-3 rounded border">
+      <div className="text-sm text-green-800">
+        <div>✅ Wallet Connected</div>
+        <div className="font-mono text-xs mt-1">
+          {account.smartWallet.slice(0, 8)}...{account.smartWallet.slice(-8)}
         </div>
-      );
-
-    case 'passkey':
-      return (
-        <div className="text-center">
-          <h2 className="text-2xl font-bold mb-4">Create Passkey</h2>
-          <p className="mb-6">First, we'll create your secure passkey</p>
-          <button
-            onClick={handleCreatePasskey}
-            disabled={isLoading}
-            className="bg-green-500 text-white px-6 py-2 rounded disabled:bg-gray-400"
-          >
-            {isLoading ? 'Creating...' : 'Create Passkey'}
-          </button>
-        </div>
-      );
-
-    case 'wallet':
-      return (
-        <div className="text-center">
-          <h2 className="text-2xl font-bold mb-4">Deploy Wallet</h2>
-          <p className="mb-6">Now let's deploy your smart wallet</p>
-          <button
-            onClick={handleCreateWallet}
-            disabled={isLoading}
-            className="bg-purple-500 text-white px-6 py-2 rounded disabled:bg-gray-400"
-          >
-            {isLoading ? 'Deploying...' : 'Deploy Wallet'}
-          </button>
-        </div>
-      );
-
-    case 'complete':
-      return (
-        <div className="text-center">
-          <h2 className="text-2xl font-bold mb-4">🎉 Welcome!</h2>
-          <p className="mb-6">Your wallet is ready to use</p>
-          <button
-            onClick={() => window.location.reload()}
-            className="bg-blue-500 text-white px-6 py-2 rounded"
-          >
-            Continue to App
-          </button>
-        </div>
-      );
-  }
+      </div>
+    </div>
+  );
 }
 ```
 
-### Persistent State with Zustand
+## Transaction Patterns
 
-For more complex state management:
+### Simple Send Hook
 
 ```tsx
-// store/walletStore.ts
-import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+// hooks/useSimpleSend.ts
+import { useState } from 'react';
+import { useWallet } from '@lazorkit/wallet';
 
-interface WalletStore {
-  lastConnectedWallet: string | null;
-  userPreferences: {
-    autoConnect: boolean;
-    theme: 'light' | 'dark';
-  };
-  setLastConnectedWallet: (address: string | null) => void;
-  setUserPreferences: (prefs: Partial<WalletStore['userPreferences']>) => void;
-}
+export function useSimpleSend() {
+  const { signAndSendTransaction, isSigning } = useWallet();
+  const [error, setError] = useState(null);
 
-export const useWalletStore = create(
-  persist<WalletStore>(
-    (set) => ({
-      lastConnectedWallet: null,
-      userPreferences: {
-        autoConnect: true,
-        theme: 'light',
-      },
-      setLastConnectedWallet: (address) => 
-        set({ lastConnectedWallet: address }),
-      setUserPreferences: (prefs) => 
-        set((state) => ({ 
-          userPreferences: { ...state.userPreferences, ...prefs } 
-        })),
-    }),
-    {
-      name: 'lazorkit-wallet-store',
+  const send = async (instruction) => {
+    try {
+      setError(null);
+      const signature = await signAndSendTransaction(instruction);
+      return signature;
+    } catch (err) {
+      const message = err.code === 'USER_CANCELLED' 
+        ? 'Transaction cancelled'
+        : err.message || 'Transaction failed';
+      setError(message);
+      throw err;
     }
-  )
-);
+  };
+
+  return { send, isSigning, error, clearError: () => setError(null) };
+}
+```
+
+### Transfer Component
+
+```tsx
+// components/SimpleTransfer.tsx
+import { SystemProgram, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
+
+export function SimpleTransfer() {
+  const { smartWalletPubkey } = useWallet();
+  const { send, isSigning, error } = useSimpleSend();
+
+  const sendSOL = async () => {
+    const instruction = SystemProgram.transfer({
+      fromPubkey: smartWalletPubkey,
+      toPubkey: new PublicKey(process.env.REACT_APP_RECIPIENT_ADDRESS!),
+      lamports: 0.1 * LAMPORTS_PER_SOL,
+    });
+
+    try {
+      const signature = await send(instruction);
+      console.log('Sent:', signature);
+    } catch (error) {
+      console.error('Failed:', error);
+    }
+  };
+
+  return (
+    <div>
+      <button onClick={sendSOL} disabled={isSigning}>
+        {isSigning ? 'Sending...' : 'Send 0.1 SOL'}
+      </button>
+      {error && <p className="text-red-500">{error}</p>}
+    </div>
+  );
+}
+```
+
+## Error Handling
+
+### Common Error Patterns
+
+```tsx
+const handleTransactionError = (error) => {
+  switch (error.code) {
+    case 'USER_CANCELLED':
+      return 'Transaction cancelled by user';
+    case 'INSUFFICIENT_FUNDS':
+      return 'Not enough balance for transaction';
+    case 'TRANSACTION_FAILED':
+      return 'Transaction failed to execute';
+    case 'NOT_CONNECTED':
+      return 'Please connect your wallet first';
+    default:
+      return error.message || 'Transaction error occurred';
+  }
+};
+```
+
+### External Payer Pattern
+
+```tsx
+// Simple external payer setup
+export function useExternalPayer() {
+  const { buildSmartWalletTransaction } = useWallet();
+
+  const sendWithExternalPayer = async (instruction) => {
+    const { createSessionTx, executeSessionTx } = await buildSmartWalletTransaction(
+      new PublicKey(process.env.REACT_APP_EXTERNAL_PAYER_ADDRESS!),
+      instruction
+    );
+
+    // Send to your backend for signing
+    const response = await fetch('/api/external-payer', {
+      method: 'POST',
+      body: JSON.stringify({
+        sessionTx: Buffer.from(createSessionTx.serialize()).toString('base64'),
+        executeTx: Buffer.from(executeSessionTx.serialize()).toString('base64'),
+      }),
+    });
+
+    return response.json();
+  };
+
+  return { sendWithExternalPayer };
+}
 ```
 
 ## Best Practices
 
-### 1. Error Boundary
-
-Wrap your wallet components with error boundaries:
-
+### 1. Loading States
+Always show loading feedback:
 ```tsx
-// components/WalletErrorBoundary.tsx
-import { Component, ReactNode } from 'react';
+const { isSigning } = useWallet();
 
-interface Props {
-  children: ReactNode;
-}
+<button disabled={isSigning}>
+  {isSigning ? 'Signing...' : 'Send Transaction'}
+</button>
+```
 
-interface State {
-  hasError: boolean;
-  error: Error | null;
-}
+### 2. Error Boundaries
+Wrap wallet components:
+```tsx
+function WalletErrorBoundary({ children }) {
+  const [hasError, setHasError] = useState(false);
 
-export class WalletErrorBoundary extends Component<Props, State> {
-  constructor(props: Props) {
-    super(props);
-    this.state = { hasError: false, error: null };
+  if (hasError) {
+    return (
+      <div>
+        <p>Wallet error occurred</p>
+        <button onClick={() => setHasError(false)}>Try Again</button>
+      </div>
+    );
   }
 
-  static getDerivedStateFromError(error: Error): State {
-    return { hasError: true, error };
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="text-center p-4">
-          <h2 className="text-xl font-bold text-red-600 mb-2">
-            Wallet Error
-          </h2>
-          <p className="text-gray-600 mb-4">
-            Something went wrong with the wallet connection.
-          </p>
-          <button
-            onClick={() => this.setState({ hasError: false, error: null })}
-            className="bg-blue-500 text-white px-4 py-2 rounded"
-          >
-            Try Again
-          </button>
-        </div>
-      );
-    }
-
-    return this.props.children;
-  }
+  return children;
 }
 ```
 
-### 2. Loading States
-
-Always provide clear loading feedback:
-
+### 3. Environment Detection
 ```tsx
-function WalletAction() {
-  const { isSigning, signAndSendTransaction } = useWallet();
-  
-  return (
-    <button disabled={isSigning}>
-      {isSigning ? (
-        <span className="flex items-center">
-          <LoadingSpinner className="mr-2" />
-          Signing...
-        </span>
-      ) : (
-        'Send Transaction'
-      )}
-    </button>
-  );
-}
+const isMainnet = process.env.REACT_APP_RPC_URL?.includes('mainnet-beta');
+const network = isMainnet ? 'mainnet' : 'devnet';
 ```
 
-### 3. Network Detection
-
-Handle network-specific logic:
-
+### 4. Simple State Management
 ```tsx
-function useNetwork() {
-  const [network, setNetwork] = useState<'devnet' | 'mainnet'>('devnet');
-  
-  useEffect(() => {
-    const rpcUrl = process.env.REACT_APP_RPC_URL || '';
-    const isMainnet = rpcUrl.includes('mainnet');
-    setNetwork(isMainnet ? 'mainnet' : 'devnet');
-  }, []);
-  
-  return { network, isMainnet: network === 'mainnet' };
-}
+// For basic apps, useState is sufficient
+const [walletState, setWalletState] = useState({
+  lastTransaction: null,
+  preferences: { autoConnect: true }
+});
+
+// For complex apps, consider Zustand or Context
 ```

@@ -1,39 +1,40 @@
 # Installation
 
+## Requirements
+
+Before installing LazorKit, ensure your development environment meets these requirements:
+
+### Browser Support  
+- **Chrome**: 88+ (latest recommended)
+- **Firefox**: 90+ (latest recommended)
+- **Safari**: 15+ (latest recommended)
+- **Edge**: 88+ (latest recommended)
+
+All modern browsers that support [WebAuthn Level 2](https://caniuse.com/webauthn) and [Passkeys](https://caniuse.com/passkeys) are compatible.
+
+### Development Environment
+- **HTTPS in local**: Required for WebAuthn 
+
 ## Package Installation
 
-Install the LazorKit SDK:
-
 ```bash
-# Using npm
 npm install @lazorkit/wallet
-
-# Using yarn
-yarn add @lazorkit/wallet
-
-# Using pnpm
-pnpm add @lazorkit/wallet
 ```
 
-The SDK includes all necessary Solana dependencies internally.
+## Environment Configuration
 
-
-
-## Environment Setup
-
-### 1. Environment Variables
-
-Configure the following environment variables for your application:
+Create environment variables for your application:
 
 ```env
-# Solana RPC endpoint
-LAZORKIT_RPC_URL=https://api.devnet.solana.com
+# Required
+REACT_APP_RPC_URL=https://api.devnet.solana.com
+REACT_APP_PAYMASTER_URL=your-paymaster-service-url
+REACT_APP_PORTAL_URL=your-portal-service-url
 
-# LazorKit portal URL
-LAZORKIT_PORTAL_URL=https://portal.lazor.sh
-
-# Paymaster service URL for gasless transactions
-LAZORKIT_PAYMASTER_URL=https://lazorkit-paymaster.onrender.com
+# Optional: External payer integration
+REACT_APP_EXTERNAL_PAYER_ADDRESS=your-external-payer-public-key
+REACT_APP_API_ENDPOINT=your-backend-api-url
+REACT_APP_API_KEY=your-api-authentication-key
 ```
 
 ### 2. Browser Polyfills (if needed)
@@ -70,9 +71,9 @@ import { LazorkitProvider } from '@lazorkit/wallet';
 export default function App() {
   return (
     <LazorkitProvider
-      rpcUrl={process.env.LAZORKIT_RPC_URL || 'https://api.devnet.solana.com'}
-      ipfsUrl={process.env.LAZORKIT_PORTAL_URL || 'https://portal.lazor.sh'}
-      paymasterUrl={process.env.LAZORKIT_PAYMASTER_URL || 'https://lazorkit-paymaster.onrender.com'}
+      rpcUrl={process.env.REACT_APP_RPC_URL || 'https://api.devnet.solana.com'}
+      paymasterUrl={process.env.REACT_APP_PAYMASTER_URL}
+      ipfsUrl={process.env.REACT_APP_PORTAL_URL}
     >
       <YourApp />
     </LazorkitProvider>
@@ -113,8 +114,8 @@ The SDK currently supports Solana Devnet by default:
 
 ```tsx
 <LazorkitProvider
-  rpcUrl="https://api.devnet.solana.com"
-  paymasterUrl="https://lazorkit-paymaster.onrender.com"
+  rpcUrl={process.env.REACT_APP_RPC_URL}
+  paymasterUrl={process.env.REACT_APP_PAYMASTER_URL}
 >
 ```
 

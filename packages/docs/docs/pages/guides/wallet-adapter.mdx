@@ -1,0 +1,437 @@
+# Solana Wallet Adapter Integration
+
+> **🚧 Under Development - Do Not Use in Production**
+> 
+> This integration guide is currently under development. The wallet adapter package not be published yet. Do not use in production applications without thorough testing
+
+Guide for integrating LazorKit with the Solana Wallet Adapter ecosystem for maximum compatibility with existing dApps.
+
+## Overview
+
+The Solana Wallet Adapter provides a standardized interface for connecting various wallets to dApps. LazorKit can be integrated as a wallet adapter, allowing existing applications to support passkey authentication without code changes.
+
+**Benefits:**
+- **Drop-in compatibility** with existing wallet adapter implementations
+- **Unified interface** with other Solana wallets (Phantom, Solflare, etc.)
+- **Easy migration** from traditional wallets to passkey-based authentication
+
+## Installation
+
+```bash
+npm install @solana/wallet-adapter-base \
+            @solana/wallet-adapter-react \
+            @solana/wallet-adapter-react-ui \
+            @solana/wallet-adapter-wallets \
+            @solana/web3.js
+```
+
+## Basic Setup
+
+### 1. Provider Configuration
+
+```tsx
+import React, { useMemo } from 'react';
+import { WalletAdapterNetwork } from '@solana/wallet-adapter-base';
+import { ConnectionProvider, WalletProvider } from '@solana/wallet-adapter-react';
+import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
+import { LazkitWalletAdapter } from '@solana/wallet-adapter-lazor-kit';
+import { clusterApiUrl } from '@solana/web3.js';
+
+// Import wallet adapter CSS
+require('@solana/wallet-adapter-react-ui/styles.css');
+
+function App() {
+  const network = WalletAdapterNetwork.Devnet;
+  const endpoint = useMemo(() => clusterApiUrl(network), [network]);
+
+  const wallets = useMemo(
+    () => [
+      new LazkitWalletAdapter({
+        dialogUrl: process.env.REACT_APP_PORTAL_URL,
+        rpcUrl: process.env.REACT_APP_RPC_URL,
+        paymasterUrl: process.env.REACT_APP_PAYMASTER_URL,
+      }),
+      // Add other wallets as needed
+    ],
+    [network]
+  );
+
+  return (
+    <ConnectionProvider endpoint={endpoint}>
+      <WalletProvider wallets={wallets} autoConnect>
+        <WalletModalProvider>
+          <YourApp />
+        </WalletModalProvider>
+      </WalletProvider>
+    </ConnectionProvider>
+  );
+}
+```
+
+### 2. Wallet Connection Component
+
+```tsx
+import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
+import { useWallet } from '@solana/wallet-adapter-react';
+
+function WalletConnection() {
+  const { connected, publicKey, wallet } = useWallet();
+
+  return (
+    <div>
+      <WalletMultiButton />
+      
+      {connected && (
+        <div>
+          <p>Connected with {wallet?.adapter.name}</p>
+          <p>Address: {publicKey?.toBase58()}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+## Environment Configuration
+
+```env
+# Required for Lazorkit adapter
+REACT_APP_RPC_URL=https://api.devnet.solana.com
+REACT_APP_PAYMASTER_URL=your-paymaster-url
+REACT_APP_PORTAL_URL=your-dialog-portal-url
+
+# Optional
+REACT_APP_NETWORK=devnet
+```
+
+## Transaction Handling
+
+### Send Transaction
+
+```tsx
+import { useConnection, useWallet } from '@solana/wallet-adapter-react';
+import { SystemProgram, Transaction, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
+
+function SendTransaction() {
+  const { connection } = useConnection();
+  const { publicKey, sendTransaction } = useWallet();
+
+  const handleSend = async () => {
+    if (!publicKey) return;
+
+    const transaction = new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: publicKey,
+        toPubkey: new PublicKey('RECIPIENT_ADDRESS_HERE'),
+        lamports: 0.1 * LAMPORTS_PER_SOL,
+      })
+    );
+
+    try {
+      const signature = await sendTransaction(transaction, connection);
+      console.log('Transaction sent:', signature);
+    } catch (error) {
+      console.error('Transaction failed:', error);
+    }
+  };
+
+  return (
+    <button onClick={handleSend} disabled={!publicKey}>
+      Send 0.1 SOL
+    </button>
+  );
+}
+```
+
+### Sign Message
+
+```tsx
+import { useWallet } from '@solana/wallet-adapter-react';
+
+function SignMessage() {
+  const { signMessage, publicKey } = useWallet();
+
+  const handleSign = async () => {
+    if (!signMessage || !publicKey) return;
+
+    const message = new TextEncoder().encode('Hello, Solana!');
+    
+    try {
+      const signature = await signMessage(message);
+      console.log('Message signed:', signature);
+    } catch (error) {
+      console.error('Signing failed:', error);
+    }
+  };
+
+  return (
+    <button onClick={handleSign} disabled={!signMessage}>
+      Sign Message
+    </button>
+  );
+}
+```
+
+## Advanced Integration
+
+### Multi-Wallet Support
+
+```tsx
+import { 
+  PhantomWalletAdapter,
+  SolflareWalletAdapter,
+  TorusWalletAdapter,
+} from '@solana/wallet-adapter-wallets';
+import { LazkitWalletAdapter } from '@solana/wallet-adapter-lazor-kit';
+
+const wallets = useMemo(
+  () => [
+    // LazorKit for passkey authentication
+    new LazkitWalletAdapter({
+      dialogUrl: process.env.REACT_APP_PORTAL_URL,
+      rpcUrl: process.env.REACT_APP_RPC_URL,
+      paymasterUrl: process.env.REACT_APP_PAYMASTER_URL,
+    }),
+    // Traditional wallets
+    new PhantomWalletAdapter(),
+    new SolflareWalletAdapter(),
+    new TorusWalletAdapter(),
+  ],
+  [network]
+);
+```
+
+### Custom Wallet Button
+
+```tsx
+import { useWallet } from '@solana/wallet-adapter-react';
+import { WalletReadyState } from '@solana/wallet-adapter-base';
+
+function CustomWalletButton() {
+  const { wallets, select, wallet, connected, disconnect } = useWallet();
+
+  const lazkitWallet = wallets.find(w => w.adapter.name === 'Lazorkit');
+
+  const handleConnect = () => {
+    if (lazkitWallet) {
+      select(lazkitWallet.adapter.name);
+    }
+  };
+
+  if (connected) {
+    return (
+      <div>
+        <span>Connected with {wallet?.adapter.name}</span>
+        <button onClick={disconnect}>Disconnect</button>
+      </div>
+    );
+  }
+
+  return (
+    <button 
+      onClick={handleConnect}
+      disabled={lazkitWallet?.readyState !== WalletReadyState.Installed}
+    >
+      Connect with LazorKit Passkey
+    </button>
+  );
+}
+```
+
+### Auto-Connect with LazorKit
+
+```tsx
+import { useEffect } from 'react';
+import { useWallet } from '@solana/wallet-adapter-react';
+
+function AutoConnectProvider({ children }) {
+  const { wallet, connect, connected, connecting } = useWallet();
+
+  useEffect(() => {
+    if (!connected && !connecting && wallet?.adapter.name === 'Lazorkit') {
+      // Auto-connect LazorKit if user has stored credentials
+      connect().catch(() => {
+        // Handle auto-connect failure silently
+      });
+    }
+  }, [wallet, connected, connecting, connect]);
+
+  return <>{children}</>;
+}
+```
+
+## Error Handling
+
+```tsx
+import { WalletError } from '@solana/wallet-adapter-base';
+import { useWallet } from '@solana/wallet-adapter-react';
+
+function WalletErrorHandler() {
+  const { wallet } = useWallet();
+
+  const handleWalletError = (error: WalletError) => {
+    if (wallet?.adapter.name === 'Lazorkit') {
+      switch (error.error?.message) {
+        case 'NO_STORED_CREDENTIALS':
+          return 'No saved passkey found. Please connect again.';
+        case 'USER_CANCELLED':
+          return 'Authentication cancelled';
+        case 'PASSKEY_CREATION_FAILED':
+          return 'Failed to create passkey. Please try again.';
+        default:
+          return 'Wallet connection failed';
+      }
+    }
+    return error.message;
+  };
+
+  // Use in your error handling logic
+  return null;
+}
+```
+
+## Styling and Theming
+
+### Custom Wallet Modal
+
+```tsx
+import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
+
+function ThemedWalletModal({ children }) {
+  return (
+    <WalletModalProvider
+      // Custom styling for wallet modal
+      className="custom-wallet-modal"
+    >
+      {children}
+    </WalletModalProvider>
+  );
+}
+
+// CSS
+.custom-wallet-modal {
+  --wallet-adapter-modal-background-color: #1a1a1a;
+  --wallet-adapter-button-background-color: #007bff;
+}
+```
+
+### Custom Wallet List
+
+```tsx
+import { useWallet } from '@solana/wallet-adapter-react';
+
+function WalletList() {
+  const { wallets, select, wallet: selectedWallet } = useWallet();
+
+  return (
+    <div className="wallet-list">
+      {wallets.map((wallet) => (
+        <button
+          key={wallet.adapter.name}
+          onClick={() => select(wallet.adapter.name)}
+          className={`wallet-item ${
+            selectedWallet?.adapter.name === wallet.adapter.name ? 'selected' : ''
+          }`}
+        >
+          <span>{wallet.adapter.name}</span>
+          {wallet.adapter.name === 'Lazorkit' && (
+            <span className="badge">Passkey</span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+```
+
+## Migration from Direct LazorKit Integration
+
+If you're migrating from direct LazorKit integration to wallet adapter:
+
+### Before (Direct Integration)
+
+```tsx
+import { useWallet } from '@lazorkit/wallet';
+
+function OldComponent() {
+  const { connect, signAndSendTransaction, smartWalletPubkey } = useWallet();
+  // ...
+}
+```
+
+### After (Wallet Adapter)
+
+```tsx
+import { useWallet } from '@solana/wallet-adapter-react';
+
+function NewComponent() {
+  const { connect, sendTransaction, publicKey } = useWallet();
+  // Same interface, compatible with other wallets
+}
+```
+
+## Best Practices
+
+### 1. Graceful Fallbacks
+
+```tsx
+function AdaptiveWalletButton() {
+  const { wallet, connected } = useWallet();
+  
+  const isLazorKit = wallet?.adapter.name === 'Lazorkit';
+  
+  return (
+    <div>
+      <WalletMultiButton />
+      {connected && isLazorKit && (
+        <p>Connected with passkey authentication 🔐</p>
+      )}
+    </div>
+  );
+}
+```
+
+### 2. Feature Detection
+
+```tsx
+function FeatureAwareComponent() {
+  const { wallet } = useWallet();
+  
+  const supportsGasless = wallet?.adapter.name === 'Lazorkit';
+  
+  return (
+    <div>
+      <SendTransaction />
+      {supportsGasless && (
+        <p>✨ Gasless transactions available</p>
+      )}
+    </div>
+  );
+}
+```
+
+### 3. Connection State Management
+
+```tsx
+function ConnectionStateManager() {
+  const { connected, connecting, wallet } = useWallet();
+  
+  if (connecting) {
+    return <div>Connecting to {wallet?.adapter.name}...</div>;
+  }
+  
+  if (connected) {
+    return <div>Connected with {wallet?.adapter.name}</div>;
+  }
+  
+  return <WalletMultiButton />;
+}
+```
+
+## Resources
+
+- [Solana Wallet Adapter Documentation](https://github.com/anza-xyz/wallet-adapter)
+- [Wallet Adapter React UI Components](https://github.com/anza-xyz/wallet-adapter/tree/master/packages/ui/react-ui)
+- [LazorKit Direct Integration](../getting-started) - Alternative to wallet adapter
+
+This integration allows LazorKit to work seamlessly with existing Solana dApps while providing passkey-based authentication as an option alongside traditional wallet extensions.

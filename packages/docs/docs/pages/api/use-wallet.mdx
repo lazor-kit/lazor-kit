@@ -1,5 +1,9 @@
 # useWallet Hook
 
+> **⚠️ Development Version - Not Production Ready**
+> 
+> This documentation reflects the latest development version. Some features may be incomplete or subject to change. Do not use in production environments.
+
 The `useWallet` hook is the primary interface for interacting with LazorKit wallets in React applications.
 
 ## Import
@@ -8,297 +12,383 @@ The `useWallet` hook is the primary interface for interacting with LazorKit wall
 import { useWallet } from '@lazorkit/wallet';
 ```
 
-## Usage
+## Quick Start
 
 ```tsx
-function WalletComponent() {
-  const {
-    // State
-    smartWalletPubkey,
-    isConnected,
-    isLoading,
-    isConnecting,
-    isSigning,
-    error,
-    account,
+import { useWallet } from '@lazorkit/wallet';
+import { SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js';
 
-    // Actions
-    connect,
-    disconnect,
-    reconnect,
-    signTransaction,
-    signAndSendTransaction,
-    createPasskeyOnly,
-    createSmartWalletOnly,
+function WalletComponent() {
+  const { 
+    account, 
+    isConnected, 
+    connect, 
+    disconnect, 
+    signAndSendTransaction 
   } = useWallet();
 
-  // Your component logic here
+  const handleConnect = () => connect();
+  const handleSend = async () => {
+    if (!account) return;
+    
+    const instruction = SystemProgram.transfer({
+      fromPubkey: account.smartWallet,
+      toPubkey: 'RECIPIENT_ADDRESS',
+      lamports: 0.1 * LAMPORTS_PER_SOL,
+    });
+    
+    const signature = await signAndSendTransaction(instruction);
+    console.log('Sent:', signature);
+  };
+
+  return (
+    <div>
+      {!isConnected ? (
+        <button onClick={handleConnect}>Connect Wallet</button>
+      ) : (
+        <div>
+          <p>Connected: {account.smartWallet}</p>
+          <button onClick={handleSend}>Send SOL</button>
+          <button onClick={disconnect}>Disconnect</button>
+        </div>
+      )}
+    </div>
+  );
 }
+```
+
+## Complete Interface
+
+```tsx
+const {
+  // State
+  account,                    // WalletAccount | null
+  smartWalletPubkey,         // PublicKey | null  
+  isConnected,               // boolean
+  isConnecting,              // boolean
+  isSigning,                 // boolean
+  error,                     // Error | null
+
+  // Core Actions
+  connect,                   // () => Promise<WalletAccount>
+  disconnect,                // () => Promise<void>
+  signAndSendTransaction,    // (instruction) => Promise<string>
+
+  // Advanced Actions  
+  signTransaction,           // (instruction) => Promise<Transaction>
+  buildSmartWalletTransaction, // (payer, instruction) => Promise<{...}>
+  createPasskeyOnly,         // () => Promise<ConnectResponse>
+  createSmartWalletOnly,     // (passkey) => Promise<{...}>
+} = useWallet();
 ```
 
 ## State Properties
 
-### `smartWalletPubkey`
-- **Type**: `PublicKey | null`
-- **Description**: The public key of the connected smart wallet
-- **Example**: 
-```tsx
-if (smartWalletPubkey) {
-  console.log('Wallet address:', smartWalletPubkey.toString());
+| Property | Type | Description |
+|----------|------|-------------|
+| `account` | `WalletAccount \| null` | Complete wallet info when connected |
+| `smartWalletPubkey` | `PublicKey \| null` | Smart wallet public key |
+| `isConnected` | `boolean` | `!!account` - connection status |
+| `isConnecting` | `boolean` | Connection operation in progress |
+| `isSigning` | `boolean` | Transaction signing in progress |
+| `error` | `Error \| null` | Last error that occurred |
+
+### WalletAccount Type
+```typescript
+interface WalletAccount {
+  publicKey: string;      // Passkey public key (base64)
+  smartWallet: string;    // Smart wallet address (base58)
+  isConnected: boolean;   // Always true when account exists
+  isCreated: boolean;     // True if just created
 }
 ```
 
-### `isConnected`
-- **Type**: `boolean`
-- **Description**: Whether a wallet is currently connected (`!!account`)
-
-### `isLoading`
-- **Type**: `boolean`
-- **Description**: General loading state (`isConnecting || isSigning`)
-
-### `isConnecting`
-- **Type**: `boolean`
-- **Description**: Whether a connection operation is in progress
-
-### `isSigning`
-- **Type**: `boolean`
-- **Description**: Whether a transaction signing operation is in progress
-
-### `error`
-- **Type**: `Error | null`
-- **Description**: The last error that occurred, if any
-
-### `account`
-- **Type**: `WalletAccount | null`
-- **Description**: Complete wallet account information when connected
-
-## Action Methods
+## Core Actions
 
 ### `connect()`
-- **Type**: `() => Promise<WalletAccount>`
-- **Description**: Connects to a wallet. First tries auto-reconnection with stored credentials, then falls back to new connection dialog
-- **Returns**: Promise resolving to wallet account information
+**Returns**: `Promise<WalletAccount>`  
+**Throws**: `Error` with specific error codes
+
+Connects wallet with auto-reconnection fallback.
 
 ```tsx
-const handleConnect = async () => {
-  try {
-    const account = await connect();
-    console.log('Connected to:', account.smartWallet);
-  } catch (error) {
-    console.error('Connection failed:', error);
-  }
-};
+try {
+  const account: WalletAccount = await connect();
+  // account = {
+  //   publicKey: "base64-encoded-passkey-public-key",
+  //   smartWallet: "base58-wallet-address", 
+  //   isConnected: true,
+  //   isCreated: boolean // true if just created
+  // }
+  console.log('Connected:', account.smartWallet);
+} catch (error: Error) {
+  // error.code will be one of:
+  // 'NO_STORED_CREDENTIALS' | 'USER_CANCELLED' | 'CONNECTION_FAILED'
+  console.error('Connection failed:', error.code, error.message);
+}
 ```
 
 ### `disconnect()`
-- **Type**: `() => Promise<void>`
-- **Description**: Disconnects the wallet while preserving communication handler for future reconnection
+**Returns**: `Promise<void>`  
+**Throws**: Rarely throws, logs errors internally
+
+Disconnects wallet but preserves session for reconnection.
 
 ```tsx
-const handleDisconnect = async () => {
-  try {
-    await disconnect();
-    console.log('Disconnected successfully');
-  } catch (error) {
-    console.error('Disconnect failed:', error);
-  }
-};
-```
-
-### `reconnect()`
-- **Type**: `() => Promise<WalletAccount>`
-- **Description**: Manually reconnects using stored credentials
-
-```tsx
-const handleReconnect = async () => {
-  try {
-    const account = await reconnect();
-    console.log('Reconnected successfully');
-  } catch (error) {
-    if (error.code === 'NO_STORED_CREDENTIALS') {
-      console.log('No stored credentials found');
-    }
-  }
-};
-```
-
-### `signTransaction()`
-- **Type**: `(instruction: TransactionInstruction) => Promise<Transaction>`
-- **Description**: Signs a transaction instruction without sending it
-
-```tsx
-const handleSign = async () => {
-  const instruction = SystemProgram.transfer({
-    fromPubkey: smartWalletPubkey!,
-    toPubkey: new PublicKey('...'),
-    lamports: LAMPORTS_PER_SOL * 0.1,
-  });
-
-  try {
-    const signedTx = await signTransaction(instruction);
-    // Handle the signed transaction
-  } catch (error) {
-    console.error('Signing failed:', error);
-  }
-};
+try {
+  await disconnect(); // Always resolves
+  // State after disconnect:
+  // account = null, isConnected = false
+} catch (error) {
+  // Usually logs internally, rarely throws
+}
 ```
 
 ### `signAndSendTransaction()`
-- **Type**: `(instruction: TransactionInstruction) => Promise<string>`
-- **Description**: Signs and sends a transaction instruction
-- **Returns**: Promise resolving to transaction signature
+**Returns**: `Promise<string>` (transaction signature)  
+**Throws**: `Error` with transaction-specific codes
+
+Signs and sends transaction, returns signature.
 
 ```tsx
-const handleTransfer = async () => {
-  const instruction = SystemProgram.transfer({
-    fromPubkey: smartWalletPubkey!,
-    toPubkey: new PublicKey('...'),
-    lamports: LAMPORTS_PER_SOL * 0.1,
-  });
-
-  try {
-    const signature = await signAndSendTransaction(instruction);
-    console.log('Transaction sent:', signature);
-  } catch (error) {
-    console.error('Transaction failed:', error);
+try {
+  const signature: string = await signAndSendTransaction(instruction);
+  // signature = "base58-transaction-signature"
+  console.log('Transaction sent:', signature);
+  
+  // Verify on explorer: 
+  // https://explorer.solana.com/tx/${signature}?cluster=devnet
+} catch (error: Error) {
+  // error.code possibilities:
+  // 'NOT_CONNECTED' - no wallet connected
+  // 'USER_CANCELLED' - user cancelled signing
+  // 'TRANSACTION_FAILED' - network/execution error
+  // 'INSUFFICIENT_FUNDS' - not enough SOL/tokens
+  
+  switch (error.code) {
+    case 'NOT_CONNECTED':
+      console.log('Please connect wallet first');
+      break;
+    case 'USER_CANCELLED':
+      console.log('User cancelled transaction');
+      break;
+    case 'INSUFFICIENT_FUNDS':
+      console.log('Not enough balance');
+      break;
+    default:
+      console.error('Transaction failed:', error.message);
   }
-};
+}
+```
+
+## Advanced Actions
+
+### `signTransaction()`
+**Returns**: `Promise<Transaction>` (signed but not sent)  
+**Throws**: `Error` with signing-specific codes
+
+Signs transaction without sending to network.
+
+```tsx
+try {
+  const signedTx: Transaction = await signTransaction(instruction);
+  // signedTx is a fully signed Solana Transaction object
+  // You can inspect: signedTx.signatures, signedTx.instructions
+  
+  // Send later manually if needed:
+  // const signature = await connection.sendTransaction(signedTx);
+} catch (error: Error) {
+  // Same error codes as signAndSendTransaction except 'TRANSACTION_FAILED'
+  console.error('Signing failed:', error.code);
+}
+```
+
+### `buildSmartWalletTransaction()`
+**Returns**: `Promise<{createSessionTx: VersionedTransaction, executeSessionTx: VersionedTransaction}>`  
+**Throws**: `Error` if wallet not connected or instruction invalid
+
+Creates unsigned transactions for external payer integration.
+
+```tsx
+try {
+  const externalPayer = new PublicKey('EXTERNAL_PAYER_ADDRESS');
+  const result = await buildSmartWalletTransaction(externalPayer, instruction);
+  
+  // result = {
+  //   createSessionTx: VersionedTransaction, // Creates session account
+  //   executeSessionTx: VersionedTransaction // Executes your instruction
+  // }
+  
+  // Both transactions are UNSIGNED - external payer must sign
+  const serializedSessionTx = result.createSessionTx.serialize();
+  const serializedExecuteTx = result.executeSessionTx.serialize();
+  
+  // Send to backend service that controls external payer
+  await sendToBackend({
+    sessionTx: Buffer.from(serializedSessionTx).toString('base64'),
+    executeTx: Buffer.from(serializedExecuteTx).toString('base64')
+  });
+} catch (error: Error) {
+  // error.code: 'NOT_CONNECTED' | 'INVALID_INSTRUCTION'
+  console.error('Build failed:', error.message);
+}
 ```
 
 ### `createPasskeyOnly()`
-- **Type**: `() => Promise<ConnectResponse>`
-- **Description**: Creates only a passkey without deploying a smart wallet
-- **Returns**: Promise resolving to passkey data for later wallet creation
+**Returns**: `Promise<ConnectResponse>`  
+**Throws**: `Error` if WebAuthn fails
+
+Creates passkey without deploying smart wallet.
 
 ```tsx
-const handleCreatePasskey = async () => {
-  try {
-    const passkeyData = await createPasskeyOnly();
-    console.log('Passkey created:', passkeyData.credentialId);
-    // Store passkeyData for later use
-  } catch (error) {
-    console.error('Passkey creation failed:', error);
-  }
-};
+try {
+  const passkeyData: ConnectResponse = await createPasskeyOnly();
+  // passkeyData = {
+  //   publicKey: "base64-encoded-public-key",
+  //   credentialId: "webauthn-credential-id", 
+  //   isCreated: true, // true = new, false = existing
+  //   connectionType: "create" | "get",
+  //   timestamp: 1640995200000
+  // }
+  
+  // Store passkeyData for later wallet deployment
+  localStorage.setItem('tempPasskey', JSON.stringify(passkeyData));
+} catch (error: Error) {
+  // error.code: 'USER_CANCELLED' | 'PASSKEY_CREATION_FAILED'
+  console.error('Passkey creation failed:', error.code);
+}
 ```
 
 ### `createSmartWalletOnly()`
-- **Type**: `(passkeyData: ConnectResponse) => Promise<{smartWalletAddress: string, account: WalletAccount}>`
-- **Description**: Creates a smart wallet using previously created passkey data
+**Returns**: `Promise<{smartWalletAddress: string, account: WalletAccount}>`  
+**Throws**: `Error` if deployment fails
+
+Deploys smart wallet using existing passkey data.
 
 ```tsx
-const handleCreateWallet = async (passkeyData) => {
-  try {
-    const { smartWalletAddress, account } = await createSmartWalletOnly(passkeyData);
-    console.log('Smart wallet created:', smartWalletAddress);
-  } catch (error) {
-    console.error('Wallet creation failed:', error);
-  }
-};
+try {
+  const result = await createSmartWalletOnly(passkeyData);
+  // result = {
+  //   smartWalletAddress: "base58-wallet-address",
+  //   account: WalletAccount // Same as connect() return
+  // }
+  
+  console.log('Wallet deployed at:', result.smartWalletAddress);
+  // Now account.isConnected = true and hook state updates
+} catch (error: Error) {
+  // error.code: 'INVALID_PASSKEY_DATA' | 'SMART_WALLET_CREATION_FAILED'
+  console.error('Wallet deployment failed:', error.code);
+}
 ```
 
-## Common Patterns
+## Common Examples
 
-### Connection with Auto-Reconnection
-
+### Error Handling
 ```tsx
-const handleConnect = async () => {
-  try {
-    // connect() automatically tries reconnection first
-    const account = await connect();
-    console.log('Connected:', account.smartWallet);
-  } catch (error) {
-    switch (error.code) {
-      case 'NO_STORED_CREDENTIALS':
-        console.log('First time user');
-        break;
-      case 'INVALID_CREDENTIALS':
-        console.log('Credentials corrupted - cleared automatically');
-        break;
-      default:
-        console.error('Connection failed:', error);
-    }
+try {
+  const account = await connect();
+} catch (error) {
+  switch (error.code) {
+    case 'NO_STORED_CREDENTIALS':
+      console.log('First time user');
+      break;
+    case 'USER_CANCELLED':
+      console.log('User cancelled authentication');
+      break;
+    default:
+      console.error('Connection failed:', error);
   }
-};
+}
 ```
 
-### Step-by-Step Wallet Creation
-
+### Step-by-Step Creation
 ```tsx
-const [passkeyData, setPasskeyData] = useState(null);
-const [step, setStep] = useState('idle'); // 'idle' | 'passkey' | 'wallet'
+// Step 1: Create passkey
+const passkeyData = await createPasskeyOnly();
 
-const handleStepByStep = async () => {
-  try {
-    // Step 1: Create passkey
-    setStep('passkey');
-    const passkey = await createPasskeyOnly();
-    setPasskeyData(passkey);
-    
-    // Step 2: Create wallet (could be done later)
-    setStep('wallet');
-    const { account } = await createSmartWalletOnly(passkey);
-    
-    setStep('idle');
-    console.log('Wallet ready:', account.smartWallet);
-  } catch (error) {
-    setStep('idle');
-    console.error('Step failed:', error);
-  }
-};
+// Step 2: Deploy wallet (can be done later)
+const { account } = await createSmartWalletOnly(passkeyData);
+console.log('Wallet ready:', account.smartWallet);
 ```
 
-### Transaction with Loading States
-
+### External Payer Pattern
 ```tsx
-const handleTransfer = async () => {
-  if (!smartWalletPubkey || isSigning) return;
-
-  const instruction = SystemProgram.transfer({
-    fromPubkey: smartWalletPubkey,
-    toPubkey: new PublicKey('...'),
-    lamports: LAMPORTS_PER_SOL * 0.1,
-  });
-
-  try {
-    const signature = await signAndSendTransaction(instruction);
-    console.log('Transfer completed:', signature);
-  } catch (error) {
-    console.error('Transfer failed:', error);
-  }
-};
-
-return (
-  <button 
-    onClick={handleTransfer} 
-    disabled={!smartWalletPubkey || isSigning}
-  >
-    {isSigning ? 'Sending...' : 'Transfer SOL'}
-  </button>
+const { createSessionTx, executeSessionTx } = await buildSmartWalletTransaction(
+  externalPayerPubkey,
+  instruction
 );
+// Send serialized transactions to backend for signing
 ```
 
-## Type Definitions
+### Loading States
+```tsx
+<button 
+  onClick={handleTransfer} 
+  disabled={!isConnected || isSigning}
+>
+  {isSigning ? 'Sending...' : 'Transfer SOL'}
+</button>
+```
 
-### WalletAccount
+## Complete Error Reference
+
+All LazorKit errors extend the base `Error` class with an additional `code` property:
 
 ```typescript
-interface WalletAccount {
-  publicKey: string;          // Passkey public key
-  smartWallet: string;        // Smart wallet address (base58)
-  isConnected: boolean;       // Connection status
-  isCreated: boolean;         // Whether wallet was newly created
+interface LazorkitError extends Error {
+  code: string;           // Specific error code
+  message: string;        // Human-readable message
+  details?: any;          // Additional error context
 }
 ```
 
-### ConnectResponse
+### Connection Errors
+| Code | Method | Description | Action |
+|------|--------|-------------|---------|
+| `NO_STORED_CREDENTIALS` | `connect()` | First time user | Show onboarding |
+| `USER_CANCELLED` | `connect()` | User cancelled WebAuthn | Retry or alternative |
+| `INVALID_CREDENTIALS` | `connect()` | Corrupted stored data | Auto-cleared, retry |
+| `CONNECTION_FAILED` | `connect()` | Network/service error | Check network, retry |
 
-```typescript
-interface ConnectResponse {
-  publicKey: string;          // Base64 encoded public key
-  credentialId: string;       // Passkey credential ID
-  isCreated: boolean;         // Whether credential was newly created
-  connectionType: 'create' | 'get'; // Connection type
-  timestamp: number;          // Response timestamp
+### Transaction Errors  
+| Code | Method | Description | Action |
+|------|--------|-------------|---------|
+| `NOT_CONNECTED` | `signAndSendTransaction()` | No wallet connected | Call `connect()` first |
+| `USER_CANCELLED` | `signAndSendTransaction()` | User cancelled signing | User choice, no action |
+| `INSUFFICIENT_FUNDS` | `signAndSendTransaction()` | Not enough balance | Show balance, request funds |
+| `TRANSACTION_FAILED` | `signAndSendTransaction()` | Network/execution error | Check network, retry |
+
+### Creation Errors
+| Code | Method | Description | Action |
+|------|--------|-------------|---------|
+| `PASSKEY_CREATION_FAILED` | `createPasskeyOnly()` | WebAuthn device error | Check device, retry |
+| `SMART_WALLET_CREATION_FAILED` | `createSmartWalletOnly()` | Deployment failed | Check network, retry |
+| `INVALID_PASSKEY_DATA` | `createSmartWalletOnly()` | Bad passkey input | Recreate passkey |
+
+### Error Handling Pattern
+```tsx
+const handleWalletError = (error: LazorkitError) => {
+  switch (error.code) {
+    case 'NO_STORED_CREDENTIALS':
+      return 'Welcome! Let\'s create your first wallet.';
+    case 'USER_CANCELLED':
+      return 'Authentication cancelled. Try again when ready.';
+    case 'INSUFFICIENT_FUNDS':
+      return `Not enough balance. Need ${error.details?.required} SOL.`;
+    case 'CONNECTION_FAILED':
+      return 'Network error. Please check connection and retry.';
+    default:
+      return `Unexpected error: ${error.message}`;
+  }
+};
+
+// Usage
+try {
+  await connect();
+} catch (error) {
+  const userMessage = handleWalletError(error);
+  setErrorMessage(userMessage);
 }
 ```
+
+See [Type Definitions](./types) for complete interfaces.

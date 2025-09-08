@@ -57,20 +57,26 @@ const coder: anchor.BorshCoder = (() => {
 
 function computeAccountsHash(
   programId: anchor.web3.PublicKey,
-  metas: anchor.web3.AccountMeta[]
+  metas: anchor.web3.AccountMeta[],
+  smartWallet: anchor.web3.PublicKey
 ): Uint8Array {
   const h = sha256.create();
   h.update(programId.toBytes());
   for (const m of metas) {
     h.update(m.pubkey.toBytes());
     h.update(Uint8Array.from([m.isSigner ? 1 : 0]));
-    h.update(Uint8Array.from([m.isWritable ? 1 : 0]));
+    h.update(
+      Uint8Array.from([
+        m.pubkey.toString() === smartWallet.toString() || m.isWritable ? 1 : 0,
+      ])
+    );
   }
   return new Uint8Array(h.arrayBuffer());
 }
 
 export function buildExecuteMessage(
   payer: anchor.web3.PublicKey,
+  smartWallet: anchor.web3.PublicKey,
   nonce: anchor.BN,
   now: anchor.BN,
   policyIns: anchor.web3.TransactionInstruction,
@@ -79,12 +85,17 @@ export function buildExecuteMessage(
   const policyMetas = instructionToAccountMetas(policyIns, payer);
   const policyAccountsHash = computeAccountsHash(
     policyIns.programId,
-    policyMetas
+    policyMetas,
+    smartWallet
   );
   const policyDataHash = new Uint8Array(sha256.arrayBuffer(policyIns.data));
 
   const cpiMetas = instructionToAccountMetas(cpiIns, payer);
-  const cpiAccountsHash = computeAccountsHash(cpiIns.programId, cpiMetas);
+  const cpiAccountsHash = computeAccountsHash(
+    cpiIns.programId,
+    cpiMetas,
+    smartWallet
+  );
   const cpiDataHash = new Uint8Array(sha256.arrayBuffer(cpiIns.data));
 
   const encoded = coder.types.encode('ExecuteMessage', {
@@ -100,6 +111,7 @@ export function buildExecuteMessage(
 
 export function buildInvokePolicyMessage(
   payer: anchor.web3.PublicKey,
+  smartWallet: anchor.web3.PublicKey,
   nonce: anchor.BN,
   now: anchor.BN,
   policyIns: anchor.web3.TransactionInstruction
@@ -107,7 +119,8 @@ export function buildInvokePolicyMessage(
   const policyMetas = instructionToAccountMetas(policyIns, payer);
   const policyAccountsHash = computeAccountsHash(
     policyIns.programId,
-    policyMetas
+    policyMetas,
+    smartWallet
   );
   const policyDataHash = new Uint8Array(sha256.arrayBuffer(policyIns.data));
 
@@ -122,6 +135,7 @@ export function buildInvokePolicyMessage(
 
 export function buildUpdatePolicyMessage(
   payer: anchor.web3.PublicKey,
+  smartWallet: anchor.web3.PublicKey,
   nonce: anchor.BN,
   now: anchor.BN,
   destroyPolicyIns: anchor.web3.TransactionInstruction,
@@ -130,14 +144,16 @@ export function buildUpdatePolicyMessage(
   const oldMetas = instructionToAccountMetas(destroyPolicyIns, payer);
   const oldAccountsHash = computeAccountsHash(
     destroyPolicyIns.programId,
-    oldMetas
+    oldMetas,
+    smartWallet
   );
   const oldDataHash = new Uint8Array(sha256.arrayBuffer(destroyPolicyIns.data));
 
   const newMetas = instructionToAccountMetas(initPolicyIns, payer);
   const newAccountsHash = computeAccountsHash(
     initPolicyIns.programId,
-    newMetas
+    newMetas,
+    smartWallet
   );
   const newDataHash = new Uint8Array(sha256.arrayBuffer(initPolicyIns.data));
 

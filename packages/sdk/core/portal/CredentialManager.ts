@@ -86,7 +86,7 @@ export class CredentialManager extends EventEmitter {
       this.iframeRef.contentWindow.postMessage(message, '*');
       
       // Retry sync multiple times to ensure delivery
-      this.retryDelays.forEach((delay, index) => {
+      this.retryDelays.forEach((delay) => {
         setTimeout(() => {
           try {
             if (this.iframeRef?.contentWindow) {

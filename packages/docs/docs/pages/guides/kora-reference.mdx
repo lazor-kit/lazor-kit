@@ -1,0 +1,90 @@
+# Kora Quick Reference
+
+> **🚧 Development Documentation - Use with Caution**
+> 
+> This reference covers experimental Kora integration features. Do not use in production applications without thorough testing.
+
+Kora is a Solana relayer that enables gasless transactions where users pay fees in SPL tokens instead of SOL.
+
+**Key Impact**: Users never need SOL - they can transact entirely using USDC, BONK, or any supported token.
+
+## How It Works
+
+1. **User creates transaction** with your app instruction
+2. **Kora adds fee payment** instruction in the selected SPL token  
+3. **User signs** the complete transaction
+4. **Kora signs as fee payer** and submits to Solana
+5. **Result**: SPL tokens go to Kora operator, SOL fees paid by Kora
+
+## Installation
+
+```bash
+npm install @kora/sdk
+```
+
+## Basic Methods
+
+### Setup Client
+
+```tsx
+import { KoraClient } from '@kora/sdk';
+
+const kora = new KoraClient({
+  rpcUrl: process.env.REACT_APP_KORA_RPC_URL,
+});
+```
+
+### Get Payer Address
+
+```tsx
+const { signer_address } = await kora.getPayerSigner();
+```
+
+### Sign Transaction
+
+```tsx
+const signedTx = await kora.signTransaction({
+  transaction: transaction.serialize(),
+});
+```
+
+### Sign and Send
+
+```tsx
+const signature = await kora.signAndSendTransaction({
+  transaction: transaction.serialize(),
+});
+```
+
+## Basic Hook
+
+```tsx
+export function useKora() {
+  const [kora] = useState(() => new KoraClient({
+    rpcUrl: process.env.REACT_APP_KORA_RPC_URL!
+  }));
+
+  return {
+    getPayerAddress: () => kora.getPayerSigner(),
+    signTransaction: (tx) => kora.signTransaction({ transaction: tx.serialize() }),
+    signAndSend: (tx) => kora.signAndSendTransaction({ transaction: tx.serialize() }),
+  };
+}
+```
+
+## Environment Setup
+
+```env
+REACT_APP_KORA_RPC_URL=your-kora-server-url
+REACT_APP_KORA_API_KEY=your-api-key
+```
+
+## Official Resources
+
+- **[Kora Repository](https://github.com/solana-foundation/kora)** - Official Kora implementation
+- **[Kora Documentation](https://github.com/solana-foundation/kora/tree/main/docs)** - Complete setup and configuration guides
+- **[Kora CLI](https://crates.io/crates/kora-cli)** - Rust crate for running Kora nodes
+
+## Complete Integration
+
+For full LazorKit + Kora integration, see the [complete guides](./kora-integration) in this documentation.
