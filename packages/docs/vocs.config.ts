@@ -5,19 +5,59 @@ export default defineConfig({
   description: 'Seamless Web3 authentication for the web with passkey integration',
   sidebar: [
     {
-      text: 'Introduction',
-      link: '/',
+      text: 'Overview',
+      collapsed: false,
+      items: [
+        {
+          text: 'Introduction',
+          link: '/',
+        },
+        {
+          text: 'Architecture Overview',
+          link: '/concepts/architecture',
+        },
+      ],
     },
     {
-      text: 'Getting Started',
-      link: '/getting-started',
+      text: 'Quickstart',
+      collapsed: false,
+      items: [
+        {
+          text: 'Getting Started',
+          link: '/getting-started',
+        },
+        {
+          text: 'Installation',
+          link: '/installation',
+        },
+      ],
     },
     {
-      text: 'Installation',
-      link: '/installation',
+      text: 'Core Concepts',
+      collapsed: false,
+      items: [
+        {
+          text: 'Authentication Flow',
+          link: '/guides/authentication',
+        },
+        {
+          text: 'Transaction Lifecycle',
+          link: '/guides/transactions',
+        },
+      ],
     },
     {
-      text: 'API Reference',
+      text: 'How-to Guides',
+      collapsed: false,
+      items: [
+        {
+          text: 'Web Integration',
+          link: '/guides/integration',
+        },
+      ],
+    },
+    {
+      text: 'SDK Reference',
       collapsed: false,
       items: [
         {
@@ -31,24 +71,6 @@ export default defineConfig({
         {
           text: 'Types',
           link: '/api/types',
-        },
-      ],
-    },
-    {
-      text: 'Guides',
-      collapsed: false,
-      items: [
-        {
-          text: 'Integration Guide',
-          link: '/guides/integration',
-        },
-        {
-          text: 'Authentication Flow',
-          link: '/guides/authentication',
-        },
-        {
-          text: 'Transaction Handling',
-          link: '/guides/transactions',
         },
       ],
     },

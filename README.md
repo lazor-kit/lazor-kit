@@ -91,11 +91,19 @@ pnpm dev:all
 lazor-kit/
 ├── packages/
 │   ├── sdk/          # Core SDK package
-│   ├── portal/       # Passkey sharing hub 
-│   ├── program/      # Core smart contract framework for smart wallet 
+│   ├── portal/       # Passkey sharing hub
+│   ├── program/      # Core smart contract framework for smart wallet
 │   └── docs/         # Documentation
 └── package.json      # Root configuration
 ```
+
+## Repository layout
+
+Historically Lazor Kit has been managed as a PNPM workspace/monorepo. We are in
+the process of transitioning to a multi-repository model so each surface area
+(SDK, portal, on-chain program, documentation, examples) can evolve and release
+independently. See [REPO_STRUCTURE.md](./REPO_STRUCTURE.md) for the proposed
+split and migration checklist.
 
 ## Contributing
 
