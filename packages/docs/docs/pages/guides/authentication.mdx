@@ -1,175 +1,101 @@
-# Authentication Flow
+# Authentication
 
-Understanding how LazorKit handles passkey-based authentication and wallet management.
+Simple guide to LazorKit's passkey-based wallet authentication.
 
-## Overview
+## Quick Start
 
-LazorKit uses WebAuthn passkeys to provide passwordless authentication for Solana wallets. This eliminates the need for seed phrases while maintaining security and user control.
-
-## WebAuthn Integration
-
-### What are Passkeys?
-
-Passkeys are a passwordless authentication standard that uses:
-- **Biometric authentication** (fingerprint, face recognition)
-- **Hardware security keys** (YubiKey, etc.)
-- **Device authentication** (PIN, pattern)
-
-### Browser Support
-
-WebAuthn is supported by all modern browsers:
-- Chrome 67+
-- Firefox 60+
-- Safari 14+
-- Edge 18+
-
-## Authentication Workflow
-
-### 1. Initial Connection
-
-When a user connects for the first time:
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant App
-    participant LazorKit
-    participant Browser
-    participant Portal
-
-    User->>App: Click "Connect"
-    App->>LazorKit: connect()
-    LazorKit->>Portal: Open dialog
-    Portal->>Browser: Create WebAuthn credential
-    Browser->>User: Prompt for biometric/PIN
-    User->>Browser: Authenticate
-    Browser->>Portal: Return credential
-    Portal->>LazorKit: Send credential data
-    LazorKit->>App: Return account
-```
-
-### 2. Reconnection Flow
-
-When a user returns to the app:
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant App
-    participant LazorKit
-    participant Storage
-    participant Browser
-
-    User->>App: Page load
-    App->>LazorKit: connect()
-    LazorKit->>Storage: Check stored credentials
-    Storage->>LazorKit: Return credential ID
-    LazorKit->>Browser: Get WebAuthn assertion
-    Browser->>User: Prompt for authentication
-    User->>Browser: Authenticate
-    Browser->>LazorKit: Return assertion
-    LazorKit->>App: Return account (reconnected)
-```
-
-## Implementation Details
-
-### Credential Storage
-
-LazorKit stores minimal information locally:
-
-```typescript
-interface StoredCredentials {
-  credentialId: string;        // WebAuthn credential ID
-  publicKey: string;           // Public key for verification
-  smartWallet: string;         // Smart wallet address
-  timestamp: number;           // Last connection time
-}
-```
-
-**What's stored:**
-- ✅ Credential identifiers
-- ✅ Public keys
-- ✅ Wallet addresses
-- ❌ Private keys (never stored)
-- ❌ Sensitive authentication data
-
-### Security Model
-
-1. **Private keys** are generated and stored in the browser's secure hardware
-2. **Authentication** requires user interaction (biometric/PIN)
-3. **Cross-origin protection** prevents unauthorized access
-4. **Hardware isolation** protects against software attacks
-
-## Connection Methods
-
-### Standard Connection
-
-The recommended approach that handles both new and returning users:
+LazorKit uses WebAuthn passkeys instead of seed phrases - more secure and user-friendly.
 
 ```tsx
 import { useWallet } from '@lazorkit/wallet';
 
-function ConnectButton() {
-  const { connect, isConnecting } = useWallet();
-
-  const handleConnect = async () => {
-    try {
-      // Automatically tries reconnection first, falls back to new connection
-      const account = await connect();
-      console.log('Connected:', account.smartWallet);
-    } catch (error) {
-      console.error('Connection failed:', error);
-    }
-  };
+function WalletConnect() {
+  const { connect, account, isConnecting } = useWallet();
 
   return (
-    <button onClick={handleConnect} disabled={isConnecting}>
-      {isConnecting ? 'Connecting...' : 'Connect Wallet'}
+    <button onClick={connect} disabled={isConnecting}>
+      {account ? `Connected: ${account.smartWallet.slice(0, 8)}...` : 'Connect Wallet'}
     </button>
   );
 }
 ```
 
-### Manual Reconnection
+## How It Works
 
-For apps that want explicit control over reconnection:
+**Passkeys** = Device biometrics (Face ID, fingerprint) + secure hardware storage
+
+1. **First time**: Create passkey → Deploy smart wallet
+2. **Return visits**: Authenticate → Reconnect automatically  
+3. **Transactions**: Biometric approval → Sign & send
+
+**Browser Support**: Chrome 88+, Safari 15+, Firefox 90+, Edge 88+
+
+## Connection Patterns
+
+### Standard Connection (Recommended)
 
 ```tsx
-function ManualReconnect() {
-  const { reconnect, connect } = useWallet();
-  const [hasStoredCredentials, setHasStoredCredentials] = useState(false);
+const { connect, account, isConnecting, error } = useWallet();
+
+const handleConnect = async () => {
+  try {
+    const account = await connect(); // Auto-handles new/existing users
+    console.log('Connected:', account.smartWallet);
+  } catch (error) {
+    console.error(error.code); // 'NO_STORED_CREDENTIALS' | 'USER_CANCELLED'
+  }
+};
+```
+
+### Auto-Connect on App Load
+
+```tsx
+function App() {
+  const { connect, isConnected } = useWallet();
 
   useEffect(() => {
-    // Check if user has stored credentials
-    const checkCredentials = async () => {
-      try {
-        await reconnect();
-        setHasStoredCredentials(true);
-      } catch (error) {
-        if (error.code === 'NO_STORED_CREDENTIALS') {
-          setHasStoredCredentials(false);
+    if (!isConnected) {
+      connect().catch(error => {
+        if (error.code !== 'NO_STORED_CREDENTIALS') {
+          console.error('Auto-connect failed:', error);
         }
-      }
-    };
-    
-    checkCredentials();
+      });
+    }
   }, []);
 
-  return (
-    <div>
-      {hasStoredCredentials ? (
-        <button onClick={reconnect}>Reconnect</button>
-      ) : (
-        <button onClick={connect}>Create New Wallet</button>
-      )}
-    </div>
-  );
+  return <YourApp />;
 }
 ```
 
-### Separated Creation Flow
+## Error Handling
 
-For custom onboarding experiences:
+Simple error patterns for common scenarios:
+
+```tsx
+const handleAuthError = (error) => {
+  switch (error.code) {
+    case 'NO_STORED_CREDENTIALS':
+      return 'Welcome! Ready to create your first wallet?';
+    case 'USER_CANCELLED':
+      return 'Authentication cancelled. Try again when ready.';
+    case 'PASSKEY_CREATION_FAILED':
+      return 'Failed to create passkey. Check browser settings.';
+    default:
+      return 'Authentication failed. Please try again.';
+  }
+};
+
+// Usage
+try {
+  await connect();
+} catch (error) {
+  setMessage(handleAuthError(error));
+}
+```
+
+## Advanced Patterns
+
+### Custom Onboarding
 
 ```tsx
 function OnboardingFlow() {
@@ -177,245 +103,94 @@ function OnboardingFlow() {
   const [step, setStep] = useState<'passkey' | 'wallet' | 'complete'>('passkey');
   const [passkeyData, setPasskeyData] = useState(null);
 
-  const handleCreatePasskey = async () => {
-    try {
+  const steps = {
+    passkey: async () => {
       const data = await createPasskeyOnly();
       setPasskeyData(data);
       setStep('wallet');
-    } catch (error) {
-      console.error('Passkey creation failed:', error);
-    }
-  };
-
-  const handleCreateWallet = async () => {
-    try {
-      const { account } = await createSmartWalletOnly(passkeyData);
-      console.log('Wallet created:', account.smartWallet);
+    },
+    wallet: async () => {
+      await createSmartWalletOnly(passkeyData);
       setStep('complete');
-    } catch (error) {
-      console.error('Wallet creation failed:', error);
-    }
-  };
-
-  switch (step) {
-    case 'passkey':
-      return <button onClick={handleCreatePasskey}>Create Passkey</button>;
-    case 'wallet':
-      return <button onClick={handleCreateWallet}>Deploy Wallet</button>;
-    case 'complete':
-      return <div>Wallet ready!</div>;
-  }
-}
-```
-
-## Authentication Events
-
-LazorKit emits detailed events throughout the authentication process:
-
-### Connection Events
-
-```tsx
-// Listen to connection events if using SDK directly
-sdk.on('connect:start', () => {
-  console.log('Starting connection process...');
-});
-
-sdk.on('connect:success', (account) => {
-  console.log('Connected successfully:', account);
-});
-
-sdk.on('connect:error', (error) => {
-  console.error('Connection failed:', error);
-});
-```
-
-### Passkey Events
-
-```tsx
-sdk.on('passkey:start', () => {
-  console.log('Creating passkey...');
-});
-
-sdk.on('passkey:success', (data) => {
-  console.log('Passkey created:', data.credentialId);
-});
-
-sdk.on('passkey:error', (error) => {
-  console.error('Passkey creation failed:', error);
-});
-```
-
-### Reconnection Events
-
-```tsx
-sdk.on('reconnect:start', () => {
-  console.log('Attempting reconnection...');
-});
-
-sdk.on('reconnect:success', (account) => {
-  console.log('Reconnected successfully:', account);
-});
-
-sdk.on('reconnect:error', (error) => {
-  if (error.code === 'NO_STORED_CREDENTIALS') {
-    console.log('No stored credentials found');
-  } else {
-    console.error('Reconnection failed:', error);
-  }
-});
-```
-
-## Error Handling
-
-### Common Authentication Errors
-
-```tsx
-function handleAuthError(error: any) {
-  switch (error.code) {
-    case 'NO_STORED_CREDENTIALS':
-      return 'No saved credentials found. Please create a new wallet.';
-    
-    case 'INVALID_CREDENTIALS':
-      return 'Stored credentials are invalid. Please reconnect.';
-    
-    case 'PASSKEY_CREATION_FAILED':
-      return 'Failed to create passkey. Please check your browser settings.';
-    
-    case 'USER_CANCELLED':
-      return 'Authentication cancelled by user.';
-    
-    case 'BROWSER_NOT_SUPPORTED':
-      return 'Your browser does not support WebAuthn passkeys.';
-    
-    default:
-      return 'Authentication failed. Please try again.';
-  }
-}
-```
-
-### User Experience Patterns
-
-```tsx
-function AuthenticationUI() {
-  const { connect, isConnecting, error } = useWallet();
-  const [authError, setAuthError] = useState<string | null>(null);
-
-  const handleConnect = async () => {
-    setAuthError(null);
-    
-    try {
-      await connect();
-    } catch (error) {
-      const message = handleAuthError(error);
-      setAuthError(message);
     }
   };
 
   return (
     <div>
-      <button 
-        onClick={handleConnect} 
-        disabled={isConnecting}
-        className="bg-blue-500 text-white px-4 py-2 rounded disabled:bg-gray-400"
-      >
-        {isConnecting ? (
-          <span className="flex items-center">
-            <Spinner className="mr-2" />
-            Authenticating...
-          </span>
-        ) : (
-          'Connect with Passkey'
-        )}
-      </button>
-
-      {authError && (
-        <div className="mt-2 p-3 bg-red-100 border border-red-400 text-red-700 rounded">
-          {authError}
-        </div>
-      )}
-
-      {error && (
-        <div className="mt-2 text-sm text-red-600">
-          {error.message}
-        </div>
-      )}
+      {step === 'passkey' && <button onClick={steps.passkey}>Create Passkey</button>}
+      {step === 'wallet' && <button onClick={steps.wallet}>Deploy Wallet</button>}
+      {step === 'complete' && <div>✅ Wallet Ready!</div>}
     </div>
   );
 }
 ```
 
-## Security Considerations
+### External Payer Pattern  
 
-### Cross-Origin Protection
+```tsx
+function ExternalPayerTransaction() {
+  const { buildSmartWalletTransaction, smartWalletPubkey } = useWallet();
 
-LazorKit validates origins to prevent attacks:
+  const sendWithExternalPayer = async () => {
+    const instruction = SystemProgram.transfer({
+      fromPubkey: smartWalletPubkey,
+      toPubkey: new PublicKey(process.env.REACT_APP_RECIPIENT_ADDRESS!),
+      lamports: 1000000, // 0.001 SOL
+    });
 
-```typescript
-// Origins are validated before processing messages
-const allowedOrigins = [
-  'https://portal.lazor.sh',
-  'https://your-app.com'
-];
+    const { createSessionTx, executeSessionTx } = await buildSmartWalletTransaction(
+      new PublicKey(process.env.REACT_APP_EXTERNAL_PAYER_ADDRESS!),
+      instruction
+    );
 
-function validateOrigin(origin: string): boolean {
-  return allowedOrigins.includes(origin);
+    // Send to backend for signing
+    await fetch('/api/external-payer/sign', {
+      method: 'POST',
+      body: JSON.stringify({
+        sessionTx: Buffer.from(createSessionTx.serialize()).toString('base64'),
+        executeTx: Buffer.from(executeSessionTx.serialize()).toString('base64'),
+      }),
+    });
+  };
+
+  return <button onClick={sendWithExternalPayer}>Send (External Payer)</button>;
 }
 ```
 
-### Credential Validation
+## Security & Compatibility
 
-All credentials are validated before use:
+### What's Secure
 
-```typescript
-interface CredentialValidation {
-  isValidFormat: boolean;      // Proper credential format
-  isNotExpired: boolean;       // Within validity period
-  matchesOrigin: boolean;      // Created for this origin
-  hasValidSignature: boolean;  // Cryptographically valid
-}
-```
+- ✅ **Private keys**: Stored in device secure hardware (never in browser)
+- ✅ **Biometric auth**: Required for every transaction
+- ✅ **Cross-origin protection**: Passkeys bound to your domain
+- ✅ **No seed phrases**: Nothing to lose or leak
 
-### Best Practices
+### Browser Compatibility
 
-1. **Always use HTTPS** - Required for WebAuthn
-2. **Validate user gestures** - Don't auto-trigger auth prompts
-3. **Handle errors gracefully** - Provide clear feedback
-4. **Test across browsers** - WebAuthn behavior varies
-5. **Implement timeouts** - Don't hang on failed auth
-
-## Browser Compatibility
-
-### Feature Detection
-
-```typescript
-function supportsWebAuthn(): boolean {
-  return !!(navigator.credentials && navigator.credentials.create);
-}
+```tsx
+// Feature detection (optional)
+const supportsPasskeys = !!(navigator.credentials && navigator.credentials.create);
 
 function CompatibilityCheck() {
-  const [isSupported, setIsSupported] = useState(true);
-
-  useEffect(() => {
-    setIsSupported(supportsWebAuthn());
-  }, []);
-
-  if (!isSupported) {
-    return (
-      <div className="p-4 bg-yellow-100 border border-yellow-400 rounded">
-        <p className="text-yellow-800">
-          Your browser doesn't support passkeys. Please use a modern browser.
-        </p>
-      </div>
-    );
+  if (!supportsPasskeys) {
+    return <div>Please use Chrome 88+, Safari 15+, or Firefox 90+</div>;
   }
-
   return <WalletConnection />;
 }
 ```
 
-### Platform-Specific Considerations
+### Platform Notes
 
-- **iOS Safari**: Requires iOS 16+ for passkey support
-- **Android Chrome**: Works with Android 9+ and screen lock
-- **Desktop**: Hardware security keys work across all platforms
-- **Incognito/Private**: Limited passkey functionality
+- **iOS**: Requires iOS 16+ for full passkey support
+- **Android**: Works with Android 9+ and device screen lock
+- **Desktop**: Hardware security keys supported
+- **Private browsing**: Limited functionality
+
+## Best Practices
+
+1. **Always HTTPS** - Required for WebAuthn
+2. **User-initiated** - Don't auto-trigger authentication  
+3. **Clear errors** - Use the error codes to guide users
+4. **Test thoroughly** - Behavior varies across devices
+5. **Graceful fallback** - Handle unsupported browsers

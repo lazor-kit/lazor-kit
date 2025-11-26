@@ -21,7 +21,8 @@
           "signer": true
         },
         {
-          "name": "new_wallet_device"
+          "name": "new_wallet_device",
+          "writable": true
         },
         {
           "name": "policy",
@@ -97,7 +98,6 @@
         },
         {
           "name": "wallet_device",
-          "writable": true,
           "signer": true
         },
         {
@@ -146,7 +146,7 @@
     },
     {
       "code": 6001,
-      "name": "UnAuthorize",
+      "name": "Unauthorized",
       "msg": "Unauthorized to access smart wallet"
     }
   ],

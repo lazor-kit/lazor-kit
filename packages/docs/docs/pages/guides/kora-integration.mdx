@@ -1,0 +1,505 @@
+# Kora Relayer Integration Overview
+
+> **🚧 Experimental Integration - Development Only**
+> 
+> This Kora integration is experimental and under active development. Do not use in production applications. Some features may not work as documented.
+
+This guide provides an overview of integrating LazorKit with Kora, a fee abstraction layer that allows users to pay transaction fees with SPL tokens instead of SOL.
+
+## Quick Navigation
+
+- [Kora Quick Reference](./kora-reference) - Basic methods (getPayer, sign, signAndSend)
+- [LazorKit + Kora Integration](./kora-lazorkit) - Complete integration guide
+- [Official Kora Repository](https://github.com/solana-foundation/kora) - Full setup and configuration
+
+## What is Kora?
+
+**Kora** is an **official Solana Foundation project** - a paymaster node that provides fee abstraction for Solana transactions through a JSON-RPC interface.
+
+**Repository**: [https://github.com/solana-foundation/kora](https://github.com/solana-foundation/kora)
+
+Kora enables:
+
+- **Fee Abstraction**: Users pay transaction fees with SPL tokens instead of SOL
+- **Gasless Experience**: Applications can sponsor user transactions completely  
+- **Flexible Pricing**: Support multiple fee payment tokens with real-time pricing
+- **Security**: Configurable validation rules for programs, tokens, and accounts
+- **Production Ready**: Built-in rate limiting, monitoring, and security features
+
+## Integration Architecture
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   LazorKit      │───▶│   Kora Relayer  │───▶│   Solana RPC    │
+│   Smart Wallet  │    │   Server        │    │                 │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+         │                       │
+         ▼                       ▼
+┌─────────────────┐    ┌─────────────────┐
+│   WebAuthn      │    │   Fee Payment   │
+│   Passkey       │    │   in SPL Tokens │
+└─────────────────┘    └─────────────────┘
+```
+
+## Prerequisites
+
+- LazorKit integrated application
+- Access to Kora relayer service
+- SPL tokens for fee payment
+
+## Basic Integration
+
+### 1. Install Kora SDK
+
+```bash
+npm install @kora/sdk
+```
+
+### 2. Environment Configuration
+
+Add Kora configuration to your environment variables:
+
+```env
+# Existing LazorKit configuration
+REACT_APP_RPC_URL=https://api.devnet.solana.com
+REACT_APP_PAYMASTER_URL=your-paymaster-service-url
+REACT_APP_PORTAL_URL=your-portal-service-url
+
+# Kora relayer configuration  
+REACT_APP_KORA_RPC_URL=your-kora-server-url
+REACT_APP_KORA_API_KEY=your-kora-api-key
+REACT_APP_KORA_HMAC_SECRET=your-kora-hmac-secret
+REACT_APP_FEE_TOKEN_MINT=your-fee-token-mint-address
+```
+
+### 3. Create Kora Hook
+
+```tsx
+// hooks/useKoraRelayer.ts
+import { useState, useCallback } from 'react';
+import { KoraClient } from '@kora/sdk';
+import { useWallet } from '@lazorkit/wallet';
+import { 
+  PublicKey, 
+  TransactionInstruction,
+  VersionedTransaction,
+  Connection
+} from '@solana/web3.js';
+
+interface KoraConfig {
+  rpcUrl: string;
+  apiKey?: string;
+  hmacSecret?: string;
+}
+
+export function useKoraRelayer(config: KoraConfig) {
+  const { smartWalletPubkey, account } = useWallet();
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [koraClient] = useState(() => new KoraClient(config));
+
+  const executeWithKora = useCallback(async (
+    instruction: TransactionInstruction,
+    feeTokenMint: string,
+    feeAmount?: number
+  ) => {
+    if (!smartWalletPubkey || !account) {
+      throw new Error('Wallet not connected');
+    }
+
+    setIsProcessing(true);
+
+    try {
+      // Get payment instruction for fee token
+      const paymentInstruction = await koraClient.getPaymentInstruction({
+        payer: smartWalletPubkey.toString(),
+        lamports: feeAmount || 5000, // Default fee
+        mint: feeTokenMint,
+      });
+
+      // Create transaction with both user instruction and payment
+      const transaction = new VersionedTransaction({
+        recentBlockhash: (await koraClient.getBlockhash()).blockhash,
+        feePayer: smartWalletPubkey,
+        instructions: [
+          paymentInstruction,
+          instruction,
+        ],
+      });
+
+      // User signs the transaction (via LazorKit passkey)
+      // Note: This would integrate with LazorKit's signing flow
+      
+      // Send to Kora for fee payment and relay
+      const signature = await koraClient.signAndSendTransaction({
+        transaction: transaction.serialize(),
+      });
+
+      return signature;
+
+    } finally {
+      setIsProcessing(false);
+    }
+  }, [smartWalletPubkey, account, koraClient]);
+
+  const getSupportedTokens = useCallback(async () => {
+    return await koraClient.getSupportedTokens();
+  }, [koraClient]);
+
+  const estimateFee = useCallback(async (
+    instruction: TransactionInstruction,
+    feeTokenMint: string
+  ) => {
+    return await koraClient.estimateTransactionFee({
+      instructions: [instruction],
+      mint: feeTokenMint,
+    });
+  }, [koraClient]);
+
+  return {
+    executeWithKora,
+    getSupportedTokens,
+    estimateFee,
+    isProcessing,
+  };
+}
+```
+
+### 4. LazorKit + Kora Integration Component
+
+```tsx
+// components/KoraWalletComponent.tsx
+import { useState, useEffect } from 'react';
+import { useWallet } from '@lazorkit/wallet';
+import { useKoraRelayer } from '../hooks/useKoraRelayer';
+import { SystemProgram, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
+
+export function KoraWalletComponent() {
+  const { 
+    connect, 
+    disconnect, 
+    isConnected, 
+    smartWalletPubkey,
+    isConnecting 
+  } = useWallet();
+  
+  const koraRelayer = useKoraRelayer({
+    rpcUrl: process.env.REACT_APP_KORA_RPC_URL!,
+    apiKey: process.env.REACT_APP_KORA_API_KEY,
+    hmacSecret: process.env.REACT_APP_KORA_HMAC_SECRET,
+  });
+
+  const [supportedTokens, setSupportedTokens] = useState<string[]>([]);
+  const [selectedFeeToken, setSelectedFeeToken] = useState<string>('');
+
+  useEffect(() => {
+    if (isConnected) {
+      loadSupportedTokens();
+    }
+  }, [isConnected]);
+
+  const loadSupportedTokens = async () => {
+    try {
+      const tokens = await koraRelayer.getSupportedTokens();
+      setSupportedTokens(tokens);
+      setSelectedFeeToken(tokens[0] || '');
+    } catch (error) {
+      console.error('Failed to load supported tokens:', error);
+    }
+  };
+
+  const handleGaslessTransfer = async () => {
+    if (!smartWalletPubkey || !selectedFeeToken) return;
+
+    const instruction = SystemProgram.transfer({
+      fromPubkey: smartWalletPubkey,
+      toPubkey: new PublicKey(process.env.REACT_APP_RECIPIENT_ADDRESS || 'RECIPIENT_ADDRESS_HERE'),
+      lamports: 0.01 * LAMPORTS_PER_SOL,
+    });
+
+    try {
+      // Estimate fee first
+      const feeEstimate = await koraRelayer.estimateFee(instruction, selectedFeeToken);
+      console.log('Estimated fee:', feeEstimate);
+
+      // Execute transaction via Kora relayer
+      const signature = await koraRelayer.executeWithKora(
+        instruction,
+        selectedFeeToken
+      );
+      
+      console.log('Transaction completed via Kora:', signature);
+    } catch (error) {
+      console.error('Gasless transaction failed:', error);
+    }
+  };
+
+  return (
+    <div>
+      <h2>LazorKit + Kora Integration</h2>
+      
+      {!isConnected ? (
+        <button onClick={connect} disabled={isConnecting}>
+          {isConnecting ? 'Connecting...' : 'Connect Wallet'}
+        </button>
+      ) : (
+        <div>
+          <p>Connected: {smartWalletPubkey?.toString().slice(0, 8)}...</p>
+          
+          <div>
+            <label>Fee Payment Token:</label>
+            <select 
+              value={selectedFeeToken} 
+              onChange={(e) => setSelectedFeeToken(e.target.value)}
+            >
+              {supportedTokens.map(token => (
+                <option key={token} value={token}>
+                  {token.slice(0, 8)}...
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <button 
+            onClick={handleGaslessTransfer}
+            disabled={koraRelayer.isProcessing || !selectedFeeToken}
+          >
+            {koraRelayer.isProcessing ? 'Processing...' : 'Send Gasless Transfer'}
+          </button>
+
+          <button onClick={disconnect}>
+            Disconnect
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+## Advanced Integration Patterns
+
+### 1. LazorKit with Kora External Payer
+
+For applications that want to combine LazorKit's external payer feature with Kora:
+
+```tsx
+// hooks/useLazorKitKoraIntegration.ts
+import { useWallet } from '@lazorkit/wallet';
+import { KoraClient } from '@kora/sdk';
+
+export function useLazorKitKoraIntegration() {
+  const { buildSmartWalletTransaction } = useWallet();
+  
+  const executeWithBothRelayers = async (
+    instruction: TransactionInstruction,
+    useKoraForFees: boolean = true
+  ) => {
+    if (useKoraForFees) {
+      // Use Kora for fee abstraction
+      const koraClient = new KoraClient({
+        rpcUrl: process.env.REACT_APP_KORA_RPC_URL!
+      });
+      
+      // Get Kora payment instruction
+      const paymentInstruction = await koraClient.getPaymentInstruction({
+        payer: smartWalletPubkey.toString(),
+        lamports: 5000,
+        mint: process.env.REACT_APP_FEE_TOKEN_MINT!,
+      });
+
+      // Build complete transaction
+      const combinedInstructions = [paymentInstruction, instruction];
+      
+      // Use Kora to sign and send
+      return await koraClient.signAndSendTransaction({
+        transaction: /* transaction with combined instructions */
+      });
+      
+    } else {
+      // Use LazorKit's external payer
+      const externalPayer = new PublicKey(process.env.REACT_APP_EXTERNAL_PAYER_ADDRESS!);
+      const { createSessionTx, executeSessionTx } = await buildSmartWalletTransaction(
+        externalPayer,
+        instruction
+      );
+      
+      // Send to your backend for external payer processing
+      // ... backend integration code
+    }
+  };
+
+  return { executeWithBothRelayers };
+}
+```
+
+### 2. Fee Token Management
+
+```tsx
+// components/FeeTokenManager.tsx
+import { useState, useEffect } from 'react';
+import { useWallet } from '@lazorkit/wallet';
+import { useKoraRelayer } from '../hooks/useKoraRelayer';
+
+export function FeeTokenManager() {
+  const { smartWalletPubkey } = useWallet();
+  const koraRelayer = useKoraRelayer({
+    rpcUrl: process.env.REACT_APP_KORA_RPC_URL!
+  });
+
+  const [tokenBalances, setTokenBalances] = useState<Record<string, number>>({});
+  const [supportedTokens, setSupportedTokens] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (smartWalletPubkey) {
+      loadTokenInfo();
+    }
+  }, [smartWalletPubkey]);
+
+  const loadTokenInfo = async () => {
+    try {
+      const tokens = await koraRelayer.getSupportedTokens();
+      setSupportedTokens(tokens);
+      
+      // Load token balances for each supported token
+      const balances: Record<string, number> = {};
+      for (const token of tokens) {
+        // Get token balance (implementation depends on your token program)
+        balances[token] = await getTokenBalance(smartWalletPubkey!, token);
+      }
+      setTokenBalances(balances);
+    } catch (error) {
+      console.error('Failed to load token info:', error);
+    }
+  };
+
+  return (
+    <div>
+      <h3>Fee Payment Tokens</h3>
+      {supportedTokens.map(token => (
+        <div key={token}>
+          <span>{token.slice(0, 8)}...</span>
+          <span>Balance: {tokenBalances[token] || 0}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+## Transaction Flow
+
+The complete transaction flow with LazorKit and Kora:
+
+1. **User Authentication**: User connects via LazorKit passkey
+2. **Transaction Creation**: Application creates Solana instruction
+3. **Fee Estimation**: Kora estimates fee in selected SPL token
+4. **Payment Instruction**: Kora provides payment instruction for fees
+5. **User Signing**: LazorKit handles passkey signing of complete transaction
+6. **Kora Processing**: Kora validates and signs transaction as fee payer
+7. **Network Submission**: Transaction sent to Solana with SPL token fees paid
+
+## Configuration
+
+### Kora Server Setup
+
+For local development, set up a Kora server:
+
+```bash
+# Install Kora CLI
+cargo install kora-cli
+
+# Configure kora.toml
+cat > kora.toml << EOF
+[validation]
+max_allowed_lamports = 1000000
+allowed_programs = [
+    "11111111111111111111111111111111",  # System Program
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",  # Token Program
+]
+allowed_spl_paid_tokens = [
+    "your-usdc-mint-address"
+]
+
+[server]
+port = 8080
+host = "127.0.0.1"
+EOF
+
+# Start Kora server
+kora rpc start --signers-config signers.toml
+```
+
+### Production Deployment
+
+For production, deploy Kora server with proper security:
+
+- Configure HTTPS endpoints
+- Set up authentication (API keys, HMAC)
+- Configure rate limiting
+- Set up monitoring and logging
+- Use secure key management (Turnkey, Privy)
+
+## Error Handling
+
+```tsx
+const handleKoraError = (error: any) => {
+  switch (error.code) {
+    case 'INSUFFICIENT_FEE_TOKEN_BALANCE':
+      return 'Insufficient token balance for fees';
+    case 'UNSUPPORTED_TOKEN':
+      return 'Selected token not supported for fees';
+    case 'TRANSACTION_VALIDATION_FAILED':
+      return 'Transaction failed Kora validation rules';
+    case 'KORA_SERVER_UNAVAILABLE':
+      return 'Fee payment service temporarily unavailable';
+    default:
+      return 'Fee payment failed. Please try again.';
+  }
+};
+```
+
+## Benefits of LazorKit + Kora
+
+- **Seamless UX**: Passwordless authentication + gasless transactions
+- **Token Native**: Users can transact entirely in application tokens
+- **Developer Friendly**: Simple integration with existing LazorKit setup
+- **Flexible**: Support for both gasless and traditional fee payment
+- **Secure**: WebAuthn + configurable transaction validation
+
+## Implementation
+
+### LazorKit + Kora Integration
+**[Complete Integration Guide](./kora-lazorkit)**
+- Combine passkey authentication with fee abstraction
+- Production-ready components
+- Transaction flow optimization
+
+### Basic Methods
+**[Quick Reference](./kora-reference)**
+- Essential Kora methods (getPayer, sign, signAndSend)
+- Simple React hooks
+- Environment setup
+
+## Setup and Configuration
+
+For detailed server setup, SDK installation, and production deployment, see the **[Official Kora Repository](https://github.com/solana-foundation/kora)** which includes:
+
+- Complete installation instructions
+- Server configuration guides
+- TypeScript SDK documentation
+- Production deployment examples
+- Community support and issues
+
+## Next Steps
+
+- Quick start: [Kora Quick Reference](./kora-reference) for basic methods
+- Full integration: [LazorKit + Kora Integration](./kora-lazorkit) for complete examples
+- Server setup: [Official Kora Docs](https://github.com/solana-foundation/kora) for deployment
+
+## Resources
+
+- [Kora Documentation](https://github.com/solana-foundation/kora) - Official Kora documentation
+- [LazorKit External Payer Guide](./integration#external-payer-integration) - Alternative fee patterns
+- [Transaction Handling](./transactions) - Advanced transaction patterns
+
+For questions, use the `kora` tag on [Solana Stack Exchange](https://solana.stackexchange.com/).

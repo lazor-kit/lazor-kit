@@ -39,6 +39,8 @@ import {
   combineInstructionsWithAuth,
 } from '../transaction';
 
+global.Buffer = Buffer;
+
 Buffer.prototype.subarray = function subarray(
   begin: number | undefined,
   end: number | undefined
@@ -716,6 +718,7 @@ export class LazorkitClient {
 
         message = buildExecuteMessage(
           payer,
+          smartWallet,
           smartWalletData.lastNonce,
           new BN(Math.floor(Date.now() / 1000)),
           policyInstruction,
@@ -731,6 +734,7 @@ export class LazorkitClient {
 
         message = buildInvokePolicyMessage(
           payer,
+          smartWallet,
           smartWalletData.lastNonce,
           new BN(Math.floor(Date.now() / 1000)),
           policyInstruction
@@ -745,6 +749,7 @@ export class LazorkitClient {
 
         message = buildUpdatePolicyMessage(
           payer,
+          smartWallet,
           smartWalletData.lastNonce,
           new BN(Math.floor(Date.now() / 1000)),
           destroyPolicyIns,
@@ -799,6 +804,8 @@ export class LazorkitClient {
 
   async getSmartWalletByCredentialId(credentialId: string): Promise<{
     smartWallet: PublicKey | null;
+    smartWalletAuthenticator: PublicKey | null;
+    passkeyPubkey: string;
   }> {
     const discriminator = LazorkitIdl.accounts.find(
       (a: any) => a.name === 'WalletDevice'
@@ -824,14 +831,15 @@ export class LazorkitClient {
     });
 
     if (accounts.length === 0) {
-      return { smartWallet: null };
+      return { smartWalletAuthenticator: null, smartWallet: null, passkeyPubkey: '' };
     }
 
-    const smartWalletAuthenticatorData =
-      await this.getWalletDeviceData(accounts[0].pubkey);
-
+    const smartWalletData = await this.getWalletDeviceData(accounts[0].pubkey);
+    
     return {
-      smartWallet: smartWalletAuthenticatorData.smartWallet,
+      smartWalletAuthenticator: accounts[0].pubkey,
+      smartWallet: smartWalletData.smartWallet,
+      passkeyPubkey: bs58.encode(smartWalletData.passkeyPubkey),
     };
   }
 

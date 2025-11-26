@@ -3,7 +3,8 @@
  */
 import { 
   Transaction, 
-  PublicKey 
+  PublicKey,
+  VersionedTransaction
 } from '@solana/web3.js';
 import { Logger } from '../../utils/logger';
 import { Buffer } from 'buffer';
@@ -33,7 +34,7 @@ export class Paymaster {
         body: JSON.stringify({
           jsonrpc: '2.0',
           id: 1,
-          method: 'getConfig',
+          method: 'getPayerSigner',
           params: [],
         })
       });
@@ -43,7 +44,7 @@ export class Paymaster {
       }
 
       const data = await response.json();
-      const payer = new PublicKey(data.result.fee_payer);
+      const payer = new PublicKey(data.result.signer_address);
       return payer;
     } catch (error) {
       this.logger.error('Failed to get payer', error);
@@ -222,4 +223,72 @@ export class Paymaster {
     throw new Error('Failed to sign and send transaction after all retries');
   }
   
+
+    /**
+   * Sign and send a transaction using the paymaster service
+   * @param transaction Transaction to sign and send
+   * @returns Transaction hash as a string
+   */
+    private async attemptSignAndSendVersionedTransaction(transaction: VersionedTransaction, attempt: number = 1): Promise<string> {
+      try {
+        const serialized = transaction.serialize();
+  
+        const response = await fetch(`${this.endpoint}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'signAndSendTransaction',
+            id: 1,
+            params: [
+              Buffer.from(serialized).toString('base64')
+            ]
+          })
+        });
+  
+        if (!response.ok) {
+          throw new Error(`Failed to sign and send transaction: ${response.statusText}`);
+        }
+  
+        const data = await response.json();
+        if (data.error) {
+          throw new Error(data.error.message || 'Unknown paymaster error');
+        }
+        
+        return data.result.signature;
+      } catch (error) {
+        this.logger.error(`Attempt ${attempt} failed:`, error);
+        throw error;
+      }
+    }
+  
+    /**
+     * Sign and send a transaction with retries
+     * @param transaction Transaction to sign and send
+     * @param maxRetries Maximum number of retry attempts (default: 3)
+     * @param baseDelay Base delay between retries in ms (default: 1000)
+     * @returns Transaction signature
+     */
+    async signAndSendVersionedTransaction(transaction: VersionedTransaction, maxRetries: number = 3, baseDelay: number = 1000): Promise<string> {
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          return await this.attemptSignAndSendVersionedTransaction(transaction, attempt);
+        } catch (error) {
+          if (attempt === maxRetries) {
+            this.logger.error('All retry attempts failed', error);
+            throw error;
+          }
+          
+          // Calculate exponential backoff delay
+          const delay = baseDelay * Math.pow(2, attempt - 1);
+          this.logger.info(`Retrying in ${delay}ms (attempt ${attempt}/${maxRetries})`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+      
+      throw new Error('Failed to sign and send transaction after all retries');
+    }
 }
+

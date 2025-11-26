@@ -4,9 +4,10 @@
  */
 
 import { useCallback } from 'react';
-import { PublicKey, TransactionInstruction } from '@solana/web3.js';
+import { PublicKey, TransactionInstruction, VersionedTransaction } from '@solana/web3.js';
 import { useWalletStore } from './store';
 import { WalletInfo } from '../core/storage';
+import { PasskeyData, SmartWalletCreationResult } from '../actions';
 
 export interface WalletHookInterface {
   // State
@@ -22,6 +23,12 @@ export interface WalletHookInterface {
   connect: () => Promise<WalletInfo>;
   disconnect: () => Promise<void>;
   signAndSendTransaction: (instruction: TransactionInstruction) => Promise<string>;
+  createPasskeyOnly: () => Promise<PasskeyData>;
+  createSmartWalletOnly: (passkeyData: PasskeyData) => Promise<SmartWalletCreationResult>;
+  buildSmartWalletTransaction: (payer: PublicKey, instruction: TransactionInstruction) => Promise<{
+    createSessionTx: VersionedTransaction;
+    executeSessionTx: VersionedTransaction;
+  }>;
 }
 
 /**
@@ -38,6 +45,9 @@ export const useWallet = (): WalletHookInterface => {
     connect,
     disconnect,
     signAndSendTransaction,
+    createPasskeyOnly,
+    createSmartWalletOnly,
+    buildSmartWalletTransaction,
   } = useWalletStore();
 
   /**
@@ -79,6 +89,51 @@ export const useWallet = (): WalletHookInterface => {
     [signAndSendTransaction]
   );
 
+  /**
+   * Handle passkey creation only
+   */
+  const handleCreatePasskeyOnly = useCallback(async (): Promise<PasskeyData> => {
+    try {
+      return await createPasskeyOnly();
+    } catch (error) {
+      console.error('Failed to create passkey:', error);
+      throw error;
+    }
+  }, [createPasskeyOnly]);
+
+  /**
+   * Handle smart wallet creation only
+   */
+  const handleCreateSmartWalletOnly = useCallback(
+    async (passkeyData: PasskeyData): Promise<SmartWalletCreationResult> => {
+      try {
+        return await createSmartWalletOnly(passkeyData);
+      } catch (error) {
+        console.error('Failed to create smart wallet:', error);
+        throw error;
+      }
+    },
+    [createSmartWalletOnly]
+  );
+
+  /**
+   * Handle building smart wallet transactions with external payer
+   */
+  const handleBuildSmartWalletTransaction = useCallback(
+    async (payer: PublicKey, instruction: TransactionInstruction): Promise<{
+      createSessionTx: VersionedTransaction;
+      executeSessionTx: VersionedTransaction;
+    }> => {
+      try {
+        return await buildSmartWalletTransaction(payer, instruction);
+      } catch (error) {
+        console.error('Failed to build smart wallet transaction:', error);
+        throw error;
+      }
+    },
+    [buildSmartWalletTransaction]
+  );
+
   // Get the smart wallet public key from the wallet if available
   const smartWalletPubkey = wallet?.smartWallet 
     ? new PublicKey(wallet.smartWallet) 
@@ -98,5 +153,8 @@ export const useWallet = (): WalletHookInterface => {
     connect: handleConnect,
     disconnect: handleDisconnect,
     signAndSendTransaction: handleSignAndSendTransaction,
+    createPasskeyOnly: handleCreatePasskeyOnly,
+    createSmartWalletOnly: handleCreateSmartWalletOnly,
+    buildSmartWalletTransaction: handleBuildSmartWalletTransaction,
   };
 };

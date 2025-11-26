@@ -28,6 +28,7 @@ export type DefaultPolicy = {
         },
         {
           name: 'newWalletDevice';
+          writable: true;
         },
         {
           name: 'policy';
@@ -103,7 +104,6 @@ export type DefaultPolicy = {
         },
         {
           name: 'walletDevice';
-          writable: true;
           signer: true;
         },
         {
@@ -152,7 +152,7 @@ export type DefaultPolicy = {
     },
     {
       code: 6001;
-      name: 'unAuthorize';
+      name: 'unauthorized';
       msg: 'Unauthorized to access smart wallet';
     }
   ];

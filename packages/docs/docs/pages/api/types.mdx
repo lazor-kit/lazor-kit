@@ -1,242 +1,190 @@
-# Types
+# Type Definitions
 
-LazorKit exports several TypeScript types for wallet accounts, responses, and configuration.
+> **⚠️ Development Version - Subject to Change**
+> 
+> These type definitions reflect the current development version and may change before stable release.
+
+TypeScript definitions for LazorKit SDK components, hooks, and configuration.
+
+## Quick Reference
+
+```typescript
+import { useWallet, type WalletAccount, type UseWalletReturn } from '@lazorkit/wallet';
+
+// Most common types you'll need
+type WalletAccount = {
+  publicKey: string;        // "base64-encoded-passkey-public-key"  
+  smartWallet: string;      // "base58-wallet-address"
+  isConnected: boolean;     // Always true when account exists
+  isCreated: boolean;       // True if wallet was just created
+};
+
+// Return types for each method
+connect: () => Promise<WalletAccount>
+disconnect: () => Promise<void>
+signAndSendTransaction: (instruction) => Promise<string>  // tx signature
+signTransaction: (instruction) => Promise<Transaction>    // signed tx object
+buildSmartWalletTransaction: (payer, instruction) => Promise<{
+  createSessionTx: VersionedTransaction,    // unsigned
+  executeSessionTx: VersionedTransaction    // unsigned  
+}>
+createPasskeyOnly: () => Promise<ConnectResponse>
+createSmartWalletOnly: (passkey) => Promise<{
+  smartWalletAddress: string,
+  account: WalletAccount
+}>
+```
 
 ## Core Types
 
 ### WalletAccount
 
-Represents a connected wallet account.
+Connected wallet information.
 
 ```typescript
 interface WalletAccount {
-  publicKey: string;          // Passkey public key
+  publicKey: string;          // Passkey public key (base64)
   smartWallet: string;        // Smart wallet address (base58)
-  isConnected: boolean;       // Connection status
-  isCreated: boolean;         // Whether wallet was newly created
+  isConnected: boolean;       // Always true when account exists
+  isCreated: boolean;         // True if wallet was just created
 }
 ```
-
-**Usage:**
-```tsx
-const { account } = useWallet();
-
-if (account) {
-  console.log('Wallet Address:', account.smartWallet);
-  console.log('Public Key:', account.publicKey);
-  console.log('Is New Wallet:', account.isCreated);
-}
-```
-
-### ConnectResponse
-
-Response from passkey creation operations.
-
-```typescript
-interface ConnectResponse {
-  publicKey: string;           // Base64 encoded public key
-  credentialId: string;        // Passkey credential ID
-  isCreated: boolean;          // Whether credential was newly created
-  connectionType: 'create' | 'get'; // Connection type
-  timestamp: number;           // Response timestamp
-}
-```
-
-**Usage:**
-```tsx
-const passkeyData: ConnectResponse = await createPasskeyOnly();
-console.log('Credential ID:', passkeyData.credentialId);
-console.log('Is New Credential:', passkeyData.isCreated);
-```
-
-### PassKeyCredential
-
-Represents a WebAuthn passkey credential.
-
-```typescript
-interface PassKeyCredential {
-  id: string;                  // Credential identifier
-  publicKey: string;           // Public key data
-  algorithm: number;           // Cryptographic algorithm
-  transports?: string[];       // Available transports
-}
-```
-
-### SmartWalletConfig
-
-Configuration for smart wallet operations.
-
-```typescript
-interface SmartWalletConfig {
-  programId: PublicKey;        // Smart wallet program ID
-  authority: PublicKey;        // Wallet authority
-}
-```
-
-## Provider Types
-
-### LazorkitProviderProps
-
-Props for the LazorkitProvider component.
-
-```typescript
-interface LazorkitProviderProps {
-  children: ReactNode;         // React components
-  rpcUrl: string;             // Solana RPC endpoint
-  ipfsUrl?: string;           // Portal URL (optional)
-  paymasterUrl: string;       // Paymaster service URL
-}
-```
-
-**Usage:**
-```tsx
-const providerProps: LazorkitProviderProps = {
-  children: <App />,
-  rpcUrl: "https://api.devnet.solana.com",
-  paymasterUrl: "https://lazorkit-paymaster.onrender.com"
-};
-
-<LazorkitProvider {...providerProps} />
-```
-
-## Hook Return Types
 
 ### UseWalletReturn
 
-Return type of the useWallet hook.
+Complete hook interface with all properties and methods.
 
 ```typescript
 interface UseWalletReturn {
   // State
+  account: WalletAccount | null;
   smartWalletPubkey: PublicKey | null;
   isConnected: boolean;
-  isLoading: boolean;
   isConnecting: boolean;
   isSigning: boolean;
   error: Error | null;
-  account: WalletAccount | null;
 
-  // Actions
+  // Core Actions
   connect: () => Promise<WalletAccount>;
   disconnect: () => Promise<void>;
-  reconnect: () => Promise<WalletAccount>;
-  signTransaction: (instruction: TransactionInstruction) => Promise<Transaction>;
   signAndSendTransaction: (instruction: TransactionInstruction) => Promise<string>;
+
+  // Advanced Actions
+  signTransaction: (instruction: TransactionInstruction) => Promise<Transaction>;
+  buildSmartWalletTransaction: (
+    payer: PublicKey,
+    instruction: TransactionInstruction
+  ) => Promise<{
+    createSessionTx: VersionedTransaction;
+    executeSessionTx: VersionedTransaction;
+  }>;
   createPasskeyOnly: () => Promise<ConnectResponse>;
-  createSmartWalletOnly: (passkeyData: ConnectResponse) => Promise<{
+  createSmartWalletOnly: (passkey: ConnectResponse) => Promise<{
     smartWalletAddress: string;
     account: WalletAccount;
   }>;
 }
 ```
 
-## Configuration Types
+### ConnectResponse
 
-### LazorkitConfig
-
-SDK configuration options.
+Passkey creation result with specific data formats.
 
 ```typescript
-interface LazorkitConfig {
-  url: string;                 // Portal URL
-  rpcUrl: string;             // Solana RPC URL
-  paymasterUrl: string;       // Paymaster URL
-  mode: 'popup' | 'iframe';   // Dialog mode
-  debug?: boolean;            // Enable debug logging
+interface ConnectResponse {
+  publicKey: string;              // "A1B2C3D4..." (base64 encoded)
+  credentialId: string;           // "cred_abc123..." (WebAuthn ID)
+  isCreated: boolean;             // true = new passkey, false = existing
+  connectionType: 'create' | 'get'; // Which WebAuthn method was used
+  timestamp: number;              // Unix timestamp: 1640995200000
+}
+
+// Example response:
+// {
+//   publicKey: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A...",
+//   credentialId: "cred_abc123def456ghi789",
+//   isCreated: true,
+//   connectionType: "create", 
+//   timestamp: 1640995200000
+// }
+```
+
+### Specific Return Type Examples
+
+```typescript
+// connect() returns
+const account: WalletAccount = {
+  publicKey: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A...",
+  smartWallet: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+  isConnected: true,
+  isCreated: false  // false = reconnected, true = just created
+};
+
+// signAndSendTransaction() returns  
+const signature: string = "2Xd7pLr8QZ9KvF1mN3oR4sT6uY8vW2cB1aE3fG4hI5jK...";
+
+// buildSmartWalletTransaction() returns
+const result: {
+  createSessionTx: VersionedTransaction;  // Unsigned transaction
+  executeSessionTx: VersionedTransaction; // Unsigned transaction  
+} = {
+  createSessionTx: VersionedTransaction { /* transaction object */ },
+  executeSessionTx: VersionedTransaction { /* transaction object */ }
+};
+```
+
+## Provider Configuration
+
+### LazorkitProviderProps
+
+```typescript
+interface LazorkitProviderProps {
+  children: ReactNode;
+  rpcUrl: string;             // Solana RPC endpoint
+  paymasterUrl: string;       // Paymaster service URL  
+  ipfsUrl?: string;           // Portal URL (optional)
 }
 ```
 
-## Message Types
-
-### DialogMessage
-
-Messages exchanged between SDK and portal.
-
-```typescript
-interface DialogMessage {
-  type: string;               // Message type
-  data: any;                  // Message payload
-  timestamp: number;          // Message timestamp
-  origin: string;             // Sender origin
-}
-```
-
-### ErrorResponse
-
-Error response structure.
-
-```typescript
-interface ErrorResponse {
-  code: string;               // Error code
-  message: string;            // Error message
-  details?: any;              // Additional error details
-}
-```
-
-## Solana Re-exports
-
-LazorKit re-exports commonly used Solana types for convenience:
-
-```typescript
-// From @solana/web3.js
-export {
-  PublicKey,
-  Transaction,
-  TransactionInstruction,
-  Connection,
-  Keypair
-} from '@solana/web3.js';
-```
-
-**Usage:**
+### Environment Setup
 ```tsx
-import { PublicKey, SystemProgram } from '@lazorkit/wallet';
-
-const recipient = new PublicKey('7BeWr6tVa1pYgrEddekYTnQENU22bBw9H8HYJUkbrN71');
-const instruction = SystemProgram.transfer({
-  fromPubkey: smartWalletPubkey,
-  toPubkey: recipient,
-  lamports: 1000000,
-});
+<LazorkitProvider
+  rpcUrl={process.env.REACT_APP_RPC_URL!}
+  paymasterUrl={process.env.REACT_APP_PAYMASTER_URL!}
+  ipfsUrl={process.env.REACT_APP_PORTAL_URL}
+>
+  <App />
+</LazorkitProvider>
 ```
 
 ## Error Codes
 
-Common error codes you might encounter:
-
 ```typescript
-enum ErrorCode {
-  NOT_CONNECTED = 'NOT_CONNECTED',
-  NO_STORED_CREDENTIALS = 'NO_STORED_CREDENTIALS',
-  INVALID_CREDENTIALS = 'INVALID_CREDENTIALS',
-  CONNECTION_FAILED = 'CONNECTION_FAILED',
-  TRANSACTION_FAILED = 'TRANSACTION_FAILED',
-  PASSKEY_CREATION_FAILED = 'PASSKEY_CREATION_FAILED',
-  SMART_WALLET_CREATION_FAILED = 'SMART_WALLET_CREATION_FAILED',
-}
+type ErrorCode = 
+  | 'NO_STORED_CREDENTIALS'      // First time user
+  | 'USER_CANCELLED'             // User cancelled WebAuthn
+  | 'INVALID_CREDENTIALS'        // Corrupted credentials
+  | 'CONNECTION_FAILED'          // Network/service error
+  | 'TRANSACTION_FAILED'         // Transaction execution failed
+  | 'PASSKEY_CREATION_FAILED'    // Passkey creation error
+  | 'SMART_WALLET_CREATION_FAILED'; // Wallet deployment error
 ```
 
-**Usage:**
-```tsx
-try {
-  await connect();
-} catch (error) {
-  switch (error.code) {
-    case 'NO_STORED_CREDENTIALS':
-      console.log('First time user');
-      break;
-    case 'INVALID_CREDENTIALS':
-      console.log('Credentials corrupted');
-      break;
-    default:
-      console.error('Unexpected error:', error);
-  }
-}
+## Solana Re-exports
+
+```typescript
+// Commonly used Solana types available from @lazorkit/wallet
+export {
+  PublicKey,
+  Transaction, 
+  TransactionInstruction,
+  VersionedTransaction,
+  SystemProgram,
+  LAMPORTS_PER_SOL
+} from '@solana/web3.js';
 ```
 
 ## Type Guards
-
-Utility functions for type checking:
 
 ```typescript
 // Check if account is connected
@@ -244,22 +192,8 @@ function isConnected(account: WalletAccount | null): account is WalletAccount {
   return account !== null && account.isConnected;
 }
 
-// Check if error has specific code
-function hasErrorCode(error: any, code: string): boolean {
-  return error && error.code === code;
-}
-```
-
-**Usage:**
-```tsx
-const { account, error } = useWallet();
-
+// Usage
 if (isConnected(account)) {
-  // TypeScript knows account is WalletAccount here
-  console.log('Wallet:', account.smartWallet);
-}
-
-if (hasErrorCode(error, 'NO_STORED_CREDENTIALS')) {
-  console.log('No stored credentials found');
+  console.log('Wallet:', account.smartWallet); // TypeScript knows account exists
 }
 ```

@@ -1,6 +1,7 @@
 import { PublicKey } from '@solana/web3.js';
 import { BN } from '@coral-xyz/anchor';
 import { Buffer } from 'buffer';
+import { sha256 } from 'js-sha256';
 // Mirror on-chain seeds
 export const CONFIG_SEED = Buffer.from('config');
 export const POLICY_PROGRAM_REGISTRY_SEED = Buffer.from('policy_registry');
@@ -8,7 +9,6 @@ export const SMART_WALLET_SEED = Buffer.from('smart_wallet');
 export const SMART_WALLET_DATA_SEED = Buffer.from('smart_wallet_data');
 export const WALLET_DEVICE_SEED = Buffer.from('wallet_device');
 export const TRANSACTION_SESSION_SEED = Buffer.from('transaction_session');
-import { sha256 } from 'js-sha256';
 
 export function deriveConfigPda(programId: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync([CONFIG_SEED], programId)[0];

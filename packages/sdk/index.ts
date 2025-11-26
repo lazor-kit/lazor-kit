@@ -11,6 +11,11 @@ export { useWalletStore } from './react/store';
 // Type exports
 export type { WalletInfo, WalletConfig } from '././core/storage';
 export type { WalletHookInterface } from './react/useWallet';
+export type { 
+  PasskeyData, 
+  SmartWalletCreationResult,
+  WalletState 
+} from './actions';
 
 // Core exports (for advanced usage)
 export { SmartWallet } from './core/wallet/SmartWallet';
@@ -29,6 +34,7 @@ export {
   PublicKey, 
   Transaction, 
   TransactionInstruction,
+  VersionedTransaction,
   Connection,
   Keypair
 } from '@solana/web3.js';

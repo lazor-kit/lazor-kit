@@ -39,16 +39,38 @@ export default defineConfig({
       collapsed: false,
       items: [
         {
+          text: 'Authentication',
+          link: '/guides/authentication',
+        },
+        {
           text: 'Integration Guide',
           link: '/guides/integration',
         },
         {
-          text: 'Authentication Flow',
-          link: '/guides/authentication',
-        },
-        {
           text: 'Transaction Handling',
           link: '/guides/transactions',
+        },
+        {
+          text: 'Wallet Adapter Integration',
+          link: '/guides/wallet-adapter',
+        },
+        {
+          text: 'Kora Relayer',
+          collapsed: false,
+          items: [
+            {
+              text: 'Quick Reference',
+              link: '/guides/kora-reference',
+            },
+            {
+              text: 'Overview',
+              link: '/guides/kora-integration',
+            },
+            {
+              text: 'LazorKit + Kora',
+              link: '/guides/kora-lazorkit',
+            },
+          ],
         },
       ],
     },

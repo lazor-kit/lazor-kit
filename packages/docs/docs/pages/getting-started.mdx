@@ -8,10 +8,11 @@ LazorKit enables seamless wallet functionality using WebAuthn passkeys, eliminat
 
 ## Prerequisites
 
-- Node.js 18+ 
-- React 18+
-- WebAuthn-capable browser
-- HTTPS environment (required for WebAuthn)
+- **Node.js**: 18.x or higher (20.x LTS or 23.x recommended)
+- **React**: 18.x or higher
+- **Modern Browser**: Chrome 88+, Firefox 90+, Safari 15+, Edge 88+ (latest versions recommended)
+- **HTTPS Environment**: Required for WebAuthn (use `localhost` for development)
+- **WebAuthn Support**: Browser must support WebAuthn Level 2 and Passkeys
 
 ## Basic Setup
 
@@ -21,7 +22,24 @@ LazorKit enables seamless wallet functionality using WebAuthn passkeys, eliminat
 npm install @lazorkit/wallet
 ```
 
-### 2. Provider Setup
+### 2. Environment Configuration
+
+Create environment variables for your application:
+
+```bash
+# .env.local or .env.development
+REACT_APP_RPC_URL=https://api.devnet.solana.com
+REACT_APP_PAYMASTER_URL=your-paymaster-service-url
+REACT_APP_PORTAL_URL=your-portal-service-url
+
+# Optional: For external payer integration
+REACT_APP_EXTERNAL_PAYER_ADDRESS=your-external-payer-public-key
+REACT_APP_API_ENDPOINT=your-backend-api-url
+REACT_APP_API_KEY=your-api-authentication-key
+REACT_APP_RECIPIENT_ADDRESS=default-recipient-address
+```
+
+### 3. Provider Setup
 
 Wrap your application with `LazorkitProvider`:
 
@@ -31,8 +49,9 @@ import { LazorkitProvider } from '@lazorkit/wallet';
 function App() {
   return (
     <LazorkitProvider
-      rpcUrl="https://api.devnet.solana.com"
-      paymasterUrl="https://lazorkit-paymaster.onrender.com"
+      rpcUrl={process.env.REACT_APP_RPC_URL || 'https://api.devnet.solana.com'}
+      paymasterUrl={process.env.REACT_APP_PAYMASTER_URL}
+      ipfsUrl={process.env.REACT_APP_PORTAL_URL}
     >
       <YourApp />
     </LazorkitProvider>
@@ -52,12 +71,18 @@ function WalletComponent() {
     smartWalletPubkey,
     isConnected,
     isLoading,
+    isConnecting,
+    isSigning,
     error,
+    account,
     
     // Actions
     connect,
     disconnect,
     signAndSendTransaction,
+    createPasskeyOnly,
+    createSmartWalletOnly,
+    buildSmartWalletTransaction,
   } = useWallet();
 
   const handleConnect = async () => {
@@ -74,7 +99,7 @@ function WalletComponent() {
     try {
       const instruction = SystemProgram.transfer({
         fromPubkey: smartWalletPubkey,
-        toPubkey: new PublicKey('7BeWr6tVa1pYgrEddekYTnQENU22bBw9H8HYJUkbrN71'),
+        toPubkey: new PublicKey('RECIPIENT_ADDRESS_HERE'),
         lamports: LAMPORTS_PER_SOL * 0.1,
       });
 
@@ -88,14 +113,15 @@ function WalletComponent() {
   return (
     <div>
       {!isConnected ? (
-        <button onClick={handleConnect} disabled={isLoading}>
-          {isLoading ? 'Connecting...' : 'Connect Wallet'}
+        <button onClick={handleConnect} disabled={isConnecting}>
+          {isConnecting ? 'Connecting...' : 'Connect Wallet'}
         </button>
       ) : (
         <div>
           <p>Connected: {smartWalletPubkey?.toString().slice(0, 8)}...</p>
-          <button onClick={handleTransfer} disabled={isLoading}>
-            Transfer 0.1 SOL
+          <p>Account: {account?.smartWallet.slice(0, 8)}...</p>
+          <button onClick={handleTransfer} disabled={isSigning}>
+            {isSigning ? 'Signing...' : 'Transfer 0.1 SOL'}
           </button>
           <button onClick={disconnect}>Disconnect</button>
         </div>
@@ -127,7 +153,22 @@ You can separate passkey creation from smart wallet deployment:
 const passkeyData = await createPasskeyOnly();
 
 // Step 2: Later create smart wallet
-const { smartWalletAddress } = await createSmartWalletOnly(passkeyData);
+const { smartWalletAddress, wallet } = await createSmartWalletOnly(passkeyData);
+```
+
+### External Payer Support
+
+For applications using external fee payers:
+
+```tsx
+// Build unsigned transactions for external payer
+const externalPayer = new PublicKey('YourExternalPayerAddress');
+const { createSessionTx, executeSessionTx } = await buildSmartWalletTransaction(
+  externalPayer,
+  instruction
+);
+
+// Send to your backend for signing and submission
 ```
 
 ### Event Handling
@@ -146,25 +187,157 @@ sdk.on('connect:success', (account) => {
 
 ### Sign and Send (Recommended)
 
+For most use cases where LazorKit handles the complete transaction flow:
+
 ```tsx
 const signature = await signAndSendTransaction(instruction);
 ```
 
 ### Sign Only
 
+For custom transaction management:
+
 ```tsx
 const signedTransaction = await signTransaction(instruction);
 // Handle sending yourself
 ```
 
+### External Payer Pattern
+
+For applications where backend services pay transaction fees:
+
+```tsx
+const externalPayer = new PublicKey(process.env.REACT_APP_EXTERNAL_PAYER_ADDRESS!);
+const { createSessionTx, executeSessionTx } = await buildSmartWalletTransaction(
+  externalPayer,
+  instruction
+);
+
+// Send serialized transactions to your backend
+const response = await fetch(process.env.REACT_APP_API_ENDPOINT + '/sign-and-send', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${process.env.REACT_APP_API_KEY}`,
+  },
+  body: JSON.stringify({
+    createSessionTx: Buffer.from(createSessionTx.serialize()).toString('base64'),
+    executeSessionTx: Buffer.from(executeSessionTx.serialize()).toString('base64'),
+  }),
+});
+```
+
+## Advanced Examples
+
+### Step-by-Step Onboarding
+
+```tsx
+import { useState } from 'react';
+
+function OnboardingExample() {
+  const { createPasskeyOnly, createSmartWalletOnly } = useWallet();
+  const [step, setStep] = useState<'passkey' | 'wallet' | 'complete'>('passkey');
+  const [passkeyData, setPasskeyData] = useState(null);
+
+  const handleCreatePasskey = async () => {
+    try {
+      const data = await createPasskeyOnly();
+      setPasskeyData(data);
+      setStep('wallet');
+    } catch (error) {
+      console.error('Passkey creation failed:', error);
+    }
+  };
+
+  const handleCreateWallet = async () => {
+    try {
+      const { account } = await createSmartWalletOnly(passkeyData);
+      console.log('Wallet created:', account.smartWallet);
+      setStep('complete');
+    } catch (error) {
+      console.error('Wallet creation failed:', error);
+    }
+  };
+
+  return (
+    <div>
+      {step === 'passkey' && (
+        <button onClick={handleCreatePasskey}>Create Passkey</button>
+      )}
+      {step === 'wallet' && (
+        <button onClick={handleCreateWallet}>Deploy Smart Wallet</button>
+      )}
+      {step === 'complete' && (
+        <div>Wallet setup complete</div>
+      )}
+    </div>
+  );
+}
+```
+
+### Error Handling
+
+```tsx
+function ErrorHandlingExample() {
+  const { connect, error } = useWallet();
+
+  const handleConnect = async () => {
+    try {
+      await connect();
+    } catch (error) {
+      switch (error.code) {
+        case 'NO_STORED_CREDENTIALS':
+          // First time user
+          break;
+        case 'INVALID_CREDENTIALS':
+          // Stored credentials invalid
+          break;
+        case 'USER_CANCELLED':
+          // User cancelled authentication
+          break;
+        default:
+          console.error('Connection failed:', error.message);
+      }
+    }
+  };
+
+  return (
+    <div>
+      <button onClick={handleConnect}>Connect</button>
+      {error && <div>Error: {error.message}</div>}
+    </div>
+  );
+}
+```
+
 ## Next Steps
 
-- Explore [API Reference](/api/use-wallet) for complete documentation
-- Read [Integration Guide](/guides/integration) for advanced patterns
-- Check [Transaction Handling](/guides/transactions) for complex workflows
+**Core Documentation**
+- [API Reference](/api/use-wallet) - Complete method documentation
+- [Type Definitions](/api/types) - TypeScript interfaces and types
+- [Installation](/installation) - Environment setup and configuration
 
-## Need Help?
+**Implementation Guides**
+- [Authentication Guide](/guides/authentication) - Passkey flows and patterns
+- [Integration Guide](/guides/integration) - Production patterns and external payer setup
+- [Transaction Handling](/guides/transactions) - Transaction workflows
+- [Wallet Adapter Integration](/guides/wallet-adapter) - Compatible with existing dApps
 
-- Check the [troubleshooting section](/installation#troubleshooting)
-- Review the [examples repository](https://github.com/lazorkit/examples)
-- Join our [Discord community](https://discord.gg/lazorkit)
+**Kora Relayer Guides**
+- [Kora Quick Reference](/guides/kora-reference) - Basic methods (getPayer, sign, signAndSend)
+- [Kora Overview](/guides/kora-integration) - Fee abstraction overview
+- [LazorKit + Kora](/guides/kora-lazorkit) - Complete integration
+- [Official Kora Docs](https://github.com/solana-foundation/kora) - Full setup and configuration
+
+## Requirements
+
+- Node.js 18+
+- React 18+
+- HTTPS environment (required for WebAuthn)
+- Modern browser with WebAuthn support
+
+## Support
+
+- Documentation issues and improvements: GitHub Issues
+- Feature requests: GitHub Discussions
+- Bug reports: GitHub Issues

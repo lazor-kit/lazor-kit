@@ -1,82 +1,62 @@
----
-layout: landing
----
+# LazorKit
 
-import { HomePage } from 'vocs/components'
+A React SDK for WebAuthn-based Solana wallet authentication using passkeys and smart wallets.
 
-<HomePage.Root>
-  <HomePage.Logo />
-  <HomePage.Tagline>LazorKit SDK</HomePage.Tagline>
-  <HomePage.InstallPackage name="@lazorkit/wallet" />
-  <HomePage.Description>
-    Seamless Web3 authentication for the web. A wallet adapter that leverages passkey authentication, 
-    smart wallets, and gasless transactions for the Solana ecosystem.
-  </HomePage.Description>
-  <HomePage.Buttons>
-    <HomePage.Button href="/getting-started" variant="accent">Get started</HomePage.Button>
-    <HomePage.Button href="/installation">Installation</HomePage.Button>
-    <HomePage.Button href="https://github.com/lazorkit/sdk">GitHub</HomePage.Button>
-  </HomePage.Buttons>
-</HomePage.Root>
+```bash
+npm install @lazorkit/wallet
+```
 
-## Features
+## Overview
 
-🔐 **Enhanced Authentication**
-- WebAuthn-based wallet creation with passkeys
-- Auto-reconnection with stored credentials
-- Seamless disconnect/reconnect functionality
-- Secure key storage in hardware
-- Cross-device synchronization
+LazorKit provides passwordless authentication for Solana applications through WebAuthn passkeys, eliminating the need for traditional seed phrases or browser extensions. The SDK features smart wallet integration with automatic session management and optional gasless transactions.
 
-⚡ **Flexible Wallet Creation**
-- Separate passkey creation: `createPasskeyOnly()`
-- Separate smart wallet creation: `createSmartWalletOnly()`
-- Full wallet creation: `connect()`
+## Key Features
 
-💸 **Gasless Transactions**
-- Built-in paymaster integration
-- Fee sponsorship options
-- Transaction bundling
+**WebAuthn Authentication**
+- Passkey-based wallet creation and access
+- Hardware-secured key storage
+- Cross-device credential synchronization
+- Automatic reconnection handling
 
-🌐 **Cross-Origin Support**
-- Secure iframe integration
-- Popup window handling
-- Message validation
+**Smart Wallet Integration**
+- Programmable transaction authorization
+- Session-based execution patterns
+- External payer support for gasless transactions
+- Flexible creation workflows
 
-🎯 **Comprehensive Event System**
-- Connection, disconnect, and reconnect events
-- Passkey and smart wallet creation events
-- Transaction lifecycle events
+**Developer Experience**
+- React hooks and context providers
+- TypeScript support with full type definitions
+- Comprehensive error handling
+- Event-driven architecture
 
-## Current Status
+## Development Status
 
-:::warning
-This SDK is currently in **beta** and supports:
-- Solana Devnet only (Mainnet support coming soon)
-- WebAuthn-capable browsers
-- React applications
+**Current Release: Beta**
 
-Do not use in production!
-:::
+- Solana Devnet support
+- React 18+ compatibility
+- Modern browser requirements (WebAuthn support)
+
+Production readiness is planned for the stable 1.0 release.
 
 ## Quick Start
 
 ```tsx
 import { LazorkitProvider, useWallet } from '@lazorkit/wallet';
 
-// 1. Wrap your app with LazorkitProvider
 function App() {
   return (
     <LazorkitProvider
-      rpcUrl="https://api.devnet.solana.com"
-      paymasterUrl="https://lazorkit-paymaster.onrender.com"
+      rpcUrl={process.env.REACT_APP_RPC_URL}
+      paymasterUrl={process.env.REACT_APP_PAYMASTER_URL}
+      ipfsUrl={process.env.REACT_APP_PORTAL_URL}
     >
       <WalletDemo />
     </LazorkitProvider>
   );
 }
 
-// 2. Use the wallet in your components
 function WalletDemo() {
   const { connect, disconnect, isConnected, smartWalletPubkey } = useWallet();
 
@@ -86,7 +66,7 @@ function WalletDemo() {
         <button onClick={connect}>Connect Wallet</button>
       ) : (
         <div>
-          <p>Wallet: {smartWalletPubkey?.toString()}</p>
+          <p>Connected: {smartWalletPubkey?.toString().slice(0, 8)}...</p>
           <button onClick={disconnect}>Disconnect</button>
         </div>
       )}
@@ -94,3 +74,25 @@ function WalletDemo() {
   );
 }
 ```
+
+## Documentation
+
+- [Installation](./installation) - Setup and configuration
+- [Getting Started](./getting-started) - Basic integration guide
+- [API Reference](./api/use-wallet) - Complete method documentation
+- [Integration Guide](./guides/integration) - Advanced patterns and external payer setup
+- [Wallet Adapter Integration](./guides/wallet-adapter) - Compatible with existing Solana dApps
+
+**Kora Relayer Integration**
+- [Kora Quick Reference](./guides/kora-reference) - Basic methods (getPayer, sign, signAndSend)
+- [Kora Overview](./guides/kora-integration) - Fee abstraction overview
+- [LazorKit + Kora](./guides/kora-lazorkit) - Complete integration
+- [Official Kora Docs](https://github.com/solana-foundation/kora) - Full setup and configuration
+
+## Contributing
+
+LazorKit is an open source project. Contributions are welcome via GitHub issues and pull requests.
+
+## License
+
+MIT License - see LICENSE file for details.

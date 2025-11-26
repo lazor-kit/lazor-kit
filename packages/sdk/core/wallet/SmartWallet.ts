@@ -7,7 +7,8 @@ import {
   PublicKey, 
   Transaction, 
   TransactionInstruction,
-  Connection 
+  Connection,
+  VersionedTransaction
 } from '@solana/web3.js';
 import { Buffer } from 'buffer';
 import { Paymaster } from './Paymaster';
@@ -81,7 +82,7 @@ export class SmartWallet {
       credentialIdBase64: credentialId,
       isPayForUser: true,
     });
-
+    
     // Sign and send transaction via paymaster
     await this.paymaster.signAndSend(transaction);
     
@@ -99,7 +100,8 @@ export class SmartWallet {
   async buildTransaction(
     instruction: TransactionInstruction,
     signResponse: SignResponse,
-  ): Promise<{ transaction: Transaction }> {
+    
+  ): Promise<{ transaction: VersionedTransaction }> {
     // Get stored public key and smart wallet address
     const storedPublicKey = await StorageManager.getItem('PUBLIC_KEY');
     const smartWalletAddress = await StorageManager.getItem('SMART_WALLET_ADDRESS');
@@ -132,18 +134,23 @@ export class SmartWallet {
     const payer = await this.paymaster.getPayer();
 
     // Execute transaction using contract integration
-    const versionedTxn = await this.lazorkitClient.executeTransactionWithAuth({
+    const sessionTx = await this.lazorkitClient.createTransactionSessionWithAuth({
       payer,
       smartWallet,
       passkeySignature,
       policyInstruction: null, // Use default policy
+      expiresAt: Math.floor(Date.now() / 1000) + 3600, // 1 hour
+    });
+    await this.paymaster.signAndSendVersionedTransaction(sessionTx);
+    
+    const executeSessionTx = await this.lazorkitClient.executeSessionTransaction({
+      payer,
+      smartWallet,
       cpiInstruction: instruction,
     });
-
     // Convert VersionedTransaction to legacy Transaction for compatibility
-    const transaction = Transaction.from(versionedTxn.serialize());
     
-    return { transaction };
+    return { transaction: executeSessionTx };
   }
 
   /**
@@ -212,12 +219,13 @@ export class SmartWallet {
   async getSmartWalletCredential(_credentialId: string): Promise<string> {
     // This would need to be implemented in the contract integration layer
     // For now, we'll throw an error as this needs proper implementation
-    const { smartWallet } = await this.lazorkitClient.getSmartWalletByCredentialId(_credentialId);
+    const { smartWallet , passkeyPubkey} = await this.lazorkitClient.getSmartWalletByCredentialId(_credentialId);
     if (!smartWallet) {
       throw new Error('Smart wallet not found for this credential ID');
     }
+    await StorageManager.setItem('SMART_WALLET_ADDRESS', smartWallet.toBase58());
+    await StorageManager.setItem('PUBLIC_KEY', passkeyPubkey);
     return smartWallet.toBase58();
-    throw new Error('getSmartWalletCredential not yet implemented in contract integration layer');
   }
 
   /**
