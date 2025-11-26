@@ -1,0 +1,4 @@
+
+[submodule "packages/program"]
+	path = packages/program
+	url = https://github.com/lazor-kit/program-v2.git
