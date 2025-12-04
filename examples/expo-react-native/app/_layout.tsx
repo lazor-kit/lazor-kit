@@ -5,8 +5,8 @@ export default function RootLayout() {
   return (
     <LazorKitProvider
       rpcUrl={process.env.EXPO_PUBLIC_SOLANA_RPC_URL!}
-      ipfsUrl={rocess.env.EXPO_PUBLIC_SOLANA_RPC_URL!}
-      paymasterUrl={rocess.env.EXPO_PUBLIC_SOLANA_RPC_URL!}
+      ipfsUrl={process.env.EXPO_PUBLIC_SOLANA_RPC_URL!}
+      paymasterUrl={process.env.EXPO_PUBLIC_SOLANA_RPC_URL!}
       isDebug={true}
     >
       <Stack>
