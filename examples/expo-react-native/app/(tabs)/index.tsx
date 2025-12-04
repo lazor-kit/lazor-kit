@@ -1,25 +1,24 @@
 'use client';
 
 import { Ionicons } from '@expo/vector-icons';
+import { useLazorWallet } from '@lazorkit/wallet-mobile-adapter';
 import {
-  Connection,
-  LAMPORTS_PER_SOL,
-  PublicKey,
-  clusterApiUrl,
+    Connection,
+    LAMPORTS_PER_SOL,
+    PublicKey
 } from '@solana/web3.js';
 import * as Clipboard from 'expo-clipboard';
 import { useEffect, useState } from 'react';
 import {
-  Alert,
-  Image,
-  SafeAreaView,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+    Alert,
+    Image,
+    SafeAreaView,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
 } from 'react-native';
-import { useLazorWallet } from '@lazorkit/wallet-mobile-adapter';
 
 export default function WalletScreen() {
   const [solBalance, setSolBalance] = useState(0);

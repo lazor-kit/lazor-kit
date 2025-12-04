@@ -1,10 +1,10 @@
 // File: sdk/useLazorWallet.ts
 
-import { useState, useEffect, useCallback } from 'react';
-import * as WebBrowser from 'expo-web-browser';
-import * as Linking from 'expo-linking';
-import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Linking from 'expo-linking';
+import * as WebBrowser from 'expo-web-browser';
+import { useCallback, useEffect, useState } from 'react';
+import { Platform } from 'react-native';
 
 interface WalletInfo {
   credentialId: string;
@@ -18,7 +18,7 @@ interface SignResult {
   publicKeyHash: string;
 }
 
-interface UseLazorWalletOptions {
+interface useLazorWalletOptions {
   onConnectSuccess?: (wallet: WalletInfo) => void;
   onConnectError?: (error: Error) => void;
   onSignSuccess?: (result: SignResult) => void;
@@ -27,7 +27,7 @@ interface UseLazorWalletOptions {
 
 const STORAGE_KEY = 'lazor_wallet_info';
 
-export function useLazorWallet(options?: UseLazorWalletOptions) {
+export function useLazorWallet(options?: useLazorWalletOptions) {
   const [wallet, setWallet] = useState<WalletInfo | null>(null);
 
   useEffect(() => {

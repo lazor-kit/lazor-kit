@@ -1,6 +1,7 @@
 'use client';
 
 import { Ionicons } from '@expo/vector-icons';
+import { SmartWalletAction, SmartWalletActionArgs, useLazorWallet } from '@lazorkit/wallet-mobile-adapter';
 import {
   Connection,
   LAMPORTS_PER_SOL,
@@ -21,7 +22,6 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useLazorWallet } from '@lazorkit/wallet-mobile-adapter';
 
 interface Token {
   symbol: string;
@@ -187,8 +187,9 @@ export default function TransferScreen() {
       );
       return;
     }
+    // 0,009 => 0.009
+    const sendAmount = Number.parseFloat(amount.replace(',', '.'));
 
-    const sendAmount = Number.parseFloat(amount);
     if (sendAmount > fromToken.balance) {
       Alert.alert(
         '❌ Insufficient Balance',
@@ -232,8 +233,18 @@ export default function TransferScreen() {
                 sendAmount
               );
 
+              // Create Smart Wallet Action 
+              const action: SmartWalletActionArgs<SmartWalletAction.CreateChunk> = {
+                type: SmartWalletAction.CreateChunk,
+                args: {
+                  policyInstruction: null, // Optional policy instruction
+                  cpiInstructions: [transferInstruction], // Your transaction instruction
+                  expiresAt: (Date.now() + 60 * 60 * 1000), // 1 hour
+                }
+              };
+
               // Sign message and execute transaction
-              await signMessage(transferInstruction, {
+              await signMessage(action, {
                 onSuccess: (result) => {
                   console.log('Transaction signed successfully:', result);
                   setTransactionHash(result);
