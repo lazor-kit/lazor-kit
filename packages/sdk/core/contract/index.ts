@@ -7,18 +7,20 @@ if (typeof globalThis.structuredClone !== 'function') {
 // Main SDK exports
 // ============================================================================
 
-// Client classes
+// Core clients
 export { LazorkitClient } from './client/lazorkit';
-export { DefaultPolicyClient } from './client/defaultPolicy';
+export { 
+  DefaultPolicyClient,
+  BuildInitPolicyIxParams,
+  BuildCheckPolicyIxParams,
+} from './client/defaultPolicy';
 
-// Type definitions
+// All types and utilities
 export * from './types';
-
-// Utility functions
 export * from './auth';
 export * from './transaction';
 export * from './utils';
 export * from './messages';
-
-// PDA derivation functions (includes constants)
 export * from './pda/lazorkit';
+export * from './validation';
+export * from './constants';

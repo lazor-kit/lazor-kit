@@ -2,13 +2,13 @@ import * as anchor from '@coral-xyz/anchor';
 import { sha256 } from 'js-sha256';
 import { Buffer } from 'buffer';
 
-export function hashSeeds(
-  passkey: number[],
-  smartWallet: anchor.web3.PublicKey
+export function createWalletDeviceHash(
+  smartWallet: anchor.web3.PublicKey,
+  credentialHash: number[]
 ): Buffer {
   const rawBuffer = Buffer.concat([
-    Buffer.from(passkey),
     smartWallet.toBuffer(),
+    Buffer.from(credentialHash),
   ]);
   const hash = sha256.arrayBuffer(rawBuffer);
   return Buffer.from(hash).subarray(0, 32);
