@@ -41,8 +41,8 @@ global.Buffer = Buffer;
 // app/_layout.tsx
 <LazorKitProvider
   rpcUrl={process.env.EXPO_PUBLIC_SOLANA_RPC_URL!}
-  ipfsUrl="https://ipfs-backup-git-main..."
-  paymasterUrl="https://lazorkit-paymaster.onrender.com"
+  ipfsUrl={process.env.EXPO_PUBLIC_IPFS_URL!}
+  paymasterUrl={process.env.EXPO_PUBLIC_PAYMASTER_URL!}
   isDebug={true}
 >
   {/* your app */}
@@ -67,7 +67,7 @@ async function onConnect() {
 import * as multisigSdk from '@sqds/multisig';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import base58 from 'bs58';
-import { MessageArgs, SmartWalletAction } from '@lazorkit/wallet-mobile-adapter';
+import { SmartWalletActionArgs, SmartWalletAction } from '@lazorkit/wallet-mobile-adapter';
 
 async function createMultisig({ members, threshold }: { members: string[]; threshold: number }) {
   if (!smartWalletPubkey) throw new Error('Connect wallet first');
@@ -94,9 +94,12 @@ async function createMultisig({ members, threshold }: { members: string[]; thres
   });
 
   // Ask LazorKit to co-sign and return raw transactions
-  const action: MessageArgs = {
-    type: SmartWalletAction.ExecuteTx,
-    args: { cpiInstruction: ix, ruleInstruction: null },
+ const action: SmartWalletActionArgs = {
+    type: SmartWalletAction.CreateChunk,
+    args: {
+      cpiInstructions: [ix],
+      policyInstruction: null,
+    },
   };
   await signMessage(
     action,
@@ -129,7 +132,7 @@ This example builds a simple SOL transfer from the vault. It demonstrates how to
 
 ```ts
 import { LAMPORTS_PER_SOL, PublicKey, SystemProgram, TransactionMessage } from '@solana/web3.js';
-import { MessageArgs, SmartWalletAction } from '@lazorkit/wallet-mobile-adapter';
+import { SmartWalletActionArgs, SmartWalletAction } from '@lazorkit/wallet-mobile-adapter';
 
 async function createVaultTransaction({ multisig, to, lamports }: { multisig: string; to: string; lamports: number }) {
   if (!smartWalletPubkey) throw new Error('Connect wallet first');
@@ -166,10 +169,14 @@ async function createVaultTransaction({ multisig, to, lamports }: { multisig: st
     rentPayer: payer.publicKey,
   });
 
-  const action: MessageArgs = {
-    type: SmartWalletAction.ExecuteTx,
-    args: { cpiInstruction: ix, ruleInstruction: null },
+  const action: SmartWalletActionArgs = {
+    type: SmartWalletAction.CreateChunk,
+    args: {
+      cpiInstructions: [ix],
+      policyInstruction: null,
+    },
   };
+
   await signMessage(
     action,
     {
@@ -196,7 +203,7 @@ async function createVaultTransaction({ multisig, to, lamports }: { multisig: st
 ### Create a proposal
 
 ```ts
-import { MessageArgs, SmartWalletAction } from '@lazorkit/wallet-mobile-adapter';
+import { SmartWalletActionArgs, SmartWalletAction } from '@lazorkit/wallet-mobile-adapter';
 
 async function createProposal(multisig: string) {
   if (!smartWalletPubkey) throw new Error('Connect wallet first');
@@ -213,9 +220,12 @@ async function createProposal(multisig: string) {
     rentPayer: payer.publicKey,
   });
 
-  const action: MessageArgs = {
-    type: SmartWalletAction.ExecuteTx,
-    args: { cpiInstruction: ix, ruleInstruction: null },
+ const action: SmartWalletActionArgs = {
+    type: SmartWalletAction.CreateChunk,
+    args: {
+      cpiInstructions: [ix],
+      policyInstruction: null,
+    },
   };
   await signMessage(action, {
     onSuccess: async () => {},
@@ -230,7 +240,7 @@ async function createProposal(multisig: string) {
 ### Approve / Reject / Cancel a proposal
 
 ```ts
-import { MessageArgs, SmartWalletAction } from '@lazorkit/wallet-mobile-adapter';
+import { SmartWalletActionArgs, SmartWalletAction } from '@lazorkit/wallet-mobile-adapter';
 
 async function approveProposal(multisig: string, transactionIndex: bigint) {
   if (!smartWalletPubkey) throw new Error('Connect wallet first');
@@ -239,7 +249,13 @@ async function approveProposal(multisig: string, transactionIndex: bigint) {
     transactionIndex,
     member: smartWalletPubkey,
   });
-  const action: MessageArgs = { type: SmartWalletAction.ExecuteTx, args: { cpiInstruction: ix, ruleInstruction: null } };
+ const action: SmartWalletActionArgs = {
+    type: SmartWalletAction.CreateChunk,
+    args: {
+      cpiInstructions: [ix],
+      policyInstruction: null,
+    },
+  };
   await signMessage(action, { redirectUrl: 'exp://localhost:8081' });
 }
 
@@ -250,7 +266,13 @@ async function rejectProposal(multisig: string, transactionIndex: bigint) {
     transactionIndex,
     member: smartWalletPubkey,
   });
-  const action: MessageArgs = { type: SmartWalletAction.ExecuteTx, args: { cpiInstruction: ix, ruleInstruction: null } };
+ const action: SmartWalletActionArgs = {
+    type: SmartWalletAction.CreateChunk,
+    args: {
+      cpiInstructions: [ix],
+      policyInstruction: null,
+    },
+  };
   await signMessage(action, { redirectUrl: 'exp://localhost:8081' });
 }
 
@@ -261,7 +283,13 @@ async function cancelProposal(multisig: string, transactionIndex: bigint) {
     transactionIndex,
     member: smartWalletPubkey,
   });
-  const action: MessageArgs = { type: SmartWalletAction.ExecuteTx, args: { cpiInstruction: ix, ruleInstruction: null } };
+  const action: SmartWalletActionArgs = {
+    type: SmartWalletAction.CreateChunk,
+    args: {
+      cpiInstructions: [ix],
+      policyInstruction: null,
+    },
+  };
   await signMessage(action, { redirectUrl: 'exp://localhost:8081' });
 }
 ```
@@ -269,7 +297,7 @@ async function cancelProposal(multisig: string, transactionIndex: bigint) {
 ### Execute a vault transaction
 
 ```ts
-import { MessageArgs, SmartWalletAction } from '@lazorkit/wallet-mobile-adapter';
+import { SmartWalletActionArgs, SmartWalletAction } from '@lazorkit/wallet-mobile-adapter';
 
 async function executeVaultTransaction(multisig: string, transactionIndex: bigint) {
   if (!smartWalletPubkey) throw new Error('Connect wallet first');
@@ -282,7 +310,13 @@ async function executeVaultTransaction(multisig: string, transactionIndex: bigin
     member: smartWalletPubkey, // needs Executor permission
   });
 
-  const action: MessageArgs = { type: SmartWalletAction.ExecuteTx, args: { cpiInstruction: ix, ruleInstruction: null } };
+  const action: SmartWalletActionArgs = {
+    type: SmartWalletAction.CreateChunk,
+    args: {
+      cpiInstructions: [ix],
+      policyInstruction: null,
+    },
+  };
   await signMessage(action, { redirectUrl: 'exp://localhost:8081' });
 }
 ```
