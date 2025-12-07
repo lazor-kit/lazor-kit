@@ -1,10 +1,3 @@
 packages:
-  - packages/sdk
-  - packages/program
-  - packages/portal
-  - packages/docs
-
-ignoredBuiltDependencies:
-  - bufferutil
-  - esbuild
-  - utf-8-validate
+  - app/*
+  - packages/*
