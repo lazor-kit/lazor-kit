@@ -22,15 +22,18 @@
   "dependencies": {
     "bs58": "^6.0.0",
     "eventemitter3": "^5.0.1",
-    "js-sha256": "^0.11.0",
-    "@solana/kora": "^0.1.0"
+    "js-sha256": "^0.11.0"
   },
   "peerDependencies": {
     "@coral-xyz/anchor": "^0.31.1",
+    "@solana-program/token": "^0.9.0",
+    "@solana/kit": "^5.0.0",
+    "@solana/kora": "^0.1.0",
     "@solana/web3.js": "^1.98.2",
     "react": "^18.3.1 || ^19.0.0",
     "react-dom": "^18.3.1 || ^19.0.0",
-    "zustand": "^5.0.5"
+    "zustand": "^5.0.5",
+    "@solana/spl-token": "^0.4.14"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
