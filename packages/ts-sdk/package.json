@@ -22,7 +22,8 @@
   "dependencies": {
     "bs58": "^6.0.0",
     "eventemitter3": "^5.0.1",
-    "js-sha256": "^0.11.0"
+    "js-sha256": "^0.11.0",
+    "@solana/kora": "^0.1.0"
   },
   "peerDependencies": {
     "@coral-xyz/anchor": "^0.31.1",
