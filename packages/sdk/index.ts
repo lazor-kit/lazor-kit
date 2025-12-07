@@ -13,8 +13,6 @@ export type { WalletInfo, WalletConfig } from '././core/storage';
 export type { WalletHookInterface } from './react/useWallet';
 
 // Core exports (for advanced usage)
-export { SmartWallet } from './core/wallet/SmartWallet';
-export { Paymaster } from './core/wallet/Paymaster';
 export { DialogManager } from './core/portal';
 export { StorageManager } from '././core/storage';
 
@@ -25,11 +23,13 @@ export * from './config';
 export * from './utils';
 
 // Re-export commonly used Solana types
-export { 
-  PublicKey, 
-  Transaction, 
+export {
+  PublicKey,
+  Transaction,
   TransactionInstruction,
   Connection,
   Keypair
 } from '@solana/web3.js';
 
+export { Paymaster } from './core/paymaster';
+export * from './core/contract';
