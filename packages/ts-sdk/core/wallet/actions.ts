@@ -49,7 +49,6 @@ export const connectAction = async (
 
         try {
             const dialogResult: DialogResult = await dialogManager.openConnect();
-
             const paymaster = new Paymaster(config.paymasterUrl);
             const smartWallet = new LazorkitClient(get().connection);
 
@@ -57,13 +56,20 @@ export const connectAction = async (
             const smartWalletData = await smartWallet.getSmartWalletByCredentialHash(credentialHash);
 
             let smartWalletAddress: string;
+            let passkeyPubkey: string;
+            if (!dialogResult.publicKey && smartWalletData) {
+                passkeyPubkey = Buffer.from(smartWalletData.passkeyPubkey).toString('base64');
+                localStorage.setItem('PUBLIC_KEY', passkeyPubkey);
+            } else {
+                passkeyPubkey = dialogResult.publicKey;
+            }
 
             if (smartWalletData) {
                 smartWalletAddress = smartWalletData.smartWallet.toBase58();
             } else {
                 const feePayer = await paymaster.getPayer();
                 const initSmartWalletTxn = await smartWallet.createSmartWalletTxn({
-                    passkeyPublicKey: asPasskeyPublicKey(getPasskeyPublicKey(dialogResult.publicKey)),
+                    passkeyPublicKey: asPasskeyPublicKey(getPasskeyPublicKey(passkeyPubkey)),
                     payer: feePayer,
                     credentialIdBase64: dialogResult.credentialId,
                 });
@@ -73,7 +79,7 @@ export const connectAction = async (
 
             const walletInfo: WalletInfo = {
                 credentialId: dialogResult.credentialId,
-                passkeyPubkey: getPasskeyPublicKey(dialogResult.publicKey),
+                passkeyPubkey: getPasskeyPublicKey(passkeyPubkey),
                 expo: 'web',
                 platform: navigator.platform,
                 smartWallet: smartWalletAddress,
@@ -170,12 +176,22 @@ export const signAndSendTransactionAction = async (
             .replace(/\+/g, '-')
             .replace(/\//g, '_')
             .replace(/=+$/, '');
+        const latest = await connection.getLatestBlockhash();
 
+        const messageV0 = new anchor.web3.TransactionMessage({
+            payerKey: feePayer,
+            recentBlockhash: latest.blockhash,
+            instructions: [instruction],
+        }).compileToV0Message();
+
+        const transaction = new anchor.web3.VersionedTransaction(messageV0);
+
+        const base64Tx = Buffer.from(transaction.serialize()).toString("base64");
         const dialogManager = createDialogManager(config);
+        const credentialIdBase64 = wallet.credentialId;
 
         try {
-            const signResult: SignResult = await dialogManager.openSign(encodedChallenge);
-
+            const signResult: SignResult = await dialogManager.openSign(encodedChallenge, base64Tx, credentialIdBase64);
             const signResponse: SignResponse = {
                 msg: encodedChallenge,
                 normalized: signResult.signature,
@@ -198,15 +214,15 @@ export const signAndSendTransactionAction = async (
                 cpiInstructions: [instruction],
                 timestamp,
                 credentialHash,
-            });
+            }, { useVersionedTransaction: true });
 
-            await paymaster.signAndSendVersionedTransaction(createChunkTransaction as anchor.web3.VersionedTransaction);
-
+            const createChunkSignature = await paymaster.signAndSendVersionedTransaction(createChunkTransaction as anchor.web3.VersionedTransaction);
+            await connection.confirmTransaction(createChunkSignature);
             const executeChunkTransaction = await smartWallet.executeChunkTxn({
                 payer: feePayer,
                 smartWallet: new anchor.web3.PublicKey(wallet.smartWallet),
                 cpiInstructions: [instruction],
-            });
+            }, { useVersionedTransaction: true });
 
             const signature = await paymaster.signAndSendVersionedTransaction(executeChunkTransaction as anchor.web3.VersionedTransaction);
 

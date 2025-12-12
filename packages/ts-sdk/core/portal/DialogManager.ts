@@ -115,7 +115,7 @@ export class DialogManager extends EventEmitter {
    * @param message - Message to sign
    * @returns Promise that resolves with signature result
    */
-  async openSign(message: string): Promise<SignResult> {
+  async openSign(message: string, transaction: string, credentialId: string): Promise<SignResult> {
     return new Promise<SignResult>((resolve, reject) => {
       const cleanup = () => {
         this.off('sign-result', signHandler);
@@ -160,11 +160,11 @@ export class DialogManager extends EventEmitter {
 
       if (shouldUsePopup) {
         const encodedMessage = encodeURIComponent(message);
-        const signUrl = `${this.config.portalUrl}?action=${API_ENDPOINTS.SIGN}&message=${encodedMessage}`;
+        const signUrl = `${this.config.portalUrl}?action=${API_ENDPOINTS.SIGN}&message=${encodedMessage}&transaction=${encodeURIComponent(transaction)}&credentialId=${encodeURIComponent(credentialId)}`;
         this.openPopup(signUrl).catch(reject);
       } else {
         const encodedMessage = encodeURIComponent(message);
-        const signUrl = `${this.config.portalUrl}?action=${API_ENDPOINTS.SIGN}&message=${encodedMessage}`;
+        const signUrl = `${this.config.portalUrl}?action=${API_ENDPOINTS.SIGN}&message=${encodedMessage}&transaction=${encodeURIComponent(transaction)}&credentialId=${encodeURIComponent(credentialId)}`;
         this.openSignDialog(signUrl).catch(reject);
       }
     });
@@ -342,17 +342,6 @@ export class DialogManager extends EventEmitter {
    */
   private createModal(): void {
     this.logger.debug(`Creating ${this.isMobileDevice() ? 'mobile' : 'desktop'} dialog`);
-
-    // Pre-load credentials from localStorage
-    const credentialId = localStorage.getItem('CREDENTIAL_ID');
-    const publicKey = localStorage.getItem('PUBLIC_KEY');
-    const smartWalletAddress = localStorage.getItem('SMART_WALLET_ADDRESS');
-
-    console.log('Current credentials before dialog creation:', {
-      credentialIdExists: !!credentialId,
-      publicKeyExists: !!publicKey,
-      smartWalletAddressExists: !!smartWalletAddress
-    });
 
     // Remove any existing dialog
     if (this.dialogRef && this.dialogRef.parentNode) {

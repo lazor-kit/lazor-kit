@@ -231,9 +231,6 @@ export class Paymaster {
    */
     private async attemptSignAndSendVersionedTransaction(transaction: VersionedTransaction, attempt: number = 1): Promise<string> {
         try {
-            const serialized = Buffer.from(
-                transaction.message.serialize()
-            ).toString("base64");
             const response = await fetch(`${this.endpoint}`, {
                 method: 'POST',
                 headers: {
@@ -244,7 +241,9 @@ export class Paymaster {
                     method: 'signAndSendTransaction',
                     id: 1,
                     params: [
-                        serialized
+                        Buffer.from(
+                            transaction.serialize()
+                        ).toString("base64")
                     ]
                 })
             });
