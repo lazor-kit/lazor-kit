@@ -13,6 +13,7 @@ export interface WalletInfo {
   readonly platform: string;
   readonly smartWallet: string;
   readonly walletDevice: string;
+  readonly accountName?: string;
 }
 
 export interface WalletConfig {
@@ -34,7 +35,7 @@ export const storage = {
       return null;
     }
   },
-  
+
   setItem: async (name: string, value: string): Promise<void> => {
     try {
       localStorage.setItem(name, value);
@@ -45,7 +46,7 @@ export const storage = {
       });
     }
   },
-  
+
   removeItem: async (name: string): Promise<void> => {
     try {
       localStorage.removeItem(name);

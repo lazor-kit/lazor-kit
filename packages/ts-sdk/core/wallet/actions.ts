@@ -84,6 +84,7 @@ export const connectAction = async (
                 platform: navigator.platform,
                 smartWallet: smartWalletAddress,
                 walletDevice: '',
+                accountName: dialogResult.accountName,
             };
 
             await StorageManager.saveWallet(walletInfo);
@@ -215,7 +216,6 @@ export const signAndSendTransactionAction = async (
                 timestamp,
                 credentialHash,
             }, { useVersionedTransaction: true });
-
             const createChunkSignature = await paymaster.signAndSendVersionedTransaction(createChunkTransaction as anchor.web3.VersionedTransaction);
             await connection.confirmTransaction(createChunkSignature);
             const executeChunkTransaction = await smartWallet.executeChunkTxn({
