@@ -27,9 +27,7 @@ import {
   ProposalStatusRecord,
   ProposalWithTxnList,
 } from '@/components/VisualizeProposal';
-import {
-  VaultTransactionLike,
-} from '@/components/VisualizeTxn';
+import { VaultTransactionLike } from '@/components/VisualizeTxn';
 import {
   useMultisigActions,
   useMultisigState,
@@ -42,7 +40,8 @@ const { Proposal } = multisigSdk.accounts;
 export default function MultisigDashboardScreen() {
   const { currentMultisig, proposals, loading, errors } = useMultisigState();
   const { fetchProposals } = useMultisigActions();
-  const { smartWalletPubkey, connection, signMessage } = useLazorWallet();
+  const { smartWalletPubkey, connection, signAndSendTransaction } =
+    useLazorWallet();
 
   const [activeTab, setActiveTab] = useState<'available' | 'unavailable'>(
     'available'
@@ -62,6 +61,8 @@ export default function MultisigDashboardScreen() {
 
   const loadDataMultisig = async () => {
     if (!currentMultisig) return;
+    console.log(currentMultisig);
+
     try {
       const multisigPda = new PublicKey(currentMultisig.multisigId);
       const multisigAccount = await Multisig.fromAccountAddress(
@@ -179,14 +180,18 @@ export default function MultisigDashboardScreen() {
       p.proposal.status.kind === 'Draft' ||
       p.proposal.status.kind === 'Executing'
   );
+
   const unavailablePairs = pairs.filter(
-    (p) => !(
-      p.proposal.status.kind === 'Active' ||
-      p.proposal.status.kind === 'Draft' ||
-      p.proposal.status.kind === 'Executing'
-    )
+    (p) =>
+      !(
+        p.proposal.status.kind === 'Active' ||
+        p.proposal.status.kind === 'Draft' ||
+        p.proposal.status.kind === 'Executing'
+      )
   );
-  const currentPairs = activeTab === 'available' ? availablePairs : unavailablePairs;
+
+  const currentPairs =
+    activeTab === 'available' ? availablePairs : unavailablePairs;
 
   // Show loading if no current multisig
   if (!currentMultisig) {
@@ -227,7 +232,7 @@ export default function MultisigDashboardScreen() {
 
                 try {
                   const payer = Keypair.fromSecretKey(
-                    base58.decode(process.env.EXPO_PUBLIC_PRIVATE_KEY!)
+                    bs58.decode(process.env.EXPO_PUBLIC_PRIVATE_KEY!)
                   );
 
                   // If you've saved your createKey, you can define it as a static PublicKey
@@ -253,7 +258,6 @@ export default function MultisigDashboardScreen() {
                   const ix = multisigSdk.instructions.proposalCreate({
                     multisigPda,
                     transactionIndex: BigInt(currentTransactionIndex),
-                    // Must have "Voter" permissions at minimum
                     creator: smartWalletPubkey,
                     rentPayer: payer.publicKey,
                   });
@@ -301,51 +305,9 @@ export default function MultisigDashboardScreen() {
                   //   rentPayer: payer.publicKey,
                   // });
 
-                  const action: SmartWalletActionArgs = {
-                    type: SmartWalletAction.CreateChunk,
-                    args: {
-                      cpiInstruction: ix,
-                      policyInstruction: null,
-                    },
-                  };
-
-                  await signMessage(action, {
-                    onSuccess: async (txns) => {
-                      try {
-                        for (const txn of txns) {
-                          // check if versioned txn
-                          if (txn.version === 0) {
-                            txn.sign([payer]);
-                            const txnHash = await connection.sendTransaction(
-                              txn,
-                              {
-                                skipPreflight: true,
-                              }
-                            );
-
-                            console.log(
-                              'Transaction signed successfully:',
-                              txnHash
-                            );
-                          } else {
-                            txn.partialSign(payer);
-
-                            const txnHash = await connection.sendRawTransaction(
-                              txn.serialize(),
-                              {
-                                skipPreflight: true,
-                              }
-                            );
-
-                            console.log(
-                              'Transaction signed successfully:',
-                              txnHash
-                            );
-                          }
-                        }
-                      } catch (error) {
-                        console.error('Error sending transaction:', error);
-                      }
+                  await signAndSendTransaction([ix], {
+                    onSuccess: async (signature) => {
+                      console.log('signature', signature);
 
                       // setTransactionHash(txnHash);
                       // setShowTransactionResult(true);
@@ -395,7 +357,7 @@ export default function MultisigDashboardScreen() {
                 style={[
                   styles.memberRow,
                   index < (currentMultisig?.members.length || 0) - 1 &&
-                  styles.memberRowBorder,
+                    styles.memberRowBorder,
                 ]}
                 onPress={() => copyToClipboard(member)}
                 accessibilityLabel={`Copy member address ${shortAddress(
@@ -505,12 +467,11 @@ export default function MultisigDashboardScreen() {
                 pairs={currentPairs}
                 currentMember={smartWalletPubkey ?? null}
                 connection={connection}
-                signMessage={signMessage}
+                signMessage={signAndSendTransaction}
               />
             )}
           </View>
         </View>
-
       </ScrollView>
     </SafeAreaView>
   );

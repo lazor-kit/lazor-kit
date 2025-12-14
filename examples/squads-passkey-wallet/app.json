@@ -3,6 +3,7 @@
     "name": "lazorkit-multisig",
     "slug": "lazorkit-multisig",
     "version": "1.0.0",
+    "main": "expo-router/entry",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "lazorkitmultisig",

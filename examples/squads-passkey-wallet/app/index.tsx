@@ -4,7 +4,7 @@ import {
   SmartWalletAction,
   useLazorWallet,
 } from '@lazorkit/wallet-mobile-adapter';
-import { Keypair, PublicKey } from '@solana/web3.js';
+import { Keypair, PublicKey, Transaction } from '@solana/web3.js';
 import * as multisigSdk from '@sqds/multisig';
 import { router } from 'expo-router';
 import React, { useEffect, useState } from 'react';
@@ -34,8 +34,13 @@ const { Multisig } = multisigSdk.accounts;
 export default function CreateMultisigScreen() {
   const { createMultisig, setCurrentMultisig } = useMultisigActions();
   const { errors } = useMultisigState();
-  const { isConnected, connect, smartWalletPubkey, connection, signMessage } =
-    useLazorWallet();
+  const {
+    isConnected,
+    connect,
+    smartWalletPubkey,
+    connection,
+    signAndSendTransaction,
+  } = useLazorWallet();
 
   // Form state
   const [name, setName] = useState('Test multisig');
@@ -88,6 +93,8 @@ export default function CreateMultisigScreen() {
 
   useEffect(() => {
     const fetchAccountData = async () => {
+      setPageLoading('Loading...');
+
       if (smartWalletPubkey) {
         const [multisigPda] = multisigSdk.getMultisigPda({
           createKey: smartWalletPubkey,
@@ -114,11 +121,10 @@ export default function CreateMultisigScreen() {
           router.replace('/(tabs)');
         }
       }
+      setPageLoading(null);
     };
 
     fetchAccountData();
-
-    setPageLoading('Loading...');
   }, []);
 
   const handleCreateMultisig = async () => {
@@ -127,27 +133,20 @@ export default function CreateMultisigScreen() {
     if (smartWalletPubkey) {
       try {
         setPageLoading('Create multisig...');
-
         const [multisigPda] = multisigSdk.getMultisigPda({
           createKey: smartWalletPubkey,
         });
-
         const payer = Keypair.fromSecretKey(
           bs58.decode(process.env.EXPO_PUBLIC_PRIVATE_KEY!)
         );
-
         const programConfigPda = multisigSdk.getProgramConfigPda({})[0];
-
         const programConfig =
           await multisigSdk.accounts.ProgramConfig.fromAccountAddress(
             connection,
             programConfigPda
           );
-
         const configTreasury = programConfig.treasury;
-
         const membersList = [...members, smartWalletPubkey.toString()];
-
         const createMultisigIns = multisigSdk.instructions.multisigCreateV2({
           // Must sign the transaction, unless the .rpc method is used.
           createKey: smartWalletPubkey,
@@ -175,7 +174,6 @@ export default function CreateMultisigScreen() {
           // Rent reclaim account
           rentCollector: null,
         });
-
         const action: SmartWalletActionArgs = {
           type: SmartWalletAction.CreateChunk,
           args: {
@@ -184,36 +182,21 @@ export default function CreateMultisigScreen() {
           },
         };
 
-        await signMessage(action, {
-          onSuccess: async (txns) => {
-            try {
-              for (const txn of txns) {
-                // check if versioned txn
-                if (txn.version === 0) {
-                  txn.sign([payer]);
-                  const txnHash = await connection.sendTransaction(txn, {
-                    skipPreflight: true,
-                  });
+        const txn = new Transaction().add(createMultisigIns);
+        txn.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+        txn.feePayer = smartWalletPubkey;
+        console.log(
+          txn
+            .serialize({
+              verifySignatures: false,
+              requireAllSignatures: false,
+            })
+            .toString('base64')
+        );
 
-                  console.log('Transaction signed successfully:', txnHash);
-                } else {
-                  txn.partialSign(payer);
-
-                  const txnHash = await connection.sendRawTransaction(
-                    txn.serialize(),
-                    {
-                      skipPreflight: true,
-                    }
-                  );
-
-                  console.log('Transaction signed successfully:', txnHash);
-                }
-              }
-            } catch (error) {
-              console.error('Error sending transaction:', error);
-            }
-
-            // setTransactionHash(txnHash);
+        await signAndSendTransaction([createMultisigIns], {
+          onSuccess: async (signature) => {
+            console.log('signature', signature);
             // setShowTransactionResult(true);
           },
           onFail: (error) => {
@@ -221,23 +204,19 @@ export default function CreateMultisigScreen() {
           },
           redirectUrl: 'exp://localhost:8081',
         });
-
         const multisig = await createMultisig({
           name: name.trim(),
           threshold,
           members: members.filter((member) => member.trim()),
           multisigId: multisigPda.toString(),
         });
-
         // Lưu multisig vào global state
         setCurrentMultisig(multisig);
-
         Toast.show({
           type: 'success',
           text1: 'Success',
           text2: 'Multisig created successfully!',
         });
-
         // Chuyển trang
       } catch (error) {
         Toast.show({
@@ -293,17 +272,66 @@ export default function CreateMultisigScreen() {
                 <ThresholdInput
                   value={threshold}
                   onChange={setThreshold}
-                  membersCount={
-                    [...members, smartWalletPubkey.toString()].filter((m) =>
-                      m.trim()
-                    ).length
-                  }
+                  membersCount={(() => {
+                    // Debug: In ra giá trị để kiểm tra
+                    console.log('=== DEBUG membersCount ===');
+                    console.log('smartWalletPubkey:', smartWalletPubkey);
+                    console.log(
+                      'smartWalletPubkey type:',
+                      typeof smartWalletPubkey
+                    );
+                    console.log('members:', members);
+                    console.log('members type:', typeof members);
+                    console.log('members is array:', Array.isArray(members));
+
+                    const allMembers = [
+                      ...members,
+                      ...(smartWalletPubkey
+                        ? [smartWalletPubkey.toString()]
+                        : []),
+                    ];
+                    console.log('allMembers:', allMembers);
+                    console.log(
+                      'allMembers items:',
+                      allMembers.map((m, i) => ({
+                        index: i,
+                        value: m,
+                        type: typeof m,
+                        isString: typeof m === 'string',
+                        hasTrim:
+                          typeof m === 'string' && typeof m.trim === 'function',
+                      }))
+                    );
+
+                    const filtered = allMembers.filter((m) => {
+                      console.log('Filtering item:', m, 'type:', typeof m);
+                      if (!m) {
+                        console.log('  -> Item is falsy, skipping');
+                        return false;
+                      }
+                      if (typeof m !== 'string') {
+                        console.log('  -> Item is not string, skipping');
+                        return false;
+                      }
+                      const trimmed = m.trim();
+                      console.log('  -> Trimmed result:', trimmed);
+                      return trimmed.length > 0;
+                    });
+                    console.log('filtered length:', filtered.length);
+                    console.log('=== END DEBUG ===');
+                    return filtered.length;
+                  })()}
                   error={validationErrors.threshold}
                 />
 
                 {/* Members */}
                 <MembersList
-                  members={[...members, smartWalletPubkey.toString()]}
+                  members={[
+                    ...members,
+                    ...(smartWalletPubkey
+                      ? [smartWalletPubkey.toString()]
+                      : []),
+                  ]}
                   onChange={setMembers}
                   errors={validationErrors}
                 />

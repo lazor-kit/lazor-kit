@@ -1,3 +1,4 @@
+import React from 'react';
 import {
   DarkTheme,
   DefaultTheme,
@@ -16,6 +17,11 @@ import { LazorKitProvider } from '@lazorkit/wallet-mobile-adapter';
 import { Buffer } from 'buffer';
 global.Buffer = Buffer;
 
+// Polyfill bs58 for React Native
+import * as bs58 from 'bs58';
+// @ts-ignore
+global.bs58 = bs58;
+
 export default function RootLayout() {
   const colorScheme = useColorScheme();
   const [loaded] = useFonts({
@@ -32,7 +38,9 @@ export default function RootLayout() {
       <LazorKitProvider
         rpcUrl={process.env.EXPO_PUBLIC_SOLANA_RPC_URL!}
         ipfsUrl='https://portal.lazor.sh'
-        paymasterUrl='https://kora.devnet.lazorkit.com'
+        configPaymaster={{
+          paymasterUrl: 'https://kora.devnet.lazorkit.com',
+        }}
         isDebug={true}
       >
         <MultisigProvider>
