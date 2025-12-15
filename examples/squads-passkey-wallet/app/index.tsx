@@ -1,9 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import {
-  SmartWalletActionArgs,
-  SmartWalletAction,
-  useLazorWallet,
-} from '@lazorkit/wallet-mobile-adapter';
+import { useLazorWallet } from '@lazorkit/wallet-mobile-adapter';
 import { Keypair, PublicKey, Transaction } from '@solana/web3.js';
 import * as multisigSdk from '@sqds/multisig';
 import { router } from 'expo-router';
@@ -25,8 +21,6 @@ import ThresholdInput from '../components/ThresholdInput';
 import { DEFAULT_THRESHOLD, TEST_MEMBERS } from '../constants/testData';
 import { useMultisigActions, useMultisigState } from '../store/MultisigContext';
 import { validateCreateMultisigForm } from '../utils/validation';
-import * as bs58 from 'bs58';
-import { Buffer } from 'buffer';
 
 const { Permissions } = multisigSdk.types;
 const { Multisig } = multisigSdk.accounts;
@@ -136,9 +130,6 @@ export default function CreateMultisigScreen() {
         const [multisigPda] = multisigSdk.getMultisigPda({
           createKey: smartWalletPubkey,
         });
-        const payer = Keypair.fromSecretKey(
-          bs58.decode(process.env.EXPO_PUBLIC_PRIVATE_KEY!)
-        );
         const programConfigPda = multisigSdk.getProgramConfigPda({})[0];
         const programConfig =
           await multisigSdk.accounts.ProgramConfig.fromAccountAddress(
@@ -151,7 +142,7 @@ export default function CreateMultisigScreen() {
           // Must sign the transaction, unless the .rpc method is used.
           createKey: smartWalletPubkey,
           // The creator & fee payer
-          creator: payer.publicKey,
+          creator: smartWalletPubkey,
           // The PDA of the multisig you are creating, derived by a random PublicKey
           multisigPda,
           // Here the config authority will be the system program
@@ -174,36 +165,20 @@ export default function CreateMultisigScreen() {
           // Rent reclaim account
           rentCollector: null,
         });
-        const action: SmartWalletActionArgs = {
-          type: SmartWalletAction.CreateChunk,
-          args: {
-            cpiInstructions: [createMultisigIns],
-            policyInstruction: null,
-          },
-        };
 
-        const txn = new Transaction().add(createMultisigIns);
-        txn.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-        txn.feePayer = smartWalletPubkey;
-        console.log(
-          txn
-            .serialize({
-              verifySignatures: false,
-              requireAllSignatures: false,
-            })
-            .toString('base64')
+        await signAndSendTransaction(
+          { instructions: [createMultisigIns] },
+          {
+            onSuccess: async (signature) => {
+              console.log('signature', signature);
+              // setShowTransactionResult(true);
+            },
+            onFail: (error) => {
+              throw new Error(`Failed to sign transaction: ${error.message}`);
+            },
+            redirectUrl: 'exp://localhost:8081',
+          }
         );
-
-        await signAndSendTransaction([createMultisigIns], {
-          onSuccess: async (signature) => {
-            console.log('signature', signature);
-            // setShowTransactionResult(true);
-          },
-          onFail: (error) => {
-            throw new Error(`Failed to sign transaction: ${error.message}`);
-          },
-          redirectUrl: 'exp://localhost:8081',
-        });
         const multisig = await createMultisig({
           name: name.trim(),
           threshold,

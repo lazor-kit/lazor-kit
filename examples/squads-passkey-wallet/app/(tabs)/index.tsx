@@ -5,7 +5,13 @@ import {
   SmartWalletAction,
   useLazorWallet,
 } from '@lazorkit/wallet-mobile-adapter';
-import { Keypair, PublicKey } from '@solana/web3.js';
+import {
+  Keypair,
+  LAMPORTS_PER_SOL,
+  PublicKey,
+  SystemProgram,
+  TransactionMessage,
+} from '@solana/web3.js';
 import * as multisigSdk from '@sqds/multisig';
 import * as bs58 from 'bs58';
 import * as Clipboard from 'expo-clipboard';
@@ -190,6 +196,55 @@ export default function MultisigDashboardScreen() {
       )
   );
 
+  const testApproveProposal = async () => {
+    if (!smartWalletPubkey) {
+      Toast.show({
+        type: 'error',
+        text1: 'Error',
+        text2: 'Please connect your wallet first',
+      });
+      return;
+    }
+
+    // Derive the multisig PDA
+    const [multisigPda] = multisigSdk.getMultisigPda({
+      createKey: smartWalletPubkey,
+    });
+    // or
+    // const multisigPda = new PublicKey("<your multisig key>");
+
+    // Get deserialized multisig account info
+    const multisigInfo = await multisigSdk.accounts.Multisig.fromAccountAddress(
+      connection,
+      multisigPda
+    );
+
+    // Get the current transaction index
+    const transactionIndex = Number(multisigInfo.transactionIndex);
+    // or, if this is tied to your first transaction
+    // const transactionIndex = 1n;
+
+    const ix = multisigSdk.instructions.proposalApprove({
+      multisigPda,
+      transactionIndex: BigInt(transactionIndex),
+      // Member must have "Voter" permissions
+      member: smartWalletPubkey,
+    });
+
+    await signAndSendTransaction(
+      { instructions: [ix] },
+      {
+        onSuccess: async (signature) => {
+          console.log('signature', signature);
+        },
+        onFail: (error) => {
+          throw new Error(`Failed to sign transaction: ${error.message}`);
+        },
+        redirectUrl: 'exp://localhost:8081',
+      }
+    );
+  };
+
   const currentPairs =
     activeTab === 'available' ? availablePairs : unavailablePairs;
 
@@ -231,10 +286,6 @@ export default function MultisigDashboardScreen() {
                 }
 
                 try {
-                  const payer = Keypair.fromSecretKey(
-                    bs58.decode(process.env.EXPO_PUBLIC_PRIVATE_KEY!)
-                  );
-
                   // If you've saved your createKey, you can define it as a static PublicKey
                   const multisigPda = new PublicKey(currentMultisig.multisigId);
                   // Get deserialized multisig account info
@@ -254,71 +305,61 @@ export default function MultisigDashboardScreen() {
                   const currentTransactionIndex = Number(
                     multisigInfo.transactionIndex
                   );
+                  const newTransactionIndex = BigInt(
+                    currentTransactionIndex + 1
+                  );
+
+                  const transferInstruction = SystemProgram.transfer({
+                    // The transfer is being signed by the vault that's executing
+                    fromPubkey: vaultPda,
+                    toPubkey: new PublicKey(
+                      '7Pkkhm8YeoBXFGKHTJXJ8ckdYiqtPdVWMefEVqK5vXed'
+                    ),
+                    lamports: 0.01 * LAMPORTS_PER_SOL,
+                  });
+
+                  // Build a message with instructions we want to execute
+                  const testTransferMessage = new TransactionMessage({
+                    payerKey: vaultPda,
+                    recentBlockhash: (await connection.getLatestBlockhash())
+                      .blockhash,
+                    instructions: [transferInstruction],
+                  });
+
+                  const vaultTransactionCreateInstruction =
+                    multisigSdk.instructions.vaultTransactionCreate({
+                      multisigPda,
+                      transactionIndex: BigInt(newTransactionIndex),
+                      creator: smartWalletPubkey,
+                      vaultIndex: 0,
+                      ephemeralSigners: 0,
+                      transactionMessage: testTransferMessage,
+                      memo: 'Our first transfer!',
+                    });
 
                   const ix = multisigSdk.instructions.proposalCreate({
                     multisigPda,
-                    transactionIndex: BigInt(currentTransactionIndex),
+                    transactionIndex: BigInt(newTransactionIndex),
                     creator: smartWalletPubkey,
-                    rentPayer: payer.publicKey,
                   });
 
-                  // const { instruction: ix } =
-                  //   await multisigSdk.instructions.vaultTransactionExecute({
-                  //     connection,
-                  //     multisigPda,
-                  //     transactionIndex: BigInt(currentTransactionIndex),
-                  //     // Member must have "Executor" permissions
-                  //     member: smartWalletPubkey,
-                  //   });
+                  await signAndSendTransaction(
+                    { instructions: [vaultTransactionCreateInstruction, ix] },
+                    {
+                      onSuccess: async (signature) => {
+                        console.log('signature', signature);
 
-                  // const newTransactionIndex = BigInt(
-                  //   currentTransactionIndex + 1
-                  // );
-
-                  // const to = new PublicKey(
-                  //   'hij78MKbJSSs15qvkHWTDCtnmba2c1W4r1V22g5sD8w'
-                  // );
-
-                  // const transferInstruction = SystemProgram.transfer({
-                  //   // The transfer is being signed by the vault that's executing
-                  //   fromPubkey: vaultPda,
-                  //   toPubkey: to,
-                  //   lamports: 0.001 * LAMPORTS_PER_SOL,
-                  // });
-
-                  // // Build a message with instructions we want to execute
-                  // const testTransferMessage = new TransactionMessage({
-                  //   payerKey: vaultPda,
-                  //   recentBlockhash: (await connection.getLatestBlockhash())
-                  //     .blockhash,
-                  //   instructions: [transferInstruction],
-                  // });
-
-                  // const ix = multisigSdk.instructions.vaultTransactionCreate({
-                  //   multisigPda,
-                  //   transactionIndex: newTransactionIndex,
-                  //   creator: smartWalletPubkey,
-                  //   vaultIndex: 0,
-                  //   ephemeralSigners: 0,
-                  //   transactionMessage: testTransferMessage,
-                  //   memo: 'Our first transfer!',
-                  //   rentPayer: payer.publicKey,
-                  // });
-
-                  await signAndSendTransaction([ix], {
-                    onSuccess: async (signature) => {
-                      console.log('signature', signature);
-
-                      // setTransactionHash(txnHash);
-                      // setShowTransactionResult(true);
-                    },
-                    onFail: (error) => {
-                      throw new Error(
-                        `Failed to sign transaction: ${error.message}`
-                      );
-                    },
-                    redirectUrl: 'exp://localhost:8081',
-                  });
+                        // setTransactionHash(txnHash);
+                        // setShowTransactionResult(true);
+                      },
+                      onFail: (error) => {
+                        throw new Error(
+                          `Failed to sign transaction: ${error.message}`
+                        );
+                      },
+                      redirectUrl: 'exp://localhost:8081',
+                    }
+                  );
 
                   Toast.show({
                     type: 'success',
@@ -410,6 +451,26 @@ export default function MultisigDashboardScreen() {
               )}
             </TouchableOpacity>
           </View>
+
+          {/* Test function button approve proposal */}
+          <TouchableOpacity
+            style={{
+              backgroundColor: '#3B82F6',
+              borderRadius: 8,
+              paddingHorizontal: 16,
+              paddingVertical: 8,
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 2 },
+              shadowOpacity: 0.1,
+              shadowRadius: 4,
+              elevation: 3,
+            }}
+            onPress={() => testApproveProposal()}
+          >
+            <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '600' }}>
+              Test Approve Proposal
+            </Text>
+          </TouchableOpacity>
 
           {/* Tabs */}
           <View style={styles.tabContainer}>
