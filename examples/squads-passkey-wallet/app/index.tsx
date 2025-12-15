@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useLazorWallet } from '@lazorkit/wallet-mobile-adapter';
+import { useWallet } from '@lazorkit/wallet-mobile-adapter';
 import { Keypair, PublicKey, Transaction } from '@solana/web3.js';
 import * as multisigSdk from '@sqds/multisig';
 import { router } from 'expo-router';
@@ -34,7 +34,7 @@ export default function CreateMultisigScreen() {
     smartWalletPubkey,
     connection,
     signAndSendTransaction,
-  } = useLazorWallet();
+  } = useWallet();
 
   // Form state
   const [name, setName] = useState('Test multisig');

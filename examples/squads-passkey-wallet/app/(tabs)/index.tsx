@@ -3,13 +3,17 @@
 import {
   SmartWalletActionArgs,
   SmartWalletAction,
-  useLazorWallet,
+  useWallet,
 } from '@lazorkit/wallet-mobile-adapter';
 import {
+  AccountMeta,
+  AddressLookupTableProgram,
   Keypair,
   LAMPORTS_PER_SOL,
   PublicKey,
+  sendAndConfirmTransaction,
   SystemProgram,
+  Transaction,
   TransactionMessage,
 } from '@solana/web3.js';
 import * as multisigSdk from '@sqds/multisig';
@@ -46,8 +50,7 @@ const { Proposal } = multisigSdk.accounts;
 export default function MultisigDashboardScreen() {
   const { currentMultisig, proposals, loading, errors } = useMultisigState();
   const { fetchProposals } = useMultisigActions();
-  const { smartWalletPubkey, connection, signAndSendTransaction } =
-    useLazorWallet();
+  const { smartWalletPubkey, connection, signAndSendTransaction } = useWallet();
 
   const [activeTab, setActiveTab] = useState<'available' | 'unavailable'>(
     'available'
@@ -234,10 +237,10 @@ export default function MultisigDashboardScreen() {
     await signAndSendTransaction(
       { instructions: [ix] },
       {
-        onSuccess: async (signature) => {
+        onSuccess: async (signature: any) => {
           console.log('signature', signature);
         },
-        onFail: (error) => {
+        onFail: (error: any) => {
           throw new Error(`Failed to sign transaction: ${error.message}`);
         },
         redirectUrl: 'exp://localhost:8081',
@@ -343,16 +346,74 @@ export default function MultisigDashboardScreen() {
                     creator: smartWalletPubkey,
                   });
 
-                  await signAndSendTransaction(
-                    { instructions: [vaultTransactionCreateInstruction, ix] },
-                    {
-                      onSuccess: async (signature) => {
-                        console.log('signature', signature);
+                  const payer = Keypair.fromSecretKey(
+                    bs58.decode(process.env.EXPO_PUBLIC_PRIVATE_KEY!)
+                  );
+                  const slot = await connection.getSlot();
 
-                        // setTransactionHash(txnHash);
-                        // setShowTransactionResult(true);
+                  const [lookupTableInst, lookupTableAddress] =
+                    AddressLookupTableProgram.createLookupTable({
+                      authority: payer.publicKey,
+                      payer: payer.publicKey,
+                      recentSlot: slot,
+                    });
+
+                  const extendInstruction =
+                    AddressLookupTableProgram.extendLookupTable({
+                      payer: payer.publicKey,
+                      authority: payer.publicKey,
+                      lookupTable: lookupTableAddress,
+                      addresses: [
+                        payer.publicKey,
+                        SystemProgram.programId,
+                        ...vaultTransactionCreateInstruction.keys.map(
+                          (key: AccountMeta) => key.pubkey
+                        ),
+                        ...ix.keys.map((key: AccountMeta) => key.pubkey),
+                        ...transferInstruction.keys.map(
+                          (key: AccountMeta) => key.pubkey
+                        ),
+                      ],
+                    });
+
+                  const txn = new Transaction()
+                    .add(lookupTableInst)
+                    .add(extendInstruction);
+                  txn.recentBlockhash = (
+                    await connection.getLatestBlockhash()
+                  ).blockhash;
+
+                  const sig = await sendAndConfirmTransaction(
+                    connection,
+                    txn,
+                    [payer],
+                    {
+                      skipPreflight: true,
+                    }
+                  );
+
+                  console.log('sig', sig);
+
+                  const lookupTableAccount = (
+                    await connection.getAddressLookupTable(lookupTableAddress)
+                  ).value;
+
+                  if (!lookupTableAccount) {
+                    throw new Error('Lookup table account not found');
+                  }
+
+                  await signAndSendTransaction(
+                    {
+                      instructions: [vaultTransactionCreateInstruction, ix],
+                      transactionOptions: {
+                        addressLookupTableAccounts: [lookupTableAccount],
                       },
-                      onFail: (error) => {
+                    },
+                    {
+                      onSuccess: async (signature: any) => {
+                        console.log('signature', signature);
+                      },
+                      onFail: (error: any) => {
                         throw new Error(
                           `Failed to sign transaction: ${error.message}`
                         );

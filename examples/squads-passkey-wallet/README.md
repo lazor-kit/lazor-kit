@@ -52,9 +52,9 @@ global.Buffer = Buffer;
 ### Connect wallet (LazorKit)
 
 ```tsx
-import { useLazorWallet } from '@lazorkit/wallet-mobile-adapter';
+import { useWallet } from '@lazorkit/wallet-mobile-adapter';
 
-const { isConnected, connect, smartWalletPubkey, connection, signMessage } = useLazorWallet();
+const { isConnected, connect, smartWalletPubkey, connection, signMessage } = useWallet();
 
 async function onConnect() {
   await connect({ redirectUrl: 'exp://localhost:8081' });
