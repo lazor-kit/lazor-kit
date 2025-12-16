@@ -235,7 +235,10 @@ export default function MultisigDashboardScreen() {
     });
 
     await signAndSendTransaction(
-      { instructions: [ix] },
+      {
+        instructions: [ix],
+        transactionOptions: { clusterSimulation: 'devnet' },
+      },
       {
         onSuccess: async (signature: any) => {
           console.log('signature', signature);
@@ -407,6 +410,7 @@ export default function MultisigDashboardScreen() {
                       instructions: [vaultTransactionCreateInstruction, ix],
                       transactionOptions: {
                         addressLookupTableAccounts: [lookupTableAccount],
+                        clusterSimulation: 'devnet',
                       },
                     },
                     {
