@@ -76,20 +76,20 @@ export async function buildTransaction(
     instructions,
     computeUnitLimit
   );
-  const lookupTables = addressLookupTables ? addressLookupTables : [];
+
+  const shouldUseVersioned =
+    addressLookupTables !== undefined && addressLookupTables.length > 0;
 
   // Get recent blockhash
   const recentBlockhash =
     customBlockhash || (await connection.getLatestBlockhash()).blockhash;
 
-  if (lookupTables.length > 0) {
-    // Build versioned transaction
-    console.log('lookupTables in buildTransaction', lookupTables);
+  if (shouldUseVersioned) {
     const message = new anchor.web3.TransactionMessage({
       payerKey: payer,
       recentBlockhash,
       instructions: finalInstructions,
-    }).compileToV0Message(lookupTables);
+    }).compileToV0Message([...addressLookupTables]);
 
     const transaction = new anchor.web3.VersionedTransaction(message);
 

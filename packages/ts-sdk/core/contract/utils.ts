@@ -2,6 +2,8 @@ import * as anchor from '@coral-xyz/anchor';
 import { Buffer } from 'buffer';
 import { sha256 } from 'js-sha256';
 import * as types from './types';
+import { LazorkitClient } from './client/lazorkit';
+
 
 export function instructionToAccountMetas(
   ix: anchor.web3.TransactionInstruction,
@@ -58,5 +60,36 @@ export async function getBlockchainTimestamp(
 ): Promise<anchor.BN> {
   const slot = await connection.getSlot();
   const blockTime = await connection.getBlockTime(slot);
-  return new anchor.BN(blockTime || Math.floor(Date.now() / 1000));
+
+  if (blockTime === null) {
+    throw new Error('Failed to get blockchain timestamp');
+  }
+
+  return new anchor.BN(blockTime);
+}
+
+export async function ensureChunkExist(
+  connection: anchor.web3.Connection,
+  client: LazorkitClient,
+  smartWalletPubkey: anchor.web3.PublicKey
+) {
+  let retries = 0;
+  while (retries < 3) {
+    try {
+      const nounce = await client.getWalletStateData(smartWalletPubkey);
+      const chunkAddress = client.getChunkPubkey(smartWalletPubkey, nounce.lastNonce);
+      const chunkAccount = await connection.getAccountInfo(chunkAddress);
+      if (chunkAccount) {
+        return;
+      }
+    } catch (e) {
+      console.warn(`Attempt ${retries + 1} failed to find chunk:`, e);
+    }
+
+    retries++;
+    if (retries < 3) {
+      await new Promise(resolve => setTimeout(resolve, 3000));
+    }
+  }
+  throw new Error('Chunk not found');
 }

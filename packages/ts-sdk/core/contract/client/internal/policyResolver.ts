@@ -8,7 +8,7 @@ type TransactionInstruction = anchor.web3.TransactionInstruction;
 type BN = anchor.BN;
 
 interface ExecutePolicyContext {
-  provided: TransactionInstruction | null;
+  provided?: TransactionInstruction;
   smartWallet: PublicKey;
   credentialHash: types.CredentialHash;
   passkeyPublicKey: types.PasskeyPublicKey | number[];
@@ -16,7 +16,7 @@ interface ExecutePolicyContext {
 }
 
 interface CreatePolicyContext {
-  provided?: TransactionInstruction | null;
+  provided?: TransactionInstruction;
   smartWalletId: BN;
   smartWallet: PublicKey;
   walletState: PublicKey;
@@ -41,7 +41,7 @@ export class PolicyInstructionResolver {
     passkeyPublicKey,
     walletStateData,
   }: ExecutePolicyContext): Promise<TransactionInstruction> {
-    if (provided !== null) {
+    if (provided !== undefined) {
       return provided;
     }
 
@@ -68,7 +68,7 @@ export class PolicyInstructionResolver {
     passkeyPublicKey,
     credentialHash,
   }: CreatePolicyContext): Promise<TransactionInstruction> {
-    if (provided !== null && provided !== undefined) {
+    if (provided !== undefined) {
       return provided;
     }
 
@@ -87,4 +87,3 @@ export class PolicyInstructionResolver {
     });
   }
 }
-

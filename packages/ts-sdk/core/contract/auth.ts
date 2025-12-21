@@ -11,7 +11,7 @@ import {
 
 /**
  * Builds a Secp256r1 signature verification instruction for passkey authentication
- * 
+ *
  * @param passkeySignature - Validated passkey signature data
  * @returns Transaction instruction for signature verification
  * @throws {ValidationError} if passkeySignature is invalid
@@ -47,7 +47,7 @@ export function buildPasskeyVerificationInstruction(
     'base64'
   );
   const signature = Buffer.from(passkeySignature.signature64, 'base64');
-  
+
   // Validate signature length
   assertValidSignature(
     toNumberArray(signature),
@@ -68,7 +68,7 @@ export function buildPasskeyVerificationInstruction(
 
 /**
  * Converts passkey signature data to the format expected by smart contract instructions
- * 
+ *
  * @param passkeySignature - Validated passkey signature data
  * @returns Instruction arguments with validated byte arrays
  * @throws {ValidationError} if passkeySignature is invalid
@@ -88,7 +88,7 @@ export function convertPasskeySignatureToInstructionArgs(
     toNumberArray(signature),
     'passkeySignature.signature64 (decoded)'
   );
-  
+
   return {
     passkeyPublicKey: passkeySignature.passkeyPublicKey,
     signature: toNumberArray(signature) as Signature,

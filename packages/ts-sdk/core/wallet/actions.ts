@@ -5,7 +5,8 @@ import * as anchor from '@coral-xyz/anchor';
 import { DialogResult, SignResult } from '../portal';
 import { StorageManager, WalletInfo } from '../storage';
 import { Paymaster } from '../paymaster/paymaster';
-import { SmartWalletAction, LazorkitClient, asCredentialHash, asPasskeyPublicKey, getBlockchainTimestamp } from '../contract';
+import { SmartWalletAction, LazorkitClient, asCredentialHash, asPasskeyPublicKey, getBlockchainTimestamp, ensureChunkExist } from '../contract';
+
 import { WalletState, ConnectOptions, DisconnectOptions, SignResponse, SignAndSendTransactionPayload } from '../types';
 import {
     createDialogManager,
@@ -54,7 +55,7 @@ export const connectAction = async (
             let smartWalletAddress: string;
             let passkeyPubkey: string;
             if (!dialogResult.publicKey && smartWalletData) {
-                passkeyPubkey = Buffer.from(smartWalletData.passkeyPubkey).toString('base64');
+                passkeyPubkey = Buffer.from(smartWalletData.passkeyPublicKey).toString('base64');
                 localStorage.setItem('PUBLIC_KEY', passkeyPubkey);
             } else {
                 passkeyPubkey = dialogResult.publicKey;
@@ -125,6 +126,7 @@ export const disconnectAction = async (
 
 
 
+
 /**
  * Sign and send transaction action
  */
@@ -160,7 +162,6 @@ export const signAndSendTransactionAction = async (
             action: {
                 type: SmartWalletAction.CreateChunk,
                 args: {
-                    policyInstruction: null,
                     cpiInstructions: payload.instructions,
                 },
             },
@@ -177,8 +178,6 @@ export const signAndSendTransactionAction = async (
             .replace(/\//g, '_')
             .replace(/=+$/, '');
 
-        // For visual representation in portal, we ideally want to show the transaction.
-        // Construction a V0 transaction for display purposes (signed by fee payer initially for structure)
         const latest = await connection.getLatestBlockhash();
 
         const messageV0 = new anchor.web3.TransactionMessage({
@@ -204,7 +203,6 @@ export const signAndSendTransactionAction = async (
             };
 
             const credentialHash = asCredentialHash(getCredentialHash(wallet.credentialId));
-
             const createChunkTransaction = await smartWallet.createChunkTxn({
                 payer: feePayer,
                 smartWallet: new anchor.web3.PublicKey(wallet.smartWallet),
@@ -214,13 +212,14 @@ export const signAndSendTransactionAction = async (
                     clientDataJsonRaw64: signResponse.clientDataJSONReturn,
                     authenticatorDataRaw64: signResponse.authenticatorDataReturn,
                 },
-                policyInstruction: null,
                 cpiInstructions: payload.instructions,
                 timestamp,
                 credentialHash,
             });
             const createChunkSignature = await paymaster.signAndSend(createChunkTransaction as anchor.web3.Transaction);
-            await connection.confirmTransaction(createChunkSignature);
+            await connection.confirmTransaction(createChunkSignature)
+            await ensureChunkExist(connection, smartWallet, new anchor.web3.PublicKey(wallet.smartWallet));
+
             const addressLookupTables = payload.transactionOptions?.addressLookupTableAccounts || [];
             const executeChunkTransaction = await smartWallet.executeChunkTxn({
                 payer: feePayer,
@@ -275,21 +274,16 @@ export const signMessageAction = async (
         const dialogManager = createDialogManager(config);
 
         try {
-            // We reuse openSign or similar from DialogManager. 
-            // The DialogManager now has openSignMessage as per our plan (step 64)
             const signResult = await dialogManager.openSignMessage(message, wallet.credentialId);
-
             const signature = signResult.signature;
             const signedPayload = signResult.signedPayload;
-            // If the user needs the full authentication response, we might need to adjust the return type,
-            // but the request asked for { signature }
 
             return { signature, signedPayload };
         } finally {
             dialogManager.destroy();
         }
     } catch (error: unknown) {
-        // We don't have onSuccess/onFail in the simple signature, but we handle the error state
+
         set({ error: error as Error });
         throw error;
     } finally {

@@ -17,116 +17,6 @@ export type Lazorkit = {
   ],
   "instructions": [
     {
-      "name": "closeChunk",
-      "discriminator": [
-        150,
-        183,
-        213,
-        198,
-        0,
-        74,
-        14,
-        170
-      ],
-      "accounts": [
-        {
-          "name": "payer",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "smartWallet",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  109,
-                  97,
-                  114,
-                  116,
-                  95,
-                  119,
-                  97,
-                  108,
-                  108,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "wallet_state.wallet_id",
-                "account": "walletState"
-              }
-            ]
-          }
-        },
-        {
-          "name": "walletState",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  119,
-                  97,
-                  108,
-                  108,
-                  101,
-                  116,
-                  95,
-                  115,
-                  116,
-                  97,
-                  116,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "smartWallet"
-              }
-            ]
-          }
-        },
-        {
-          "name": "chunk",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  104,
-                  117,
-                  110,
-                  107
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "smartWallet"
-              },
-              {
-                "kind": "account",
-                "path": "chunk.authorized_nonce",
-                "account": "chunk"
-              }
-            ]
-          }
-        },
-        {
-          "name": "sessionRefund",
-          "writable": true
-        }
-      ],
-      "args": []
-    },
-    {
       "name": "createChunk",
       "discriminator": [
         83,
@@ -176,7 +66,6 @@ export type Lazorkit = {
         },
         {
           "name": "walletState",
-          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -356,69 +245,6 @@ export type Lazorkit = {
       ]
     },
     {
-      "name": "deleteSmartWallet",
-      "discriminator": [
-        126,
-        239,
-        172,
-        118,
-        134,
-        32,
-        52,
-        102
-      ],
-      "accounts": [
-        {
-          "name": "payer",
-          "writable": true,
-          "signer": true,
-          "address": "BE8duRBDmh4cF4Ecz4TBCNgNAMCaonrpQiEiQ1xfQmab"
-        },
-        {
-          "name": "smartWallet",
-          "writable": true
-        },
-        {
-          "name": "walletState",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  119,
-                  97,
-                  108,
-                  108,
-                  101,
-                  116,
-                  95,
-                  115,
-                  116,
-                  97,
-                  116,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "smartWallet"
-              }
-            ]
-          }
-        },
-        {
-          "name": "walletDevice",
-          "writable": true
-        },
-        {
-          "name": "systemProgram",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": []
-    },
-    {
       "name": "execute",
       "discriminator": [
         130,
@@ -574,6 +400,7 @@ export type Lazorkit = {
         },
         {
           "name": "walletState",
+          "writable": true,
           "pda": {
             "seeds": [
               {

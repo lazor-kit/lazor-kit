@@ -2,7 +2,6 @@ import * as anchor from '@coral-xyz/anchor';
 import LazorkitIdl from '../anchor/idl/lazorkit.json';
 import { Lazorkit } from '../anchor/types/lazorkit';
 import {
-  byteArrayEquals,
   credentialHashFromBase64,
   getRandomBytes,
   instructionToAccountMetas,
@@ -16,8 +15,8 @@ import {
   calculateSplitIndex,
   collectCpiAccountMetas,
 } from './internal/cpi';
-import bs58 from 'bs58';
-import { buildExecuteMessage, buildCreateChunkMessage } from '../messages';
+import * as bs58 from 'bs58';
+import { buildCreateChunkMessage } from '../messages';
 import { Buffer } from 'buffer';
 import {
   buildPasskeyVerificationInstruction,
@@ -41,6 +40,7 @@ import {
   assertPositiveInteger,
   assertValidPublicKeyArray,
   assertValidTransactionInstructionArray,
+  assertValidPasskeySignature,
 } from '../validation';
 
 // Type aliases for convenience
@@ -50,9 +50,7 @@ type Transaction = anchor.web3.Transaction;
 type VersionedTransaction = anchor.web3.VersionedTransaction;
 type BN = anchor.BN;
 
-if (typeof globalThis !== 'undefined') {
-  (globalThis as any).Buffer = Buffer;
-}
+global.Buffer = Buffer;
 
 Buffer.prototype.subarray = function subarray(
   begin: number | undefined,
@@ -185,10 +183,7 @@ export class LazorkitClient {
     if (params.policyDataSize !== undefined) {
       assertPositiveInteger(params.policyDataSize, 'params.policyDataSize');
     }
-    if (
-      params.policyInstruction !== null &&
-      params.policyInstruction !== undefined
-    ) {
+    if (params.policyInstruction !== undefined) {
       assertValidTransactionInstruction(
         params.policyInstruction,
         'params.policyInstruction'
@@ -203,6 +198,10 @@ export class LazorkitClient {
     assertDefined(params, 'params');
     assertValidPublicKey(params.payer, 'params.payer');
     assertValidPublicKey(params.smartWallet, 'params.smartWallet');
+    assertValidPasskeySignature(
+      params.passkeySignature,
+      'params.passkeySignature'
+    );
     assertValidCredentialHash(params.credentialHash, 'params.credentialHash');
     assertValidTransactionInstruction(
       params.cpiInstruction,
@@ -210,11 +209,14 @@ export class LazorkitClient {
     );
     assertPositiveBN(params.timestamp, 'params.timestamp');
 
-    if (params.policyInstruction !== null) {
+    if (params.policyInstruction !== undefined) {
       assertValidTransactionInstruction(
         params.policyInstruction,
         'params.policyInstruction'
       );
+    }
+    if (params.cpiSigners !== undefined) {
+      assertValidPublicKeyArray(params.cpiSigners, 'params.cpiSigners');
     }
   }
 
@@ -225,6 +227,10 @@ export class LazorkitClient {
     assertDefined(params, 'params');
     assertValidPublicKey(params.payer, 'params.payer');
     assertValidPublicKey(params.smartWallet, 'params.smartWallet');
+    assertValidPasskeySignature(
+      params.passkeySignature,
+      'params.passkeySignature'
+    );
     assertValidCredentialHash(params.credentialHash, 'params.credentialHash');
     assertValidTransactionInstructionArray(
       params.cpiInstructions,
@@ -232,7 +238,7 @@ export class LazorkitClient {
     );
     assertPositiveBN(params.timestamp, 'params.timestamp');
 
-    if (params.policyInstruction !== null) {
+    if (params.policyInstruction !== undefined) {
       assertValidTransactionInstruction(
         params.policyInstruction,
         'params.policyInstruction'
@@ -260,16 +266,6 @@ export class LazorkitClient {
     }
   }
 
-  /**
-   * Validates CloseChunkParams
-   */
-  private validateCloseChunkParams(params: types.CloseChunkParams): void {
-    assertDefined(params, 'params');
-    assertValidPublicKey(params.payer, 'params.payer');
-    assertValidPublicKey(params.smartWallet, 'params.smartWallet');
-    assertPositiveBN(params.nonce, 'params.nonce');
-  }
-
   // ============================================================================
   // Account Data Fetching Methods
   // ============================================================================
@@ -290,79 +286,6 @@ export class LazorkitClient {
   }
 
   /**
-   * Finds a smart wallet by passkey public key
-   * Searches through all WalletState accounts to find one containing the specified passkey
-   *
-   * @param passkeyPublicKey - Passkey public key (33 bytes)
-   * @returns Smart wallet information or null if not found
-   * @throws {ValidationError} if passkeyPublicKey is invalid
-   */
-  async getSmartWalletByPasskey(
-    passkeyPublicKey: types.PasskeyPublicKey | number[]
-  ): Promise<{
-    smartWallet: PublicKey | null;
-    walletState: PublicKey | null;
-    deviceSlot: { passkeyPubkey: number[]; credentialHash: number[] } | null;
-  }> {
-    assertValidPasskeyPublicKey(passkeyPublicKey, 'passkeyPublicKey');
-    // Get the discriminator for WalletState accounts
-    const discriminator = LazorkitIdl.accounts?.find(
-      (a: any) => a.name === 'WalletState'
-    )?.discriminator;
-
-    if (!discriminator) {
-      throw new ValidationError(
-        'WalletState discriminator not found in IDL',
-        'passkeyPublicKey'
-      );
-    }
-
-    // Get all WalletState accounts
-    const accounts = await this.connection.getProgramAccounts(this.programId, {
-      filters: [{ memcmp: { offset: 0, bytes: bs58.encode(discriminator) } }],
-    });
-
-    // Search through each WalletState account
-    for (const account of accounts) {
-      try {
-        // Deserialize the WalletState account data
-        const walletStateData = this.program.coder.accounts.decode(
-          'WalletState',
-          account.account.data
-        );
-
-        // Check if any device contains the target passkey
-        for (const device of walletStateData.devices) {
-          if (byteArrayEquals(device.passkeyPubkey, passkeyPublicKey)) {
-            // Found the matching device, return the smart wallet
-            const smartWallet = this.getSmartWalletPubkey(
-              walletStateData.walletId
-            );
-            return {
-              smartWallet,
-              walletState: account.pubkey,
-              deviceSlot: {
-                passkeyPubkey: device.passkeyPubkey,
-                credentialHash: device.credentialHash,
-              },
-            };
-          }
-        }
-      } catch (error) {
-        // Skip accounts that can't be deserialized (might be corrupted or different type)
-        continue;
-      }
-    }
-
-    // No matching wallet found
-    return {
-      smartWallet: null,
-      walletState: null,
-      deviceSlot: null,
-    };
-  }
-
-  /**
    * Find smart wallet by credential hash
    * Searches through all WalletState accounts to find one containing the specified credential hash
    *
@@ -371,10 +294,10 @@ export class LazorkitClient {
    * @throws {ValidationError} if credentialHash is invalid
    */
   async getSmartWalletByCredentialHash(
-    credentialHash: types.CredentialHash | number[],
+    credentialHash: types.CredentialHash | number[]
   ) {
     assertValidCredentialHash(credentialHash, 'credentialHash');
-
+    // Get the discriminator for WalletState accounts
     const discriminator = LazorkitIdl.accounts?.find(
       (a: any) => a.name === 'WalletDevice'
     )?.discriminator;
@@ -386,38 +309,37 @@ export class LazorkitClient {
       );
     }
 
+    // Get wallet_device have this credential hash
     const accounts = await this.connection.getProgramAccounts(this.programId, {
       filters: [
-        { memcmp: { offset: 0, bytes: bs58.encode(discriminator) } },
-        { memcmp: { offset: 8 + 33, bytes: bs58.encode(credentialHash) } },
+        { memcmp: { offset: 0, bytes: bs58.default.encode(discriminator) } },
+        {
+          memcmp: { offset: 8 + 33, bytes: bs58.default.encode(credentialHash) },
+        },
       ],
     });
 
     if (accounts.length === 0) {
       return null;
     }
-
     for (const account of accounts) {
       const walletDevice = await this.program.account.walletDevice.fetch(
         account.pubkey
       );
-
       return {
         smartWallet: walletDevice.smartWallet,
         walletState: this.getWalletStatePubkey(walletDevice.smartWallet),
         walletDevice: account.pubkey,
-        passkeyPubkey: walletDevice.passkeyPubkey,
+        passkeyPublicKey: walletDevice.passkeyPubkey,
       };
     }
 
-    // Safety net return
     return null;
   }
 
-
   // ============================================================================
   // Low-Level Instruction Builders
-  // ============================================================================
+  // =======================================c=====================================
 
   /**
    * Builds the create smart wallet instruction
@@ -586,68 +508,30 @@ export class LazorkitClient {
       assertValidPublicKeyArray(cpiSigners, 'cpiSigners');
     }
 
-    const { data: walletStateData } = await this.fetchWalletStateContext(
-      smartWallet
-    );
-    const latestNonce = walletStateData.lastNonce.sub(new anchor.BN(1));
+    const { data: walletStateData, walletState } =
+      await this.fetchWalletStateContext(smartWallet);
     const { chunk, data: chunkData } = await this.fetchChunkContext(
       smartWallet,
-      latestNonce
+      walletStateData.lastNonce
     );
-
     // Prepare CPI data and split indices
-    const instructionDataList = cpiInstructions.map((ix) =>
-      Buffer.from(ix.data)
+    const instructionDataList = cpiInstructions.map(
+      (ix: TransactionInstruction) => Buffer.from(ix.data)
     );
     const splitIndex = calculateSplitIndex(cpiInstructions);
     const allAccountMetas = collectCpiAccountMetas(cpiInstructions, cpiSigners);
 
     return await this.program.methods
       .executeChunk(instructionDataList, Buffer.from(splitIndex))
-      .accountsPartial({
+      .accountsStrict({
         payer,
         smartWallet,
-        walletState: this.getWalletStatePubkey(smartWallet),
+        walletState,
         chunk,
         sessionRefund: chunkData.rentRefundAddress,
         systemProgram: anchor.web3.SystemProgram.programId,
       })
       .remainingAccounts(allAccountMetas)
-      .instruction();
-  }
-
-  /**
-   * Builds the close chunk instruction
-   *
-   * @param payer - Payer account public key
-   * @param smartWallet - Smart wallet PDA address
-   * @param nonce - Nonce of the chunk to close
-   * @returns Transaction instruction
-   * @throws {ValidationError} if parameters are invalid
-   */
-  async buildCloseChunkIns(
-    payer: PublicKey,
-    smartWallet: PublicKey,
-    nonce: BN
-  ): Promise<TransactionInstruction> {
-    assertValidPublicKey(payer, 'payer');
-    assertValidPublicKey(smartWallet, 'smartWallet');
-    assertPositiveBN(nonce, 'nonce');
-
-    const { chunk, data: chunkData } = await this.fetchChunkContext(
-      smartWallet,
-      nonce
-    );
-
-    return await this.program.methods
-      .closeChunk()
-      .accountsPartial({
-        payer,
-        smartWallet,
-        walletState: this.getWalletStatePubkey(smartWallet),
-        chunk,
-        sessionRefund: chunkData.rentRefundAddress,
-      })
       .instruction();
   }
 
@@ -893,36 +777,6 @@ export class LazorkitClient {
     return result.transaction;
   }
 
-  /**
-   * Closes a deferred transaction (no authentication needed)
-   *
-   * @param params - Close chunk parameters
-   * @param options - Transaction builder options
-   * @returns Transaction
-   * @throws {ValidationError} if parameters are invalid
-   */
-  async closeChunkTxn(
-    params: types.CloseChunkParams,
-    options: types.TransactionBuilderOptions = {}
-  ): Promise<Transaction | VersionedTransaction> {
-    this.validateCloseChunkParams(params);
-
-    const instruction = await this.buildCloseChunkIns(
-      params.payer,
-      params.smartWallet,
-      params.nonce
-    );
-
-    const result = await buildTransaction(
-      this.connection,
-      params.payer,
-      [instruction],
-      options
-    );
-
-    return result.transaction;
-  }
-
   // ============================================================================
   // Message Building Methods
   // ============================================================================
@@ -939,15 +793,15 @@ export class LazorkitClient {
     timestamp: BN;
   }): Promise<Buffer> {
     let message: Buffer;
-    const { action, smartWallet, passkeyPublicKey, credentialHash, timestamp } = params;
+    const { action, smartWallet, passkeyPublicKey, timestamp } = params;
 
     switch (action.type) {
-      case types.SmartWalletAction.Execute: {
+      case types.SmartWalletAction.CreateChunk: {
         const {
           policyInstruction: policyIns,
-          cpiInstruction,
+          cpiInstructions,
           cpiSigners,
-        } = action.args as types.ArgsByAction[types.SmartWalletAction.Execute];
+        } = action.args as types.ArgsByAction[types.SmartWalletAction.CreateChunk];
 
         const walletStateData = await this.getWalletStateData(
           params.smartWallet
@@ -963,52 +817,14 @@ export class LazorkitClient {
 
         const smartWalletConfig = await this.getWalletStateData(smartWallet);
 
-        message = buildExecuteMessage(
+        message = buildCreateChunkMessage(
           smartWallet,
           smartWalletConfig.lastNonce,
           timestamp,
           policyInstruction,
-          cpiInstruction,
+          cpiInstructions,
           [...(cpiSigners ?? []), params.payer]
         );
-        break;
-      }
-      case types.SmartWalletAction.CreateChunk: {
-        const { policyInstruction, cpiInstructions, cpiSigners } =
-          action.args as types.ArgsByAction[types.SmartWalletAction.CreateChunk];
-
-        const smartWalletConfig = await this.getWalletStateData(smartWallet);
-        if (!policyInstruction) {
-          const policySigner = this.getWalletDevicePubkey(
-            smartWallet,
-            credentialHash
-          )
-          const defaultPolicyInstruction = await this.defaultPolicyProgram.buildCheckPolicyIx({
-            walletId: smartWalletConfig.walletId,
-            passkeyPublicKey: passkeyPublicKey,
-            policySigner,
-            smartWallet,
-            credentialHash: credentialHash,
-            policyData: smartWalletConfig.policyData,
-          });
-          message = buildCreateChunkMessage(
-            smartWallet,
-            smartWalletConfig.lastNonce,
-            timestamp,
-            defaultPolicyInstruction,
-            cpiInstructions,
-            [...(cpiSigners ?? []), params.payer]
-          );
-        } else {
-          message = buildCreateChunkMessage(
-            smartWallet,
-            smartWalletConfig.lastNonce,
-            timestamp,
-            policyInstruction,
-            cpiInstructions,
-            [...(cpiSigners ?? []), params.payer]
-          );
-        }
         break;
       }
       default:

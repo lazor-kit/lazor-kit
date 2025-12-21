@@ -27,7 +27,8 @@ import {
     asPasskeyPublicKey,
     SmartWalletAction,
     getBlockchainTimestamp,
-    CredentialHash
+    CredentialHash,
+    ensureChunkExist
 } from '../contract';
 import { getCredentialHash, getPasskeyPublicKey } from '../wallet/utils';
 import * as anchor from '@coral-xyz/anchor';
@@ -166,7 +167,7 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         let passkeyPubkey: string;
 
         if (!dialogResult.publicKey && smartWalletData) {
-            passkeyPubkey = Buffer.from(smartWalletData.passkeyPubkey).toString('base64');
+            passkeyPubkey = Buffer.from(smartWalletData.passkeyPublicKey).toString('base64');
             localStorage.setItem('PUBLIC_KEY', passkeyPubkey);
         } else {
             passkeyPubkey = dialogResult.publicKey;
@@ -331,7 +332,6 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
             action: {
                 type: SmartWalletAction.CreateChunk,
                 args: {
-                    policyInstruction: null,
                     cpiInstructions: instructions,
                 },
             },
@@ -389,7 +389,6 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
                 clientDataJsonRaw64: signResult.clientDataJsonBase64,
                 authenticatorDataRaw64: signResult.authenticatorDataBase64,
             },
-            policyInstruction: null,
             cpiInstructions: instructions,
             timestamp,
             credentialHash,
@@ -397,7 +396,7 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
 
         const chunk = await this._sendToPaymaster(clients.paymaster, createDeferredExecutionTxn as Transaction, feePayerAddress);
         await clients.connection.confirmTransaction(chunk, 'confirmed');
-
+        await ensureChunkExist(clients.connection, clients.smartWallet, this._publicKey!);
         const executeDeferredTransactionTxn = await clients.smartWallet.executeChunkTxn(
             {
                 payer: new anchor.web3.PublicKey(feePayerAddress),

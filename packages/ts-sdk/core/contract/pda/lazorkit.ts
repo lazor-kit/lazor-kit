@@ -1,6 +1,6 @@
 import * as anchor from '@coral-xyz/anchor';
 import { Buffer } from 'buffer';
-import { createWalletDeviceHash } from '../webauthn/secp256r1';
+import { sha256 } from 'js-sha256';
 // Mirror on-chain seeds
 
 export const SMART_WALLET_SEED = Buffer.from('smart_wallet');
@@ -26,6 +26,18 @@ export function deriveSmartWalletConfigPda(
     [SMART_WALLET_CONFIG_SEED, smartWallet.toBuffer()],
     programId
   )[0];
+}
+
+function createWalletDeviceHash(
+  smartWallet: anchor.web3.PublicKey,
+  credentialHash: number[]
+): Buffer {
+  const rawBuffer = Buffer.concat([
+    smartWallet.toBuffer(),
+    Buffer.from(credentialHash),
+  ]);
+  const hash = sha256.arrayBuffer(rawBuffer);
+  return Buffer.from(hash).subarray(0, 32);
 }
 
 export function deriveWalletDevicePda(

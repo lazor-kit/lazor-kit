@@ -11,116 +11,6 @@
   ],
   "instructions": [
     {
-      "name": "close_chunk",
-      "discriminator": [
-        150,
-        183,
-        213,
-        198,
-        0,
-        74,
-        14,
-        170
-      ],
-      "accounts": [
-        {
-          "name": "payer",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "smart_wallet",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  109,
-                  97,
-                  114,
-                  116,
-                  95,
-                  119,
-                  97,
-                  108,
-                  108,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "wallet_state.wallet_id",
-                "account": "WalletState"
-              }
-            ]
-          }
-        },
-        {
-          "name": "wallet_state",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  119,
-                  97,
-                  108,
-                  108,
-                  101,
-                  116,
-                  95,
-                  115,
-                  116,
-                  97,
-                  116,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "smart_wallet"
-              }
-            ]
-          }
-        },
-        {
-          "name": "chunk",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  104,
-                  117,
-                  110,
-                  107
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "smart_wallet"
-              },
-              {
-                "kind": "account",
-                "path": "chunk.authorized_nonce",
-                "account": "Chunk"
-              }
-            ]
-          }
-        },
-        {
-          "name": "session_refund",
-          "writable": true
-        }
-      ],
-      "args": []
-    },
-    {
       "name": "create_chunk",
       "discriminator": [
         83,
@@ -170,7 +60,6 @@
         },
         {
           "name": "wallet_state",
-          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -350,69 +239,6 @@
       ]
     },
     {
-      "name": "delete_smart_wallet",
-      "discriminator": [
-        126,
-        239,
-        172,
-        118,
-        134,
-        32,
-        52,
-        102
-      ],
-      "accounts": [
-        {
-          "name": "payer",
-          "writable": true,
-          "signer": true,
-          "address": "BE8duRBDmh4cF4Ecz4TBCNgNAMCaonrpQiEiQ1xfQmab"
-        },
-        {
-          "name": "smart_wallet",
-          "writable": true
-        },
-        {
-          "name": "wallet_state",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  119,
-                  97,
-                  108,
-                  108,
-                  101,
-                  116,
-                  95,
-                  115,
-                  116,
-                  97,
-                  116,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "smart_wallet"
-              }
-            ]
-          }
-        },
-        {
-          "name": "wallet_device",
-          "writable": true
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": []
-    },
-    {
       "name": "execute",
       "discriminator": [
         130,
@@ -568,6 +394,7 @@
         },
         {
           "name": "wallet_state",
+          "writable": true,
           "pda": {
             "seeds": [
               {

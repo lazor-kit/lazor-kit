@@ -230,7 +230,8 @@ export function validateSignature(
 }
 
 /**
- * Validates that a BN is positive
+ * Validates that a BN is non-negative (>= 0)
+ * Note: Despite the name "Positive", this actually checks for non-negative values (>= 0)
  * Works correctly in browser, Node.js, and React Native environments
  */
 export function assertPositiveBN(
@@ -484,12 +485,21 @@ export function assertPositiveInteger(
 
 /**
  * Validates an array of PublicKeys
+ * Allows empty arrays since cpiSigners is optional and may be empty
  */
 export function assertValidPublicKeyArray(
   value: readonly anchor.web3.PublicKey[] | anchor.web3.PublicKey[] | null | undefined,
   fieldName: string
 ): asserts value is readonly anchor.web3.PublicKey[] | anchor.web3.PublicKey[] {
-  assertNonEmptyArray(value, fieldName);
+  assertDefined(value, fieldName);
+  
+  if (!Array.isArray(value)) {
+    throw new ValidationError(
+      `${fieldName} must be an array (got ${typeof value})`,
+      fieldName
+    );
+  }
+  
   value.forEach((pk, index) => {
     assertValidPublicKey(pk, `${fieldName}[${index}]`);
   });
@@ -515,5 +525,41 @@ export function toNumberArraySafe(
   value: number[] | Uint8Array | readonly number[]
 ): number[] {
   return Array.isArray(value) ? [...value] : Array.from(value);
+}
+
+/**
+ * Validates a PasskeySignature object
+ * Works correctly in browser, Node.js, and React Native environments
+ */
+export function assertValidPasskeySignature(
+  value: any,
+  fieldName: string = 'passkeySignature'
+): asserts value is import('./types').PasskeySignature {
+  assertDefined(value, fieldName);
+  
+  if (typeof value !== 'object' || value === null) {
+    throw new ValidationError(
+      `${fieldName} must be an object`,
+      fieldName
+    );
+  }
+  
+  // Validate all required fields
+  assertValidPasskeyPublicKey(
+    value.passkeyPublicKey,
+    `${fieldName}.passkeyPublicKey`
+  );
+  assertValidBase64(
+    value.signature64,
+    `${fieldName}.signature64`
+  );
+  assertValidBase64(
+    value.clientDataJsonRaw64,
+    `${fieldName}.clientDataJsonRaw64`
+  );
+  assertValidBase64(
+    value.authenticatorDataRaw64,
+    `${fieldName}.authenticatorDataRaw64`
+  );
 }
 
