@@ -104,25 +104,23 @@ export function buildSecp256r1VerifyIx(
   signature: Buffer<ArrayBuffer>
 ): anchor.web3.TransactionInstruction {
   try {
-    // Ensure signature is the correct length
-    if (signature.length !== SIGNATURE_SERIALIZED_SIZE) {
-      // Extract r and s from the signature
-      const r = signature.slice(0, FIELD_SIZE);
-      const s = signature.slice(FIELD_SIZE, FIELD_SIZE * 2);
+    // Extract r and s from the signature
+    const r = signature.slice(0, FIELD_SIZE);
+    const s = signature.slice(FIELD_SIZE, FIELD_SIZE * 2);
 
-      // Pad r and s to correct length if needed
-      const paddedR = Buffer.alloc(FIELD_SIZE, 0);
-      const paddedS = Buffer.alloc(FIELD_SIZE, 0);
-      r.copy(paddedR, FIELD_SIZE - r.length);
-      s.copy(paddedS, FIELD_SIZE - s.length);
+    // Pad r and s to correct length if needed
+    const paddedR = Buffer.alloc(FIELD_SIZE, 0);
+    const paddedS = Buffer.alloc(FIELD_SIZE, 0);
+    r.copy(paddedR, FIELD_SIZE - r.length);
+    s.copy(paddedS, FIELD_SIZE - s.length);
 
-      // Check if s > half_order, if so, compute s = order - s
-      if (isGreaterThan(paddedS, SECP256R1_HALF_ORDER)) {
-        const newS = subtractBigNumbers(SECP256R1_ORDER, paddedS);
-        signature = Buffer.concat([paddedR, Buffer.from(newS)]);
-      } else {
-        signature = Buffer.concat([paddedR, paddedS]);
-      }
+    // ALWAYS check if s > half_order, if so, compute s = order - s (low-S normalization)
+    // This is required by Solana's secp256r1 precompile
+    if (isGreaterThan(paddedS, SECP256R1_HALF_ORDER)) {
+      const newS = subtractBigNumbers(SECP256R1_ORDER, paddedS);
+      signature = Buffer.concat([paddedR, Buffer.from(newS)]);
+    } else {
+      signature = Buffer.concat([paddedR, paddedS]);
     }
 
     // Verify lengths
