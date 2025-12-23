@@ -54,15 +54,12 @@ export function buildPasskeyVerificationInstruction(
     'passkeySignature.signature64 (decoded)'
   );
 
-  // WebAuthn signs: SHA256(authenticatorData || SHA256(clientDataJSON))
-  // We need to hash the concatenated data before verification
-  const rawMessage = Buffer.concat([
+  // WebAuthn message format: authenticatorData || SHA256(clientDataJSON)
+  // Do NOT hash again - the secp256r1 precompile handles hashing internally
+  const message = Buffer.concat([
     authenticatorDataRaw,
     Buffer.from(sha256.arrayBuffer(clientDataJsonRaw)),
   ]);
-
-  // The signature is over the SHA256 hash of the raw message
-  const message = Buffer.from(sha256.arrayBuffer(rawMessage));
 
   return buildSecp256r1VerifyIx(
     message,
