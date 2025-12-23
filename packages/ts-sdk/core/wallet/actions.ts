@@ -127,6 +127,8 @@ export const disconnectAction = async (
 
 /**
  * Sign and send transaction action
+ * Uses direct Execute flow for single instructions (smaller transaction)
+ * Uses CreateChunk flow for multiple instructions
  */
 export const signAndSendTransactionAction = async (
     get: () => WalletState,
@@ -151,13 +153,24 @@ export const signAndSendTransactionAction = async (
 
     try {
         const paymaster = new Paymaster(config.paymasterConfig);
-        const smartWallet = new LazorkitClient(connection);
+        const smartWalletClient = new LazorkitClient(connection);
 
         const feePayer = await paymaster.getPayer();
         const timestamp = await getBlockchainTimestamp(connection);
+        const credentialHash = asCredentialHash(getCredentialHash(wallet.credentialId));
+        const smartWalletPubkey = new anchor.web3.PublicKey(wallet.smartWallet);
 
-        const message = await smartWallet.buildAuthorizationMessage({
-            action: {
+        // Use direct Execute flow for single instructions (smaller transaction size)
+        const useSingleInstructionFlow = payload.instructions.length === 1;
+
+        const message = await smartWalletClient.buildAuthorizationMessage({
+            action: useSingleInstructionFlow ? {
+                type: SmartWalletAction.Execute,
+                args: {
+                    policyInstruction: null,
+                    cpiInstruction: payload.instructions[0],
+                },
+            } : {
                 type: SmartWalletAction.CreateChunk,
                 args: {
                     policyInstruction: null,
@@ -165,10 +178,10 @@ export const signAndSendTransactionAction = async (
                 },
             },
             payer: feePayer,
-            smartWallet: new anchor.web3.PublicKey(wallet.smartWallet),
+            smartWallet: smartWalletPubkey,
             passkeyPublicKey: wallet.passkeyPubkey,
             timestamp: new anchor.BN(timestamp),
-            credentialHash: asCredentialHash(getCredentialHash(wallet.credentialId)),
+            credentialHash,
         });
 
         const encodedChallenge = Buffer.from(message)
@@ -203,38 +216,62 @@ export const signAndSendTransactionAction = async (
                 authenticatorDataReturn: signResult.authenticatorDataBase64,
             };
 
-            const credentialHash = asCredentialHash(getCredentialHash(wallet.credentialId));
+            const passkeySignature = {
+                passkeyPublicKey: asPasskeyPublicKey(wallet.passkeyPubkey),
+                signature64: signResponse.normalized,
+                clientDataJsonRaw64: signResponse.clientDataJSONReturn,
+                authenticatorDataRaw64: signResponse.authenticatorDataReturn,
+            };
 
-            const createChunkTransaction = await smartWallet.createChunkTxn({
-                payer: feePayer,
-                smartWallet: new anchor.web3.PublicKey(wallet.smartWallet),
-                passkeySignature: {
-                    passkeyPublicKey: asPasskeyPublicKey(wallet.passkeyPubkey),
-                    signature64: signResponse.normalized,
-                    clientDataJsonRaw64: signResponse.clientDataJSONReturn,
-                    authenticatorDataRaw64: signResponse.authenticatorDataReturn,
-                },
-                policyInstruction: null,
-                cpiInstructions: payload.instructions,
-                timestamp,
-                credentialHash,
-            });
-            const createChunkSignature = await paymaster.signAndSend(createChunkTransaction as anchor.web3.Transaction);
-            await connection.confirmTransaction(createChunkSignature);
-            const addressLookupTables = payload.transactionOptions?.addressLookupTableAccounts || [];
-            const executeChunkTransaction = await smartWallet.executeChunkTxn({
-                payer: feePayer,
-                smartWallet: new anchor.web3.PublicKey(wallet.smartWallet),
-                cpiInstructions: payload.instructions,
-            }, {
-                addressLookupTables: addressLookupTables,
-                computeUnitLimit: payload.transactionOptions?.computeUnitLimit
-            });
             let signature: string;
-            if (addressLookupTables.length > 0) {
-                signature = await paymaster.signAndSendVersionedTransaction(executeChunkTransaction as anchor.web3.VersionedTransaction);
+
+            if (useSingleInstructionFlow) {
+                // Direct Execute flow - single transaction, smaller size
+                const executeTxn = await smartWalletClient.executeTxn({
+                    payer: feePayer,
+                    smartWallet: smartWalletPubkey,
+                    passkeySignature,
+                    policyInstruction: null,
+                    cpiInstruction: payload.instructions[0],
+                    timestamp,
+                    credentialHash,
+                });
+
+                const addressLookupTables = payload.transactionOptions?.addressLookupTableAccounts || [];
+                if (addressLookupTables.length > 0) {
+                    signature = await paymaster.signAndSendVersionedTransaction(executeTxn as anchor.web3.VersionedTransaction);
+                } else {
+                    signature = await paymaster.signAndSend(executeTxn as anchor.web3.Transaction);
+                }
             } else {
-                signature = await paymaster.signAndSend(executeChunkTransaction as anchor.web3.Transaction);
+                // Chunk flow for multiple instructions
+                const createChunkTransaction = await smartWalletClient.createChunkTxn({
+                    payer: feePayer,
+                    smartWallet: smartWalletPubkey,
+                    passkeySignature,
+                    policyInstruction: null,
+                    cpiInstructions: payload.instructions,
+                    timestamp,
+                    credentialHash,
+                });
+                const createChunkSignature = await paymaster.signAndSend(createChunkTransaction as anchor.web3.Transaction);
+                await connection.confirmTransaction(createChunkSignature);
+
+                const addressLookupTables = payload.transactionOptions?.addressLookupTableAccounts || [];
+                const executeChunkTransaction = await smartWalletClient.executeChunkTxn({
+                    payer: feePayer,
+                    smartWallet: smartWalletPubkey,
+                    cpiInstructions: payload.instructions,
+                }, {
+                    addressLookupTables: addressLookupTables,
+                    computeUnitLimit: payload.transactionOptions?.computeUnitLimit
+                });
+
+                if (addressLookupTables.length > 0) {
+                    signature = await paymaster.signAndSendVersionedTransaction(executeChunkTransaction as anchor.web3.VersionedTransaction);
+                } else {
+                    signature = await paymaster.signAndSend(executeChunkTransaction as anchor.web3.Transaction);
+                }
             }
 
             payload.onSuccess?.(signature);
