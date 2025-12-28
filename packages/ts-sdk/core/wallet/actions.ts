@@ -156,19 +156,31 @@ export const signAndSendTransactionAction = async (
         const feePayer = await paymaster.getPayer();
         const timestamp = await getBlockchainTimestamp(connection);
 
+        const safeInstructions = (payload.instructions || [])
+              .filter(Boolean)
+              .map((ix) => ({
+              programId: ix.programId,
+              keys: ix.keys ?? [],
+              data: ix.data ?? Buffer.alloc(0),
+        }));
+
+        if (safeInstructions.length === 0) {
+          throw new Error("No valid CPI instructions provided");
+        }
+
         const message = await smartWallet.buildAuthorizationMessage({
-            action: {
-                type: SmartWalletAction.CreateChunk,
-                args: {
-                    policyInstruction: null,
-                    cpiInstructions: payload.instructions,
-                },
+          action: {
+            type: SmartWalletAction.CreateChunk,
+            args: {
+              policyInstruction: null,
+              cpiInstructions: safeInstructions,
             },
-            payer: feePayer,
-            smartWallet: new anchor.web3.PublicKey(wallet.smartWallet),
-            passkeyPublicKey: wallet.passkeyPubkey,
-            timestamp: new anchor.BN(timestamp),
-            credentialHash: asCredentialHash(getCredentialHash(wallet.credentialId)),
+          },
+          payer: feePayer,
+          smartWallet: new anchor.web3.PublicKey(wallet.smartWallet),
+          passkeyPublicKey: wallet.passkeyPubkey,
+          timestamp: new anchor.BN(timestamp),
+          credentialHash: asCredentialHash(getCredentialHash(wallet.credentialId)),
         });
 
         const encodedChallenge = Buffer.from(message)
