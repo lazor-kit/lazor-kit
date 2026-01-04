@@ -1,0 +1,11 @@
+diff --git a/lazor-kit/src/main/java/com/lazorsdk/LazorApplication.java b/lazor-kit/src/main/java/com/lazorsdk/LazorApplication.java
+--- a/lazor-kit/src/main/java/com/lazorsdk/LazorApplication.java
++++ b/lazor-kit/src/main/java/com/lazorsdk/LazorApplication.java
+@@ -15,7 +15,6 @@ public class LazorApplication extends Application {
+     private static final String TAG = "LazorApplication";
+ 
+     public void onCreate() {
+-        super.onCreate();
+         initializeLogger();
+         initializeLeakCanary();
+     }
