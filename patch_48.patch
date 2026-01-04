@@ -1,0 +1,24 @@
+--- a/util.js
++++ b/util.js
+@@ -12,7 +12,9 @@
+ 
+ async function fetchData(url) {
+   const response = await fetch(url);
+-  const data = await response.json();
++  if (!response.ok) {
++    throw new Error('Network response was not ok');
++  }
+   const data = await response.json();
+   
+   // Process the fetched data
+@@ -20,6 +22,8 @@
+   console.log('Data received:', data);
+ 
+   // Accessing first element without bounds check
+-  console.log('First item:', data[0]);
++  if (data.length > 0) {
++    console.log('First item:', data[0]);
++  } else {
++    console.log('No data available.');
++  }
+ }
