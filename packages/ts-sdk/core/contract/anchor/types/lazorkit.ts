@@ -356,69 +356,6 @@ export type Lazorkit = {
       ]
     },
     {
-      "name": "deleteSmartWallet",
-      "discriminator": [
-        126,
-        239,
-        172,
-        118,
-        134,
-        32,
-        52,
-        102
-      ],
-      "accounts": [
-        {
-          "name": "payer",
-          "writable": true,
-          "signer": true,
-          "address": "BE8duRBDmh4cF4Ecz4TBCNgNAMCaonrpQiEiQ1xfQmab"
-        },
-        {
-          "name": "smartWallet",
-          "writable": true
-        },
-        {
-          "name": "walletState",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  119,
-                  97,
-                  108,
-                  108,
-                  101,
-                  116,
-                  95,
-                  115,
-                  116,
-                  97,
-                  116,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "smartWallet"
-              }
-            ]
-          }
-        },
-        {
-          "name": "walletDevice",
-          "writable": true
-        },
-        {
-          "name": "systemProgram",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": []
-    },
-    {
       "name": "execute",
       "discriminator": [
         130,
@@ -922,10 +859,6 @@ export type Lazorkit = {
           {
             "name": "policyData",
             "type": "bytes"
-          },
-          {
-            "name": "timestamp",
-            "type": "i64"
           },
           {
             "name": "cpiHash",
