@@ -424,7 +424,7 @@ export class DialogManager extends EventEmitter {
     const isMobile = this.isMobileDevice();
     const isSafari = this.isSafari();
 
-    // On Safari, always use popup for connect (dialog has issues)
+    // On Safari, always use popup for connect (iframe has WebAuthn issues)
     if (isSafari && action === 'connect') {
       return true;
     }
@@ -434,18 +434,8 @@ export class DialogManager extends EventEmitter {
       return true;
     }
 
-    // On desktop, use dialog for sign
-    if (!isMobile && action === 'sign') {
-      return false;
-    }
-
-    // On mobile, use dialog for sign
-    if (isMobile && action === 'sign') {
-      return false;
-    }
-
-    // Default to popup
-    return true;
+    // Default to iframe/dialog
+    return false;
   }
 
   /**

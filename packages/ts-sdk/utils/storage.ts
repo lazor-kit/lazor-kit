@@ -23,74 +23,39 @@ export class StorageUtil {
    * @param credentials The credentials to save
    */
   static saveCredentials(credentials: StoredCredentials): void {
-    try {
-      // Store each credential separately using the same keys as the reference implementation
-      if (credentials.credentialId) {
-        localStorage.setItem(CREDENTIAL_ID_KEY, credentials.credentialId);
-      }
-      localStorage.setItem(PUBLIC_KEY_KEY, credentials.publickey);
-      localStorage.setItem(SMART_WALLET_KEY, credentials.smartWalletAddress);
-
-      // Also store the timestamp for reference
-      localStorage.setItem('CREDENTIALS_TIMESTAMP', credentials.timestamp.toString());
-
-    } catch (error) {
-      console.error('Failed to save credentials to local storage:', error);
+    if (credentials.credentialId) {
+      localStorage.setItem(CREDENTIAL_ID_KEY, credentials.credentialId);
     }
+    localStorage.setItem(PUBLIC_KEY_KEY, credentials.publickey);
+    localStorage.setItem(SMART_WALLET_KEY, credentials.smartWalletAddress);
+    localStorage.setItem('CREDENTIALS_TIMESTAMP', credentials.timestamp.toString());
   }
 
-  /**
-   * Get credentials from local storage
-   * @returns The stored credentials or null if not found
-   */
   static getCredentials(): StoredCredentials | null {
-    try {
-      const credentialId = localStorage.getItem(CREDENTIAL_ID_KEY);
-      const publickey = localStorage.getItem(PUBLIC_KEY_KEY);
-      const smartWalletAddress = localStorage.getItem(SMART_WALLET_KEY);
-      const timestamp = localStorage.getItem('CREDENTIALS_TIMESTAMP');
+    const credentialId = localStorage.getItem(CREDENTIAL_ID_KEY);
+    const publickey = localStorage.getItem(PUBLIC_KEY_KEY);
+    const smartWalletAddress = localStorage.getItem(SMART_WALLET_KEY);
+    const timestamp = localStorage.getItem('CREDENTIALS_TIMESTAMP');
 
-      if (!publickey || !smartWalletAddress) {
-        return null;
-      }
+    if (!publickey || !smartWalletAddress) return null;
 
-      return {
-        credentialId: credentialId || undefined,
-        publickey,
-        smartWalletAddress,
-        timestamp: timestamp ? parseInt(timestamp) : Date.now()
-      };
-    } catch (error) {
-      console.error('Failed to get credentials from local storage:', error);
-      return null;
-    }
+    return {
+      credentialId: credentialId || undefined,
+      publickey,
+      smartWalletAddress,
+      timestamp: timestamp ? parseInt(timestamp) : Date.now()
+    };
   }
 
-  /**
-   * Update smart wallet address in local storage
-   * @param smartWalletAddress The smart wallet address to save
-   */
   static updateSmartWalletAddress(smartWalletAddress: string): void {
-    try {
-      localStorage.setItem(SMART_WALLET_KEY, smartWalletAddress);
-    } catch (error) {
-      console.error('Failed to update smart wallet address in local storage:', error);
-    }
+    localStorage.setItem(SMART_WALLET_KEY, smartWalletAddress);
   }
 
-  /**
-   * Clear credentials from local storage
-   */
   static clearCredentials(): void {
-    try {
-      localStorage.removeItem(CREDENTIAL_ID_KEY);
-      localStorage.removeItem(PUBLIC_KEY_KEY);
-      localStorage.removeItem(SMART_WALLET_KEY);
-      localStorage.removeItem('CREDENTIALS_TIMESTAMP');
-      console.log('Credentials cleared from local storage');
-    } catch (error) {
-      console.error('Failed to clear credentials from local storage:', error);
-    }
+    localStorage.removeItem(CREDENTIAL_ID_KEY);
+    localStorage.removeItem(PUBLIC_KEY_KEY);
+    localStorage.removeItem(SMART_WALLET_KEY);
+    localStorage.removeItem('CREDENTIALS_TIMESTAMP');
   }
 
   static getItem(key: string): string | null {

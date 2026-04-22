@@ -7,6 +7,7 @@ import { useCallback } from 'react';
 import { PublicKey, TransactionInstruction, AddressLookupTableAccount } from '@solana/web3.js';
 import { useWalletStore } from './store';
 import { WalletInfo } from '../core/storage';
+import type { SpendingLimits } from '../core/types';
 
 export interface WalletHookInterface {
   // State
@@ -21,17 +22,44 @@ export interface WalletHookInterface {
   // Actions
   connect: (options?: { feeMode?: 'paymaster' | 'user' }) => Promise<WalletInfo>;
   disconnect: () => Promise<void>;
-  signAndSendTransaction: (payload: {
-    instructions: TransactionInstruction[],
-    transactionOptions?: {
-      feeToken?: string,
-      addressLookupTableAccounts?: AddressLookupTableAccount[],
-      computeUnitLimit?: number,
-      clusterSimulation?: 'devnet' | 'mainnet'
-    }
-  }) => Promise<string>;
+  signAndSendTransaction: (payload: SendTxPayload) => Promise<string>;
   signMessage: (message: string) => Promise<{ signature: string, signedPayload: string }>;
   verifyMessage: (args: { signedPayload: Uint8Array, signature: Uint8Array, publicKey: Uint8Array }) => Promise<boolean>;
+
+  // Session key actions
+  createSession: (payload?: { expiresInSlots?: bigint; spendingLimits?: SpendingLimits }) => Promise<{ sessionPda: string; sessionPublicKey: string }>;
+  revokeSession: () => Promise<void>;
+  signAndSendWithSession: (payload: SendTxPayload) => Promise<string>;
+
+  // Ed25519 authority actions
+  addAuthority: (payload?: { role?: number }) => Promise<{ authorityPda: string; authorityPublicKey: string }>;
+  removeAuthority: (targetAuthorityPda: string) => Promise<void>;
+  signAndSendWithAuthority: (payload: SendTxPayload) => Promise<string>;
+
+  // Deferred execution
+  authorizeAndExecute: (payload: SendTxPayload) => Promise<string>;
+  /** TX1 only — passkey ký và trả về serialized deferredPayload cho TX2. */
+  authorizeDeferred: (payload: SendTxPayload) => Promise<{ signature: string; deferredPayload: string }>;
+  /** TX2 only — submit từ serialized deferredPayload. Không cần passkey. */
+  executeDeferred: (payload: ExecuteDeferredHookPayload) => Promise<string>;
+}
+
+/** Shared payload for every send-tx action on the hook. */
+export interface SendTxPayload {
+  instructions: TransactionInstruction[];
+  transactionOptions?: {
+    feeToken?: string;
+    addressLookupTableAccounts?: AddressLookupTableAccount[];
+    computeUnitLimit?: number;
+    clusterSimulation?: 'devnet' | 'mainnet';
+    /** Wire format for the transaction. Defaults to 'v0'. */
+    txVersion?: 'legacy' | 'v0';
+  };
+}
+
+export interface ExecuteDeferredHookPayload {
+  deferredPayload: string;
+  transactionOptions?: SendTxPayload['transactionOptions'];
 }
 
 import { verifySignatureBrowser } from '../utils/verify';
@@ -51,65 +79,31 @@ export const useWallet = (): WalletHookInterface => {
     disconnect,
     signAndSendTransaction,
     signMessage,
+    createSession,
+    revokeSession,
+    signAndSendWithSession,
+    addAuthority,
+    removeAuthority,
+    signAndSendWithAuthority,
+    authorizeAndExecute,
+    authorizeDeferred,
+    executeDeferred,
   } = useWalletStore();
 
-  /**
-   * Handle wallet connection
-   */
-  const handleConnect = useCallback(async (options?: { feeMode?: 'paymaster' | 'user' }): Promise<WalletInfo> => {
-    try {
-      return await connect(options);
-    } catch (error) {
-      console.error('Failed to connect wallet:', error);
-      throw error;
-    }
-  }, [connect]);
+  const handleConnect = useCallback(
+    (options?: { feeMode?: 'paymaster' | 'user' }) => connect(options),
+    [connect]
+  );
 
-  /**
-   * Handle wallet disconnection
-   */
-  const handleDisconnect = useCallback(async (): Promise<void> => {
-    try {
-      await disconnect();
-    } catch (error) {
-      console.error('Failed to disconnect wallet:', error);
-      throw error;
-    }
-  }, [disconnect]);
+  const handleDisconnect = useCallback(() => disconnect(), [disconnect]);
 
-  /**
-   * Handle transaction signing and sending
-   */
   const handleSignAndSendTransaction = useCallback(
-    async (payload: {
-      instructions: TransactionInstruction[],
-      transactionOptions?: { feeToken?: string, addressLookupTableAccounts?: AddressLookupTableAccount[], computeUnitLimit?: number, clusterSimulation?: 'devnet' | 'mainnet' }
-    }): Promise<string> => {
-      try {
-        return await signAndSendTransaction({
-          instructions: payload.instructions,
-          transactionOptions: payload.transactionOptions
-        });
-      } catch (error) {
-        console.error('Failed to sign and send transaction:', error);
-        throw error;
-      }
-    },
+    (payload: SendTxPayload) => signAndSendTransaction(payload),
     [signAndSendTransaction]
   );
 
-  /**
-   * Handle message signing
-   */
   const handleSignMessage = useCallback(
-    async (message: string): Promise<{ signature: string, signedPayload: string }> => {
-      try {
-        return await signMessage(message);
-      } catch (error) {
-        console.error('Failed to sign message:', error);
-        throw error;
-      }
-    },
+    (message: string) => signMessage(message),
     [signMessage]
   );
 
@@ -154,5 +148,44 @@ export const useWallet = (): WalletHookInterface => {
     signAndSendTransaction: handleSignAndSendTransaction,
     signMessage: handleSignMessage,
     verifyMessage: handleVerifyMessage,
+
+    // Session key actions
+    createSession: useCallback(
+      (payload?: { expiresInSlots?: bigint; spendingLimits?: SpendingLimits }) => createSession(payload),
+      [createSession]
+    ),
+    revokeSession: useCallback(() => revokeSession(), [revokeSession]),
+    signAndSendWithSession: useCallback(
+      (payload: SendTxPayload) => signAndSendWithSession(payload),
+      [signAndSendWithSession]
+    ),
+
+    // Ed25519 authority actions
+    addAuthority: useCallback(
+      (payload?: { role?: number }) => addAuthority(payload),
+      [addAuthority]
+    ),
+    removeAuthority: useCallback(
+      (targetAuthorityPda: string) => removeAuthority(targetAuthorityPda),
+      [removeAuthority]
+    ),
+    signAndSendWithAuthority: useCallback(
+      (payload: SendTxPayload) => signAndSendWithAuthority(payload),
+      [signAndSendWithAuthority]
+    ),
+
+    // Deferred execution
+    authorizeAndExecute: useCallback(
+      (payload: SendTxPayload) => authorizeAndExecute(payload),
+      [authorizeAndExecute]
+    ),
+    authorizeDeferred: useCallback(
+      (payload: SendTxPayload) => authorizeDeferred(payload),
+      [authorizeDeferred]
+    ),
+    executeDeferred: useCallback(
+      (payload: ExecuteDeferredHookPayload) => executeDeferred(payload),
+      [executeDeferred]
+    ),
   };
 };

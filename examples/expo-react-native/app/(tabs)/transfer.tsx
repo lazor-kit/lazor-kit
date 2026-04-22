@@ -1,7 +1,7 @@
 'use client';
 
 import { Ionicons } from '@expo/vector-icons';
-import { SmartWalletAction, SmartWalletActionArgs, useLazorWallet } from '@lazorkit/wallet-mobile-adapter';
+import { useLazorWallet } from '@lazorkit/wallet-mobile-adapter';
 import {
   Connection,
   LAMPORTS_PER_SOL,
@@ -33,7 +33,7 @@ interface Token {
 
 export default function TransferScreen() {
   // Initialize wallet hook
-  const { smartWalletPubkey, isConnected, signMessage } = useLazorWallet();
+  const { smartWalletPubkey, isConnected, signAndSendTransaction } = useLazorWallet();
 
   const [isLoadingBalance, setIsLoadingBalance] = useState(true);
 
@@ -58,7 +58,7 @@ export default function TransferScreen() {
     const interval = setInterval(fetchBalance, 5000); // fetch every 5 seconds
 
     return () => clearInterval(interval);
-  }, [smartWalletPubkey, isLoadingBalance]);
+  }, [smartWalletPubkey?.toBase58(), isLoadingBalance]);
 
   const [fromToken, setFromToken] = useState<Token>({
     symbol: 'SOL',
@@ -153,19 +153,18 @@ export default function TransferScreen() {
     }
   };
 
-  // Helper function to create transfer instruction
+  // Helper function to create transfer instruction (smart wallet → recipient)
   const createTransferInstruction = (toAddress: string, amount: number) => {
     if (!smartWalletPubkey) {
       throw new Error('Wallet not connected');
     }
 
-    const fromPubkey = new PublicKey(smartWalletPubkey);
     const toPubkey = new PublicKey(toAddress);
 
     return SystemProgram.transfer({
-      fromPubkey,
+      fromPubkey: smartWalletPubkey,
       toPubkey,
-      lamports: amount * LAMPORTS_PER_SOL,
+      lamports: Math.round(amount * LAMPORTS_PER_SOL),
     });
   };
 
@@ -233,30 +232,28 @@ export default function TransferScreen() {
                 sendAmount
               );
 
-              // Create Smart Wallet Action 
-              const action: SmartWalletActionArgs<SmartWalletAction.CreateChunk> = {
-                type: SmartWalletAction.CreateChunk,
-                args: {
-                  policyInstruction: null, // Optional policy instruction
-                  cpiInstructions: [transferInstruction], // Your transaction instruction
-                  expiresAt: (Date.now() + 60 * 60 * 1000), // 1 hour
-                }
-              };
-
-              // Sign message and execute transaction
-              await signMessage(action, {
-                onSuccess: (result) => {
-                  console.log('Transaction signed successfully:', result);
-                  setTransactionHash(result);
-                  setShowTransactionResult(true);
+              // Sign via passkey portal and execute through the paymaster.
+              await signAndSendTransaction(
+                {
+                  instructions: [transferInstruction],
+                  transactionOptions: {
+                    clusterSimulation: 'devnet',
+                  },
                 },
-                onFail: (error) => {
-                  throw new Error(
-                    `Failed to sign transaction: ${error.message}`
-                  );
+                {
+                  redirectUrl: 'exp://localhost:8081',
+                  onSuccess: (signature) => {
+                    console.log('Transaction signed successfully:', signature);
+                    setTransactionHash(signature);
+                    setShowTransactionResult(true);
+                  },
+                  onFail: (error) => {
+                    throw new Error(
+                      `Failed to sign transaction: ${error.message}`
+                    );
+                  },
                 },
-                redirectUrl: 'exp://localhost:8081',
-              });
+              );
             } catch (error) {
               console.error('Transaction error:', error);
               Alert.alert(

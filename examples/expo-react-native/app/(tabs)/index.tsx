@@ -5,7 +5,6 @@ import { useLazorWallet } from '@lazorkit/wallet-mobile-adapter';
 import {
     Connection,
     LAMPORTS_PER_SOL,
-    PublicKey
 } from '@solana/web3.js';
 import * as Clipboard from 'expo-clipboard';
 import { useEffect, useState } from 'react';
@@ -35,13 +34,7 @@ export default function WalletScreen() {
 
     const fetchBalance = async () => {
       try {
-        const balance = await connection.getBalance(
-          new PublicKey(smartWalletPubkey)
-        );
-        console.log(smartWalletPubkey);
-
-        console.log(balance);
-
+        const balance = await connection.getBalance(smartWalletPubkey);
         setSolBalance(balance / LAMPORTS_PER_SOL);
       } catch (error) {
         console.error('Error fetching balance:', error);
@@ -52,7 +45,7 @@ export default function WalletScreen() {
     const interval = setInterval(fetchBalance, 5000); // fetch every 5 seconds
 
     return () => clearInterval(interval);
-  }, [smartWalletPubkey]);
+  }, [smartWalletPubkey?.toBase58()]);
 
   const copyToClipboard = async () => {
     if (smartWalletPubkey) {

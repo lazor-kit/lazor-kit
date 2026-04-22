@@ -17,11 +17,9 @@ export const createDialogManager = (config: WalletConfig): DialogManager => {
 /**
  * Computes the credential hash from a base64 credential ID
  */
-export const getCredentialHash = (credentialIdBase64: string): number[] => {
-    return Array.from(
-        new Uint8Array(
-            sha256.arrayBuffer(Buffer.from(credentialIdBase64, 'base64'))
-        )
+export const getCredentialHash = (credentialIdBase64: string): Uint8Array => {
+    return new Uint8Array(
+        sha256.arrayBuffer(Buffer.from(credentialIdBase64, 'base64'))
     );
 };
 
@@ -60,8 +58,11 @@ export const cleanupLegacyStorage = (): void => {
 /**
  * Converts base64 public key to number array
  */
-export const getPasskeyPublicKey = (publicKeyBase64: string | undefined): number[] => {
-    return publicKeyBase64
-        ? Array.from(Buffer.from(publicKeyBase64, 'base64'))
-        : [];
+export const getPasskeyPublicKey = (publicKeyBase64: string | undefined): Uint8Array => {
+    if (!publicKeyBase64) {
+        return new Uint8Array(0); // Return empty Uint8Array instead of []
+    }
+
+    // Buffer.from returns a Buffer, which is a subclass of Uint8Array
+    return new Uint8Array(Buffer.from(publicKeyBase64, 'base64'));
 };

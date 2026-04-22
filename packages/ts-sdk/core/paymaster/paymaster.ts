@@ -115,9 +115,10 @@ export class Paymaster {
                     jsonrpc: '2.0',
                     method: 'signTransaction',
                     id: 1,
-                    params: [
-                        serialized.toString('base64')
-                    ]
+                    params: {
+                        transaction: serialized.toString('base64'),
+                        ...(transaction.feePayer ? { signer_key: transaction.feePayer.toBase58() } : {}),
+                    }
                 })
             });
 
@@ -183,9 +184,10 @@ export class Paymaster {
                     jsonrpc: '2.0',
                     method: 'signAndSendTransaction',
                     id: 1,
-                    params: [
-                        serialized.toString('base64')
-                    ]
+                    params: {
+                        transaction: serialized.toString('base64'),
+                        ...(transaction.feePayer ? { signer_key: transaction.feePayer.toBase58() } : {}),
+                    }
                 })
             });
 
@@ -240,6 +242,8 @@ export class Paymaster {
    */
     private async attemptSignAndSendVersionedTransaction(transaction: VersionedTransaction, attempt: number = 1): Promise<string> {
         try {
+            // V0 message: account_keys[0] is the fee payer.
+            const feePayerKey = transaction.message.staticAccountKeys[0];
             const response = await fetch(`${this.endpoint}`, {
                 method: 'POST',
                 headers: this.getHeaders(),
@@ -247,11 +251,10 @@ export class Paymaster {
                     jsonrpc: '2.0',
                     method: 'signAndSendTransaction',
                     id: 1,
-                    params: [
-                        Buffer.from(
-                            transaction.serialize()
-                        ).toString("base64")
-                    ]
+                    params: {
+                        transaction: Buffer.from(transaction.serialize()).toString('base64'),
+                        ...(feePayerKey ? { signer_key: feePayerKey.toBase58() } : {}),
+                    }
                 })
             });
 

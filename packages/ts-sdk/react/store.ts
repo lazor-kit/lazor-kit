@@ -6,7 +6,21 @@
 import { Connection } from '@solana/web3.js';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
-import { connectAction, disconnectAction, signAndSendTransactionAction, signMessageAction } from '../core/wallet/actions';
+import {
+  connectAction,
+  disconnectAction,
+  signAndSendTransactionAction,
+  signMessageAction,
+  createSessionAction,
+  revokeSessionAction,
+  signAndSendWithSessionAction,
+  addAuthorityAction,
+  removeAuthorityAction,
+  signAndSendWithAuthorityAction,
+  authorizeAndExecuteAction,
+  authorizeDeferredAction,
+  executeDeferredAction,
+} from '../core/wallet/actions';
 
 import { WalletInfo, WalletConfig, storage } from '../core/storage';
 import { DEFAULTS, DEFAULT_COMMITMENT } from '../config';
@@ -34,46 +48,22 @@ export const useWalletStore = create<WalletState>()(
 
       // State setters
       setConfig: (config: WalletConfig) => {
-        try {
-          const connection = new Connection(
-            config.rpcUrl || DEFAULTS.RPC_ENDPOINT!,
-            DEFAULT_COMMITMENT
-          );
-          set({ config, connection });
-        } catch (error) {
-          console.error('Failed to update wallet configuration:', error, { config });
-          throw new Error(`Failed to update configuration: ${error}`);
-        }
+        const connection = new Connection(
+          config.rpcUrl || DEFAULTS.RPC_ENDPOINT!,
+          DEFAULT_COMMITMENT
+        );
+        set({ config, connection });
       },
 
-      setWallet: (wallet: WalletInfo | null) => {
-        try {
-          set({ wallet });
-        } catch (error) {
-          console.error('Failed to set wallet:', error, { wallet });
-          throw error;
-        }
-      },
+      setWallet: (wallet: WalletInfo | null) => set({ wallet }),
 
       setLoading: (isLoading: boolean) => set({ isLoading }),
       setConnecting: (isConnecting: boolean) => set({ isConnecting }),
       setSigning: (isSigning: boolean) => set({ isSigning }),
 
-      setConnection: (connection: Connection) => {
-        try {
-          set({ connection });
-        } catch (error) {
-          console.error('Failed to set connection:', error, { endpoint: connection?.rpcEndpoint });
-          throw error;
-        }
-      },
+      setConnection: (connection: Connection) => set({ connection }),
 
-      setError: (error: Error | null) => {
-        set({ error });
-        if (error) {
-          console.error('Error state set:', error);
-        }
-      },
+      setError: (error: Error | null) => set({ error }),
 
       clearError: () => {
         set({ error: null });
@@ -84,6 +74,21 @@ export const useWalletStore = create<WalletState>()(
       disconnect: () => disconnectAction(set),
       signAndSendTransaction: (payload) => signAndSendTransactionAction(get, set, payload),
       signMessage: (message) => signMessageAction(get, set, message),
+
+      // Session key actions
+      createSession: (payload) => createSessionAction(get, set, payload ?? {}),
+      revokeSession: (payload) => revokeSessionAction(get, set, payload ?? {}),
+      signAndSendWithSession: (payload) => signAndSendWithSessionAction(get, set, payload),
+
+      // Ed25519 authority actions
+      addAuthority: (payload) => addAuthorityAction(get, set, payload ?? {}),
+      removeAuthority: (targetAuthorityPda) => removeAuthorityAction(get, set, { targetAuthorityPda }),
+      signAndSendWithAuthority: (payload) => signAndSendWithAuthorityAction(get, set, payload),
+
+      // Deferred execution
+      authorizeAndExecute: (payload) => authorizeAndExecuteAction(get, set, payload),
+      authorizeDeferred: (payload) => authorizeDeferredAction(get, set, payload),
+      executeDeferred: (payload) => executeDeferredAction(get, set, payload),
     }),
     {
       name: 'lazorkit-wallet-store',
