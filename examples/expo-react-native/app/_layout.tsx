@@ -1,4 +1,4 @@
-import { LazorKitProvider } from '@lazorkit/wallet-mobile-adapter';
+import { LazorKitProvider } from '@lazorkit/react-native';
 import { Stack } from 'expo-router';
 
 const RPC_URL = process.env.EXPO_PUBLIC_SOLANA_RPC_URL;

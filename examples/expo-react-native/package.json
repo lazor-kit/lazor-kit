@@ -2,6 +2,7 @@
   "name": "lazorexpo",
   "main": "expo-router/entry",
   "version": "1.0.0",
+  "packageManager": "yarn@1.22.22",
   "scripts": {
     "start": "expo start",
     "reset-project": "node ./scripts/reset-project.js",
@@ -13,7 +14,7 @@
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",
     "@expo/vector-icons": "^15.0.3",
-    "@lazorkit/wallet-mobile-adapter": "file:../../../wallet-mobile-adapter/lazorkit-wallet-mobile-adapter-2.0.0-beta.2.tgz",
+    "@lazorkit/react-native": "link:../../packages/react-native",
     "@react-native-async-storage/async-storage": "^2.2.0",
     "@react-navigation/bottom-tabs": "^7.4.0",
     "@react-navigation/elements": "^2.9.1",

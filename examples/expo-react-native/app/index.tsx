@@ -1,7 +1,7 @@
 'use client';
 
 import { Ionicons } from '@expo/vector-icons';
-import { useWallet } from '@lazorkit/wallet-mobile-adapter';
+import { useWallet } from '@lazorkit/react-native';
 import { router } from 'expo-router';
 import { useState } from 'react';
 import {
