@@ -1,4 +1,5 @@
 packages:
-  - packages/*
-  - packages/program-sdk/*
-  - app/*
+  - packages/react
+  - packages/react-native
+  - packages/program-sdk/legacy
+  - app/portal

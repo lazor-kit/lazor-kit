@@ -30,5 +30,20 @@
     "rollup-plugin-dts": "^6.3.0",
     "tslib": "^2.8.1",
     "typescript": "^5.9.3"
+  },
+  "pnpm": {
+    "peerDependencyRules": {
+      "allowedVersions": {
+        "utf-8-validate": "^6.0.0",
+        "@types/react": "^19.0.0"
+      }
+    },
+    "onlyBuiltDependencies": [
+      "bufferutil",
+      "esbuild",
+      "sharp",
+      "unrs-resolver",
+      "utf-8-validate"
+    ]
   }
 }

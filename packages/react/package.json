@@ -82,6 +82,6 @@
     "@wallet-standard/base": "^1.1.0",
     "@wallet-standard/features": "^1.1.0",
     "@wallet-standard/wallet": "^1.1.0",
-    "typescript": "^5.8.3"
+    "typescript": "^5.9.3"
   }
 }
