@@ -8,9 +8,13 @@ Publishable packages:
 
 | Package                            | Path                              |
 | ---------------------------------- | --------------------------------- |
-| `@lazorkit/react`                  | `packages/react`                  |
-| `@lazorkit/react-native`           | `packages/react-native`           |
-| `@lazorkit/program-sdk-legacy`     | `packages/program-sdk/legacy`     |
+| `@lazorkit/wallet`                  | `packages/react`                  |
+| `@lazorkit/wallet-mobile-adapter`   | `packages/react-native`           |
+| `@lazorkit/sdk-legacy`              | `packages/program-sdk/legacy`     |
+
+> Note: folder names reflect the underlying tech (`react` / `react-native`)
+> while the published npm names are kept stable to avoid breaking downstream
+> consumers. pnpm matches packages by `name` in package.json, not by path.
 
 `@lazorkit/portal` (`app/portal`) is private and not published.
 
@@ -51,9 +55,9 @@ If automation is unavailable:
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm --filter @lazorkit/program-sdk-legacy build
-pnpm --filter @lazorkit/react build
-pnpm --filter @lazorkit/react-native build
+pnpm --filter @lazorkit/sdk-legacy build
+pnpm --filter @lazorkit/wallet build
+pnpm --filter @lazorkit/wallet-mobile-adapter build
 
 cd packages/react           # or another publishable package
 npm publish --access public --provenance

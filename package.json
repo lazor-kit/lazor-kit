@@ -15,7 +15,7 @@
     "prepublishOnly": "pnpm -r prepublishOnly",
     "changeset": "changeset",
     "version": "changeset version",
-    "release": "pnpm --filter @lazorkit/program-sdk-legacy --filter @lazorkit/react --filter @lazorkit/react-native build && changeset publish"
+    "release": "pnpm --filter @lazorkit/sdk-legacy --filter @lazorkit/wallet --filter @lazorkit/wallet-mobile-adapter build && changeset publish"
   },
   "devDependencies": {
     "@changesets/changelog-github": "^0.5.0",

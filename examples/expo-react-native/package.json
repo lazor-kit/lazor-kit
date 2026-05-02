@@ -14,7 +14,7 @@
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",
     "@expo/vector-icons": "^15.0.3",
-    "@lazorkit/react-native": "link:../../packages/react-native",
+    "@lazorkit/wallet-mobile-adapter": "link:../../packages/react-native",
     "@react-native-async-storage/async-storage": "^2.2.0",
     "@react-navigation/bottom-tabs": "^7.4.0",
     "@react-navigation/elements": "^2.9.1",

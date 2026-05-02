@@ -1,5 +1,5 @@
 {
-  "name": "@lazorkit/program-sdk-legacy",
+  "name": "@lazorkit/sdk-legacy",
   "version": "0.2.0",
   "description": "LazorKit Protocol TypeScript SDK — passkey-based smart wallet on Solana (web3.js v1)",
   "keywords": [

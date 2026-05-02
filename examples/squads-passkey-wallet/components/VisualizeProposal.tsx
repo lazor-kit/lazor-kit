@@ -1,6 +1,6 @@
 import type { VaultTransactionLike } from '@/components/VisualizeTxn';
 import VaultTxnSummary from '@/components/VisualizeTxn'; // your VaultTxnSummary
-import { SmartWalletAction } from '@lazorkit/react-native';
+import { SmartWalletAction } from '@lazorkit/wallet-mobile-adapter';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import * as multisigSdk from '@sqds/multisig';
 import base58 from 'bs58';

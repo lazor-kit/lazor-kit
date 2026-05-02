@@ -3,7 +3,7 @@ import {
   SmartWalletActionArgs,
   SmartWalletAction,
   useLazorWallet,
-} from '@lazorkit/react-native';
+} from '@lazorkit/wallet-mobile-adapter';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import * as multisigSdk from '@sqds/multisig';
 import { router } from 'expo-router';

@@ -4,7 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import {
   useLazorWallet,
   type AuthorizeResult,
-} from '@lazorkit/react-native';
+} from '@lazorkit/wallet-mobile-adapter';
 import {
   LAMPORTS_PER_SOL,
   PublicKey,

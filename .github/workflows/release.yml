@@ -35,13 +35,13 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck (web SDK)
-        run: pnpm --filter @lazorkit/react typecheck
+        run: pnpm --filter @lazorkit/wallet typecheck
 
       - name: Build publishable packages
         run: |
-          pnpm --filter @lazorkit/program-sdk-legacy build
-          pnpm --filter @lazorkit/react build
-          pnpm --filter @lazorkit/react-native build
+          pnpm --filter @lazorkit/sdk-legacy build
+          pnpm --filter @lazorkit/wallet build
+          pnpm --filter @lazorkit/wallet-mobile-adapter build
 
       - name: Create release PR or publish
         id: changesets

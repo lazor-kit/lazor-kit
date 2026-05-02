@@ -10,7 +10,7 @@ import 'react-native-reanimated';
 
 import { useColorScheme } from '@/hooks/useColorScheme';
 import { MultisigProvider } from '@/store/MultisigContext';
-import { LazorKitProvider } from '@lazorkit/react-native';
+import { LazorKitProvider } from '@lazorkit/wallet-mobile-adapter';
 
 // Polyfill Buffer for Hermes
 import { Buffer } from 'buffer';

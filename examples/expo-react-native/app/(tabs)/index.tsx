@@ -1,7 +1,7 @@
 'use client';
 
 import { Ionicons } from '@expo/vector-icons';
-import { useLazorWallet } from '@lazorkit/react-native';
+import { useLazorWallet } from '@lazorkit/wallet-mobile-adapter';
 import {
     Connection,
     LAMPORTS_PER_SOL,
