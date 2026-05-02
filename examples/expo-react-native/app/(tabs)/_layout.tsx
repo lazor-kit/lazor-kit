@@ -63,6 +63,24 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name='deferred'
+        options={{
+          title: 'Deferred',
+          tabBarIcon: ({ color }) => (
+            <TabBarIcon name='time-outline' color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name='session'
+        options={{
+          title: 'Session',
+          tabBarIcon: ({ color }) => (
+            <TabBarIcon name='key-outline' color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name='settings'
         options={{
           title: 'Settings',

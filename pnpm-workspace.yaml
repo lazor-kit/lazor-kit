@@ -1,3 +1,5 @@
 packages:
-  - app/*
-  - packages/*
+  - packages/react
+  - packages/react-native
+  - packages/program-sdk/legacy
+  - app/portal

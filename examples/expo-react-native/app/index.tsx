@@ -1,7 +1,7 @@
 'use client';
 
 import { Ionicons } from '@expo/vector-icons';
-import { useLazorWallet } from '@lazorkit/wallet-mobile-adapter';
+import { useWallet } from '@lazorkit/wallet-mobile-adapter';
 import { router } from 'expo-router';
 import { useState } from 'react';
 import {
@@ -17,7 +17,7 @@ import {
 
 export default function Index() {
   const [loading, setLoading] = useState<string | null>(null);
-  const { smartWalletPubkey, connect } = useLazorWallet();
+  const { smartWalletPubkey, connect } = useWallet();
 
   // If wallet is connected, redirect to tabs
   // if (pubkey) {
