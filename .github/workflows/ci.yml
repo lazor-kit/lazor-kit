@@ -73,7 +73,7 @@ jobs:
 
       - name: Upload web SDK dist
         if: matrix.node == 20
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lazorkit-wallet-dist
           path: packages/react/dist
@@ -81,7 +81,7 @@ jobs:
 
       - name: Upload mobile adapter dist
         if: matrix.node == 20
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lazorkit-wallet-mobile-adapter-dist
           path: packages/react-native/dist
