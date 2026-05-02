@@ -1,0 +1,42 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: ["dependencies"]
+    groups:
+      rollup:
+        patterns: ["rollup", "@rollup/*", "rollup-plugin-*"]
+      types:
+        patterns: ["@types/*"]
+      changesets:
+        patterns: ["@changesets/*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: npm
+    directory: /packages/ts-sdk
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "sdk"]
+    groups:
+      solana:
+        patterns: ["@solana/*", "@solana-program/*"]
+      wallet-standard:
+        patterns: ["@wallet-standard/*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels: ["dependencies", "ci"]

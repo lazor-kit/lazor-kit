@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 20, 22]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (web SDK)
+        run: pnpm --filter @lazorkit/react typecheck
+
+      - name: Build all publishable packages
+        run: |
+          pnpm --filter @lazorkit/program-sdk-legacy build
+          pnpm --filter @lazorkit/react build
+          pnpm --filter @lazorkit/react-native build
+
+      - name: Verify web SDK dist
+        run: |
+          test -f packages/react/dist/index.js
+          test -f packages/react/dist/index.mjs
+          test -f packages/react/dist/index.d.ts
+
+      - name: Verify mobile adapter dist
+        run: |
+          test -f packages/react-native/dist/index.js
+          test -f packages/react-native/dist/index.esm.js
+          test -f packages/react-native/dist/index.d.ts
+
+      - name: Verify legacy SDK dist
+        run: |
+          test -f packages/program-sdk/legacy/dist/index.js
+          test -f packages/program-sdk/legacy/dist/index.d.ts
+
+      - name: Pack web SDK (smoke test)
+        working-directory: packages/react
+        run: npm pack --dry-run
+
+      - name: Pack mobile adapter (smoke test)
+        working-directory: packages/react-native
+        run: npm pack --dry-run
+
+      - name: Upload web SDK dist
+        if: matrix.node == 20
+        uses: actions/upload-artifact@v4
+        with:
+          name: lazorkit-react-dist
+          path: packages/react/dist
+          retention-days: 7
+
+      - name: Upload mobile adapter dist
+        if: matrix.node == 20
+        uses: actions/upload-artifact@v4
+        with:
+          name: lazorkit-react-native-dist
+          path: packages/react-native/dist
+          retention-days: 7

@@ -1,0 +1,183 @@
+{
+  "address": "BiE9vSdz9MidUiyjVYsu3PG4C1fbPZ8CVPADA9jRfXw7",
+  "metadata": {
+    "name": "default_policy",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Created with Anchor"
+  },
+  "instructions": [
+    {
+      "name": "check_policy",
+      "discriminator": [
+        28,
+        88,
+        170,
+        179,
+        239,
+        136,
+        25,
+        35
+      ],
+      "accounts": [
+        {
+          "name": "policy_signer",
+          "signer": true
+        },
+        {
+          "name": "smart_wallet"
+        }
+      ],
+      "args": [
+        {
+          "name": "wallet_id",
+          "type": "u64"
+        },
+        {
+          "name": "passkey_public_key",
+          "type": {
+            "array": [
+              "u8",
+              33
+            ]
+          }
+        },
+        {
+          "name": "credential_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "policy_data",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "init_policy",
+      "discriminator": [
+        45,
+        234,
+        110,
+        100,
+        209,
+        146,
+        191,
+        86
+      ],
+      "accounts": [
+        {
+          "name": "policy_signer",
+          "signer": true
+        },
+        {
+          "name": "smart_wallet",
+          "writable": true
+        },
+        {
+          "name": "wallet_state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "wallet_id",
+          "type": "u64"
+        },
+        {
+          "name": "passkey_public_key",
+          "type": {
+            "array": [
+              "u8",
+              33
+            ]
+          }
+        },
+        {
+          "name": "credential_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "PolicyStruct"
+        }
+      }
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidPasskey",
+      "msg": "Invalid passkey format"
+    },
+    {
+      "code": 6001,
+      "name": "Unauthorized",
+      "msg": "Unauthorized to access smart wallet"
+    }
+  ],
+  "types": [
+    {
+      "name": "DeviceSlot",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "passkey_pubkey",
+            "type": {
+              "array": [
+                "u8",
+                33
+              ]
+            }
+          },
+          {
+            "name": "credential_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "PolicyStruct",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "smart_wallet",
+            "type": "pubkey"
+          },
+          {
+            "name": "device_slots",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "DeviceSlot"
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

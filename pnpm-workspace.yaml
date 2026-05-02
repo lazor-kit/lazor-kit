@@ -1,4 +1,4 @@
 packages:
-  - app/*
   - packages/*
-  - "demo"
+  - packages/program-sdk/*
+  - app/*

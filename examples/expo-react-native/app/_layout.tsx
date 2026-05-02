@@ -10,7 +10,7 @@ export default function RootLayout() {
     <LazorKitProvider
       {...(RPC_URL ? { rpcUrl: RPC_URL } : {})}
       {...(PORTAL_URL ? { portalUrl: PORTAL_URL } : {})}
-      {...(PAYMASTER_URL ? { configPaymaster: { paymasterUrl: PAYMASTER_URL } } : {})}
+      {...(PAYMASTER_URL ? { configPaymaster: { paymasterUrl: PAYMASTER_URL, apiKey: "kora_live_api_cfa755da42cf3026291a5069e74ff37f3514d06400059c4408a20738e334df1d" } } : {})}
       isDebug={true}
     >
       <Stack>

@@ -69,7 +69,7 @@ export default function TransferScreen() {
   });
 
   const [toAddress, setToAddress] = useState(
-    'hij78MKbJSSs15qvkHWTDCtnmba2c1W4r1V22g5sD8w'
+    '3dsU4iyJWnoPqDQsbXT2KFfc1ZzzgtUyRGJRbRvSJ3r7'
   );
   const [amount, setAmount] = useState('');
   const [showTokenDropdown, setShowTokenDropdown] = useState(false);
