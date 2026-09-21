@@ -64,6 +64,7 @@
     "typescript-eslint": "^8.39.1"
   },
   "dependencies": {
+    "@lazorkit/sdk-legacy": "^1.0.0",
     "@react-native-async-storage/async-storage": "^2.2.0",
     "buffer": "^6.0.3",
     "expo-crypto": "^15.0.8",

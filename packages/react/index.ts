@@ -62,12 +62,12 @@ export {
   PROGRAM_ADDRESS,
 } from './core/program';
 // Runtime error decoding helpers.
-export { errorFromCode, extractErrorCode, ERROR_NAMES } from './core/program/utils/errors';
+export { errorFromCode, extractErrorCode, ERROR_NAMES } from './core/program';
 export type { DeferredPayload, SessionAction } from './core/program';
 
 // On-chain session-state helpers — read the cap/expiry/actions a session
 // was minted with, so clients can render "X SOL remaining, Y m until expiry"
 // without re-implementing the byte layout.
-export { SessionAccount, AuthorityAccount } from './core/program/utils/accounts';
-export { SessionActionType, serializeActions } from './core/program/utils/actions';
+export { SessionAccount, AuthorityAccount } from './core/program';
+export { SessionActionType, serializeActions } from './core/program';
 

@@ -401,13 +401,22 @@ export const createSessionAction = async (
         const expiresAt = BigInt(currentSlot) + (payload.expiresInSlots ?? DEFAULTS.SESSION_EXPIRY_SLOTS);
         const actions = buildSessionActions(payload.spendingLimits);
 
+        if (actions.length === 0 && !payload.unrestricted) {
+            throw new Error(
+                'createSession needs spendingLimits. A session with no limits can spend the ' +
+                    'whole vault through any program until it expires, and its key lives in the ' +
+                    'app rather than behind the passkey. Pass spendingLimits (solPerTxMax, ' +
+                    'solLifetimeCap, solRecurring), or unrestricted: true to mint one anyway.',
+            );
+        }
+
         const prepared = await client.prepareCreateSession({
             payer: feePayer,
             walletPda,
             secp256r1: { credentialIdHash, publicKeyBytes, authorityPda },
             sessionKey: sessionPublicKey,
             expiresAt,
-            actions: actions.length > 0 ? actions : undefined,
+            ...(actions.length > 0 ? { actions } : { unrestricted: true as const }),
         });
         const sessionPda = prepared.sessionPda;
 
