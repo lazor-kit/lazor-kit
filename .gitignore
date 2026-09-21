@@ -162,4 +162,5 @@ go.work.sum
 
 package-lock.json
 
-distapp/migrate/.certs/
+dist
+app/migrate/.certs/
