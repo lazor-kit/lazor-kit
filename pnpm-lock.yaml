@@ -87,9 +87,6 @@ importers:
       vite:
         specifier: ^6.0.0
         version: 6.4.2(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.4)
-      vite-plugin-mkcert:
-        specifier: ^1.17.6
-        version: 1.17.12(vite@6.4.2(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.4))
 
   app/portal:
     dependencies:
