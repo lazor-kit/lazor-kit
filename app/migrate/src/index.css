@@ -115,3 +115,12 @@ ul {
   padding-left: 1.1rem;
   margin: 0.5rem 0 0;
 }
+
+pre.copyable {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  font-size: 0.8rem;
+  overflow-x: auto;
+  margin: 0 0 0.75rem;
+}

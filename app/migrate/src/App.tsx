@@ -12,6 +12,7 @@ import { readV1WalletState, enumerateV1VaultTokens, type V1VaultToken } from '@l
 
 import { config, explorerTx } from './lib/config';
 import { connectPasskey, portalRpId, signChallenge, type Passkey } from './lib/portal';
+import { devSeedEnabled, seedV1Wallet } from './lib/devSeed';
 import { formatSol, formatTokenAmount, short } from './lib/format';
 
 type Phase =
@@ -34,6 +35,8 @@ const paymaster = new Paymaster({
 export default function App() {
   const [phase, setPhase] = useState<Phase>({ name: 'idle' });
   const [passkey, setPasskey] = useState<Passkey | null>(null);
+  const [seeding, setSeeding] = useState(false);
+  const [seedResult, setSeedResult] = useState<string | null>(null);
 
   const fail = (e: unknown) =>
     setPhase({ name: 'error', message: e instanceof Error ? e.message : String(e) });
@@ -70,6 +73,20 @@ export default function App() {
       fail(e);
     }
   }, []);
+
+  const seed = useCallback(async () => {
+    if (!passkey) return;
+    setSeeding(true);
+    setSeedResult(null);
+    try {
+      const { walletPda, vault } = await seedV1Wallet(passkey);
+      setSeedResult(`Created ${walletPda.toBase58().slice(0, 8)}… — vault ${vault.toBase58().slice(0, 8)}…`);
+    } catch (e) {
+      setSeedResult(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSeeding(false);
+    }
+  }, [passkey]);
 
   /** Step 2: one signature, everything moves. */
   const migrate = useCallback(async () => {
@@ -161,6 +178,21 @@ export default function App() {
 
       {(phase.name === 'connecting' || phase.name === 'looking') && (
         <p className="status">{phase.name === 'connecting' ? 'Waiting for your passkey…' : 'Looking up your wallet…'}</p>
+      )}
+
+      {devSeedEnabled() && passkey && phase.name !== 'done' && (
+        <section className="card">
+          <h2>Test setup</h2>
+          <p className="muted">
+            Devnet only. Creates an old-style wallet owned by the passkey you just used, so there
+            is something to move. Funding and the program upgrade happen on their own; give it a
+            minute, then press Check my wallet again.
+          </p>
+          <button onClick={seed} disabled={seeding}>
+            {seeding ? 'Creating…' : 'Create a test wallet'}
+          </button>
+          {seedResult && <p className="muted">{seedResult}</p>}
+        </section>
       )}
 
       {phase.name === 'nothing' && (

@@ -78,6 +78,9 @@ importers:
       '@vitejs/plugin-react':
         specifier: ^4.3.4
         version: 4.7.0(vite@6.4.2(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.4))
+      sdk-v1:
+        specifier: npm:@lazorkit/sdk-legacy@0.3.2
+        version: '@lazorkit/sdk-legacy@0.3.2(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))'
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -1381,6 +1384,12 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@lazorkit/sdk-legacy@0.3.2':
+    resolution: {integrity: sha512-jLe+dMymoBJo4sxLDaHJ/V7ogwCvQSN8gJlyrqGm/vFmTqyOPgDnoE+BYeh2syI7swYuJuRj+DgB3flfddJgsg==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      '@solana/web3.js': ^1.95.0
 
   '@lazorkit/sdk-legacy@1.1.0':
     resolution: {integrity: sha512-iNWio4A4F2cm6PwPaazjIPc9weigmDcGqjmZJaFN/N7yAkeHclfPO0I7b7Obek9w4+wa+aih6FlDAwE5jE5NYw==}
@@ -6346,6 +6355,12 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
+
+  '@lazorkit/sdk-legacy@0.3.2(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))':
+    dependencies:
+      '@noble/hashes': 1.8.0
+      '@solana/web3.js': 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      buffer: 6.0.3
 
   '@lazorkit/sdk-legacy@1.1.0(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))':
     dependencies:
