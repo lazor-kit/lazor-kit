@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { Buffer } from 'buffer';
 import {
   Connection,
+  Keypair,
   PublicKey,
   TransactionMessage,
   VersionedTransaction,
@@ -12,7 +13,7 @@ import { readV1WalletState, enumerateV1VaultTokens, type V1VaultToken } from '@l
 
 import { config, explorerTx } from './lib/config';
 import { connectPasskey, portalRpId, signChallenge, type Passkey } from './lib/portal';
-import { devSeedEnabled, seedV1Wallet } from './lib/devSeed';
+import { devSeedEnabled, devPayer, seedV1Wallet } from './lib/devSeed';
 import { formatSol, formatTokenAmount, short } from './lib/format';
 
 type Phase =
@@ -123,7 +124,10 @@ export default function App() {
     const v1Wallet = phase.wallet;
     try {
       setPhase({ name: 'migrating', step: 'Preparing' });
-      const payer = await paymaster.getPayer();
+      // In dev the local key pays: the shared paymaster only sponsors program
+      // ids on its allow-list, and a throwaway test program is not one.
+      const local: Keypair | null = devSeedEnabled() ? devPayer() : null;
+      const payer = local ? local.publicKey : await paymaster.getPayer();
       const plan = await client.migrateV1Wallet({
         payer,
         owner: {
@@ -143,9 +147,14 @@ export default function App() {
           recentBlockhash: blockhash,
           instructions,
         }).compileToV0Message();
-        const signature = await paymaster.signAndSendVersionedTransaction(
-          new VersionedTransaction(message),
-        );
+        const tx = new VersionedTransaction(message);
+        let signature: string;
+        if (local) {
+          tx.sign([local]);
+          signature = await connection.sendTransaction(tx);
+        } else {
+          signature = await paymaster.signAndSendVersionedTransaction(tx);
+        }
         await connection.confirmTransaction(signature, 'confirmed');
         signatures.push(signature);
         return { message, signature };

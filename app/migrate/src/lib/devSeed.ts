@@ -21,6 +21,13 @@ import type { Passkey } from './portal';
  *
  * The program must be running its v1 binary when this is called.
  */
+/** The devnet key that pays in dev runs, in place of the shared paymaster. */
+export function devPayer(): Keypair {
+  const secret = import.meta.env.VITE_DEV_PAYER as string | undefined;
+  if (!secret) throw new Error('set VITE_DEV_PAYER to a devnet keypair (JSON array)');
+  return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(secret)));
+}
+
 export async function seedV1Wallet(passkey: Passkey): Promise<{
   walletPda: PublicKey;
   vault: PublicKey;
