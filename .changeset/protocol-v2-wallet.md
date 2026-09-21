@@ -14,4 +14,4 @@ Breaking, beyond the protocol change itself:
 - Every PDA derives a different address. A wallet created under v1 is unreachable from v2 code and must be moved with `LazorKitClient.migrateV1Wallet`.
 - The low-level `create*Ix` builders, `appendProtocolFeeAccounts` and `readAuthorityState` are no longer part of the public surface. The client methods replace them; `readAuthorityState` is now `readAuthorityCounter` plus `readAuthorityPubkey`.
 - `addAuthority` with `ROLE_SPENDER` (Delegate) requires a `policy`. The mobile adapter's `AddAuthorityPayload` gained the field.
-- A session created with no spending limits is unbounded, and v2 makes callers say so. The React package passes `unrestricted: true` on that path, preserving today's behaviour.
+- **`createSession` now refuses to mint an unbounded session by accident.** Passing no spending limits used to produce a session key that can spend the whole vault through any program until it expires, silently. It now throws unless the caller passes limits, or says `unrestricted: true`. This is the one behaviour change here that is not forced by the protocol, and a major release is the moment to make it.

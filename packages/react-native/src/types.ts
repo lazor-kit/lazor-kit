@@ -176,6 +176,13 @@ export interface CreateSessionPayload {
   readonly expiresAtSlot: bigint;
   /** Optional permission actions (spending limits, program whitelist, etc.). */
   readonly actions?: SessionAction[];
+  /**
+   * Create a session with no spending limits, which can spend the whole vault
+   * through any program until it expires. Required to be explicit: an
+   * actionless session is the most powerful thing this SDK can mint, and the
+   * key lives in the app rather than behind the user's passkey.
+   */
+  readonly unrestricted?: boolean;
 }
 
 /** Payload for `revokeSession`. */

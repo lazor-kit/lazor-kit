@@ -320,13 +320,24 @@ export const createSessionAction = async (
       );
       const walletPda = new PublicKey(wallet!.walletPda);
 
+      if (!params.actions?.length && !params.unrestricted) {
+        throw new Error(
+          'createSession needs actions. A session with no limits can spend the whole vault ' +
+            'through any program until it expires, and its key lives in the app rather than ' +
+            'behind the passkey. Pass actions built with serializeActions/Actions, or ' +
+            'unrestricted: true to mint one anyway.',
+        );
+      }
+
       const prepared = await client.prepareCreateSession({
         payer: feePayer,
         walletPda,
         secp256r1: buildSecp256r1Params(wallet!),
         sessionKey: params.sessionKey,
         expiresAt: params.expiresAtSlot,
-        actions: params.actions,
+        ...(params.actions?.length
+          ? { actions: params.actions }
+          : { unrestricted: true as const }),
       });
 
       const response = await signChallengeViaPortal({

@@ -67,6 +67,13 @@ export interface CreateSessionPayload {
     readonly expiresInSlots?: bigint;
     readonly spendingLimits?: SpendingLimits;
     /**
+     * Create a session with no spending limits, which can spend the whole
+     * vault through any program until it expires. Required to be explicit:
+     * an actionless session is the most powerful thing this SDK can mint,
+     * and the key lives in the app rather than behind the user's passkey.
+     */
+    readonly unrestricted?: boolean;
+    /**
      * Optional external session key to register as the authority. When
      * omitted the SDK generates a fresh keypair client-side and persists
      * its secretKey to localStorage for later signing. When provided, the
