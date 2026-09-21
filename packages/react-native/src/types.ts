@@ -189,6 +189,12 @@ export interface AddAuthorityPayload {
   readonly newEd25519Pubkey: PublicKey;
   /** Role: ROLE_ADMIN (1) or ROLE_SPENDER (2). Defaults to SPENDER. */
   readonly role?: number;
+  /**
+   * Spending policy, required when the role is ROLE_SPENDER (Delegate).
+   * Build it with `serializeActions([...])`. Protocol v2 rejects a Delegate
+   * without one (3033) and a policy on any other rank (3035).
+   */
+  readonly policy?: Uint8Array;
 }
 
 /** Payload for `removeAuthority`. */

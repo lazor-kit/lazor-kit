@@ -1,7 +1,7 @@
 {
   "name": "@lazorkit/sdk-legacy",
   "version": "0.2.0",
-  "description": "LazorKit Protocol TypeScript SDK — passkey-based smart wallet on Solana (web3.js v1)",
+  "description": "LazorKit Protocol TypeScript SDK \u2014 passkey-based smart wallet on Solana (web3.js v1) [ARCHIVED: the published @lazorkit/sdk-legacy line is built from github.com/lazor-kit/lazorkit-protocol/sdk/sdk-legacy. This copy is kept for reference and is not published.]",
   "keywords": [
     "solana",
     "wallet",
@@ -55,5 +55,6 @@
   "devDependencies": {
     "@solana/web3.js": "^1.98.2",
     "typescript": "^5.9.3"
-  }
+  },
+  "private": true
 }

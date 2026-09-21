@@ -407,7 +407,9 @@ export const createSessionAction = async (
             secp256r1: { credentialIdHash, publicKeyBytes, authorityPda },
             sessionKey: sessionPublicKey,
             expiresAt,
-            actions: actions.length > 0 ? actions : undefined,
+            // v2 refuses an actionless session unless the caller names it:
+            // no actions means the session key can spend the vault freely.
+            ...(actions.length > 0 ? { actions } : { unrestricted: true as const }),
         });
         const sessionPda = prepared.sessionPda;
 

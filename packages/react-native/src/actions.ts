@@ -32,6 +32,7 @@ import {
   type SessionAction,
   type Secp256r1Params,
   ROLE_SPENDER,
+  ACCOUNT_DISCRIMINATOR,
   AUTH_TYPE_ED25519,
 } from './program';
 import {
@@ -499,6 +500,7 @@ export const addAuthorityEd25519Action = async (
           publicKey: params.newEd25519Pubkey,
         },
         role: params.role ?? ROLE_SPENDER,
+        policy: params.policy,
       });
 
       const response = await signChallengeViaPortal({
@@ -869,8 +871,15 @@ export const listAuthoritiesAction = async (
   const accounts = await connection.getProgramAccounts(programId, {
     encoding: 'base64',
     filters: [
-      // discriminator: 2 (Authority)
-      { memcmp: { offset: 0, bytes: Buffer.from([2]).toString('base64'), encoding: 'base64' } },
+      // Authority discriminator — 0x22 in protocol v2, where the high nibble
+      // carries the protocol major.
+      {
+        memcmp: {
+          offset: 0,
+          bytes: Buffer.from([ACCOUNT_DISCRIMINATOR.AUTHORITY]).toString('base64'),
+          encoding: 'base64',
+        },
+      },
       // wallet pubkey at offset 16 of the AuthorityAccountHeader
       { memcmp: { offset: 16, bytes: Buffer.from(walletPda.toBytes()).toString('base64'), encoding: 'base64' } },
     ],
