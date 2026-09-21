@@ -45,6 +45,49 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  app/migrate:
+    dependencies:
+      '@lazorkit/sdk-legacy':
+        specifier: ^1.1.0
+        version: 1.1.0(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))
+      '@lazorkit/wallet':
+        specifier: workspace:*
+        version: link:../../packages/react
+      '@noble/hashes':
+        specifier: ^1.8.0
+        version: 1.8.0
+      '@solana/web3.js':
+        specifier: ^1.98.0
+        version: 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      buffer:
+        specifier: ^6.0.3
+        version: 6.0.3
+      react:
+        specifier: ^19.0.0
+        version: 19.2.5
+      react-dom:
+        specifier: ^19.0.0
+        version: 19.2.5(react@19.2.5)
+    devDependencies:
+      '@types/react':
+        specifier: ^19.0.0
+        version: 19.2.14
+      '@types/react-dom':
+        specifier: ^19.0.0
+        version: 19.2.3(@types/react@19.2.14)
+      '@vitejs/plugin-react':
+        specifier: ^4.3.4
+        version: 4.7.0(vite@6.4.2(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.4))
+      sdk-v1:
+        specifier: npm:@lazorkit/sdk-legacy@0.3.2
+        version: '@lazorkit/sdk-legacy@0.3.2(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))'
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vite:
+        specifier: ^6.0.0
+        version: 6.4.2(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.4)
+
   app/portal:
     dependencies:
       '@noble/curves':
@@ -148,8 +191,8 @@ importers:
   packages/react:
     dependencies:
       '@lazorkit/sdk-legacy':
-        specifier: ^1.0.0
-        version: 1.0.0(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))
+        specifier: ^1.1.0
+        version: 1.1.0(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))
       '@solana-program/token':
         specifier: ^0.9.0
         version: 0.9.0(@solana/kit@5.5.1(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))
@@ -215,8 +258,8 @@ importers:
   packages/react-native:
     dependencies:
       '@lazorkit/sdk-legacy':
-        specifier: ^1.0.0
-        version: 1.0.0(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))
+        specifier: ^1.1.0
+        version: 1.1.0(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))
       '@react-native-async-storage/async-storage':
         specifier: ^2.2.0
         version: 2.2.0(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.5))
@@ -1342,8 +1385,14 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@lazorkit/sdk-legacy@1.0.0':
-    resolution: {integrity: sha512-8v8I92ICNz+yyZGzboKgrDtHqo+afLeDTmhSU3Wn827rxGbZmQS1tI+4nyPF5qlcEdYYuSLEi+0Yg37mQkoGVA==}
+  '@lazorkit/sdk-legacy@0.3.2':
+    resolution: {integrity: sha512-jLe+dMymoBJo4sxLDaHJ/V7ogwCvQSN8gJlyrqGm/vFmTqyOPgDnoE+BYeh2syI7swYuJuRj+DgB3flfddJgsg==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      '@solana/web3.js': ^1.95.0
+
+  '@lazorkit/sdk-legacy@1.1.0':
+    resolution: {integrity: sha512-iNWio4A4F2cm6PwPaazjIPc9weigmDcGqjmZJaFN/N7yAkeHclfPO0I7b7Obek9w4+wa+aih6FlDAwE5jE5NYw==}
     engines: {node: '>=18'}
     peerDependencies:
       '@solana/web3.js': ^1.95.0
@@ -6307,7 +6356,13 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@lazorkit/sdk-legacy@1.0.0(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))':
+  '@lazorkit/sdk-legacy@0.3.2(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))':
+    dependencies:
+      '@noble/hashes': 1.8.0
+      '@solana/web3.js': 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      buffer: 6.0.3
+
+  '@lazorkit/sdk-legacy@1.1.0(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))':
     dependencies:
       '@noble/hashes': 1.8.0
       '@solana/web3.js': 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)

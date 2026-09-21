@@ -1,0 +1,126 @@
+:root {
+  color-scheme: light dark;
+  --bg: #fbfaf8;
+  --fg: #1a1a18;
+  --muted: #6b6b63;
+  --line: #e4e1d9;
+  --accent: #2f6f4f;
+  --error: #8c2f2f;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14150f;
+    --fg: #f2f0e9;
+    --muted: #9a998e;
+    --line: #2c2d26;
+    --accent: #7fc4a0;
+    --error: #e88f8f;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+main {
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: 4rem 1.25rem 6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+h1 {
+  font-size: 1.75rem;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  font-size: 1.05rem;
+  margin: 0 0 0.75rem;
+}
+
+.lead {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  padding: 1.25rem;
+}
+
+.card.error {
+  border-color: var(--error);
+}
+
+dl {
+  margin: 0 0 1rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.row,
+dl > dt {
+  display: flex;
+  justify-content: space-between;
+}
+
+dt {
+  color: var(--muted);
+}
+
+dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+button {
+  font: inherit;
+  padding: 0.7rem 1.1rem;
+  border: 0;
+  border-radius: 0.5rem;
+  background: var(--accent);
+  color: var(--bg);
+  cursor: pointer;
+}
+
+button:hover {
+  opacity: 0.92;
+}
+
+.status {
+  color: var(--muted);
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+a {
+  color: var(--accent);
+}
+
+ul {
+  padding-left: 1.1rem;
+  margin: 0.5rem 0 0;
+}
+
+pre.copyable {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  font-size: 0.8rem;
+  overflow-x: auto;
+  margin: 0 0 0.75rem;
+}
