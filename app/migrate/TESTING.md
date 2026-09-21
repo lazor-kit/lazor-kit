@@ -40,6 +40,23 @@ pnpm --filter @lazorkit/migrate dev
 read only in the browser during development. Neither has any meaning in a
 production build: the seeding module is imported lazily and gated on both.
 
+## The dev server has to be HTTPS
+
+WebAuthn is refused when any frame in the chain was served without a valid
+certificate, and the passkey prompt runs inside the portal's iframe. On plain
+`http://localhost` the browser reports *"WebAuthn is not supported on sites
+with TLS certificate errors"* and nothing happens.
+
+`vite-plugin-mkcert` handles it, but its one-time CA install needs your
+password:
+
+```bash
+~/.vite-plugin-mkcert/mkcert -install
+```
+
+Then `pnpm --filter @lazorkit/migrate dev` serves https://localhost:3001 with a
+certificate the browser trusts.
+
 ## Known rough edges
 
 - The wallet scan needs an RPC that allows `getProgramAccounts` with memcmp
