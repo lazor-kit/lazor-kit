@@ -45,6 +45,46 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  app/migrate:
+    dependencies:
+      '@lazorkit/sdk-legacy':
+        specifier: ^1.1.0
+        version: 1.1.0(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))
+      '@lazorkit/wallet':
+        specifier: workspace:*
+        version: link:../../packages/react
+      '@noble/hashes':
+        specifier: ^1.8.0
+        version: 1.8.0
+      '@solana/web3.js':
+        specifier: ^1.98.0
+        version: 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      buffer:
+        specifier: ^6.0.3
+        version: 6.0.3
+      react:
+        specifier: ^19.0.0
+        version: 19.2.5
+      react-dom:
+        specifier: ^19.0.0
+        version: 19.2.5(react@19.2.5)
+    devDependencies:
+      '@types/react':
+        specifier: ^19.0.0
+        version: 19.2.14
+      '@types/react-dom':
+        specifier: ^19.0.0
+        version: 19.2.3(@types/react@19.2.14)
+      '@vitejs/plugin-react':
+        specifier: ^4.3.4
+        version: 4.7.0(vite@6.4.2(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.4))
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vite:
+        specifier: ^6.0.0
+        version: 6.4.2(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.4)
+
   app/portal:
     dependencies:
       '@noble/curves':
@@ -1344,6 +1384,12 @@ packages:
 
   '@lazorkit/sdk-legacy@1.0.0':
     resolution: {integrity: sha512-8v8I92ICNz+yyZGzboKgrDtHqo+afLeDTmhSU3Wn827rxGbZmQS1tI+4nyPF5qlcEdYYuSLEi+0Yg37mQkoGVA==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      '@solana/web3.js': ^1.95.0
+
+  '@lazorkit/sdk-legacy@1.1.0':
+    resolution: {integrity: sha512-iNWio4A4F2cm6PwPaazjIPc9weigmDcGqjmZJaFN/N7yAkeHclfPO0I7b7Obek9w4+wa+aih6FlDAwE5jE5NYw==}
     engines: {node: '>=18'}
     peerDependencies:
       '@solana/web3.js': ^1.95.0
@@ -6313,6 +6359,12 @@ snapshots:
       '@solana/web3.js': 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
       buffer: 6.0.3
 
+  '@lazorkit/sdk-legacy@1.1.0(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))':
+    dependencies:
+      '@noble/hashes': 1.8.0
+      '@solana/web3.js': 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      buffer: 6.0.3
+
   '@manypkg/find-root@1.1.0':
     dependencies:
       '@babel/runtime': 7.29.2
@@ -8855,7 +8907,7 @@ snapshots:
 
   isexe@2.0.0: {}
 
-  isomorphic-ws@4.0.1(ws@7.5.10(bufferutil@4.1.0)):
+  isomorphic-ws@4.0.1(ws@7.5.10(bufferutil@4.1.0)(utf-8-validate@6.0.6)):
     dependencies:
       ws: 7.5.10(bufferutil@4.1.0)(utf-8-validate@6.0.6)
 
@@ -8877,7 +8929,7 @@ snapshots:
       delay: 5.0.0
       es6-promisify: 5.0.0
       eyes: 0.1.8
-      isomorphic-ws: 4.0.1(ws@7.5.10(bufferutil@4.1.0))
+      isomorphic-ws: 4.0.1(ws@7.5.10(bufferutil@4.1.0)(utf-8-validate@6.0.6))
       json-stringify-safe: 5.0.1
       stream-json: 1.9.1
       uuid: 8.3.2
