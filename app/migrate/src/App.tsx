@@ -20,10 +20,26 @@ type Phase =
   | { name: 'connecting' }
   | { name: 'looking' }
   | { name: 'nothing' }
-  | { name: 'found'; wallet: PublicKey; lamports: number; tokens: V1VaultToken[] }
+  | {
+      name: 'found';
+      wallet: PublicKey;
+      ownerPubkey: Uint8Array;
+      lamports: number;
+      tokens: V1VaultToken[];
+    }
   | { name: 'migrating'; step: string }
   | { name: 'done'; destination: PublicKey; signatures: string[]; seed?: Uint8Array }
   | { name: 'error'; message: string };
+
+/**
+ * The owner's compressed key, as the v1 authority account stores it: 48-byte
+ * header, then the credential-id hash, then 33 bytes of key.
+ */
+async function readV1OwnerPubkey(rpc: Connection, authority: PublicKey): Promise<Uint8Array> {
+  const info = await rpc.getAccountInfo(authority);
+  if (!info || info.data.length < 113) throw new Error('authority account is not a passkey owner');
+  return new Uint8Array(info.data.subarray(80, 113));
+}
 
 const connection = new Connection(config.rpcUrl, 'confirmed');
 const client = new LazorKitClient(connection, config.programId);
@@ -63,6 +79,12 @@ export default function App() {
         setPhase({
           name: 'found',
           wallet: candidate.wallet,
+          // Read the owner's key off the chain, never from the WebAuthn
+          // response: signing in with an existing passkey returns an
+          // assertion, and an assertion carries no public key.
+          ownerPubkey:
+            (candidate as { ownerPubkey?: Uint8Array }).ownerPubkey ??
+            (await readV1OwnerPubkey(connection, candidate.authority)),
           lamports: state.vaultLamports,
           tokens,
         });
@@ -79,6 +101,13 @@ export default function App() {
     setSeeding(true);
     setSeedResult(null);
     try {
+      if (passkey.compressedPubkey.length !== 33) {
+        throw new Error(
+          'Signing in with an existing passkey returns no public key, so a test wallet cannot ' +
+            'be created for it. Reload, and in the portal use "Create new account" instead — ' +
+            'registering is the only flow that hands back a key.',
+        );
+      }
       const { walletPda, vault } = await seedV1Wallet(passkey);
       setSeedResult(`Created ${walletPda.toBase58().slice(0, 8)}… — vault ${vault.toBase58().slice(0, 8)}…`);
     } catch (e) {
@@ -100,7 +129,7 @@ export default function App() {
         owner: {
           type: 'secp256r1',
           credentialIdHash: passkey.credentialIdHash,
-          compressedPubkey: passkey.compressedPubkey,
+          compressedPubkey: phase.ownerPubkey,
           rpId: portalRpId(),
         },
         v1Wallet,
