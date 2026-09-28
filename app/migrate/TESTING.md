@@ -30,19 +30,24 @@ here happens in the background.
 ## What you do
 
 1. Open the page (an operator starts it, or run the command below).
-2. **Check my wallet** → complete the passkey prompt in the portal. It will say
-   there is nothing to move, which is right: the wallet does not exist yet.
+2. **Check my wallet** → in the portal, **create a new passkey** ("Create new
+   account"): only registering hands the page a public key, and the test wallet
+   is made for it. The page will say there is nothing to move, which is right:
+   the wallet does not exist yet.
 3. **Create a test wallet** → this makes an old-style wallet owned by the
    passkey you just used. No prompt: creating one needs no signature from you.
-4. Tell the operator the vault address; they fund it and retire the slot to
-   the sunset build (above) — the step that opens migration on mainnet.
-5. **Check my wallet** again → it should now list what is in the old vault.
-   Before the operator's second deploy it says moving is not open yet; that is
-   the check working.
+4. Give the operator the vault address the page shows; they fund it and retire
+   the slot to the sunset build (above) — the step that opens migration on
+   mainnet.
+5. **Check again** → it should now list what is in the old vault. Before the
+   operator's second deploy it says moving is not open yet (with its own Check
+   again); that is the check working.
 6. **Move everything** → one passkey prompt, and the funds land in the new
    wallet.
 
-What to watch for: exactly one prompt for connecting and one for step 6. Setup
+What to watch for: one prompt to connect and one for step 6 — sometimes a second
+for step 6, when the browser pads its signature past the size limit (the page
+says so; nothing is sent). Setup
 is paid by the paymaster, not by you. Afterwards the old vault is empty and the
 old accounts are closed; both transactions are linked on the page.
 
@@ -61,9 +66,9 @@ VITE_RPC_URL=https://api.devnet.solana.com \
 pnpm --filter @lazorkit/migrate dev
 ```
 
-`VITE_DEV_PAYER` is the committed devnet throwaway key, and both dev flags are
-read only in the browser during development. Neither has any meaning in a
-production build: the seeding module is imported lazily and gated on both.
+`VITE_DEV_PAYER` is the committed devnet throwaway key. The dev flags only take
+effect on the dev server (`import.meta.env.DEV`); still, do not have them set
+when running `vite build`, since Vite inlines `VITE_*` values into the bundle.
 
 ## The dev server has to be HTTPS
 
@@ -72,15 +77,21 @@ certificate, and the passkey prompt runs inside the portal's iframe. On plain
 `http://localhost` the browser reports *"WebAuthn is not supported on sites
 with TLS certificate errors"* and nothing happens.
 
-`vite-plugin-mkcert` handles it, but its one-time CA install needs your
-password:
+The dev server serves HTTPS when `app/migrate/.certs/` holds a certificate
+(see `vite.config.ts`). Make one with [mkcert](https://github.com/FiloSottile/mkcert),
+from `app/migrate` — the first command installs its CA and asks for your
+password, once:
 
 ```bash
-~/.vite-plugin-mkcert/mkcert -install
+mkcert -install
+```
+
+```bash
+mkdir -p .certs && mkcert -key-file .certs/key.pem -cert-file .certs/cert.pem localhost 127.0.0.1
 ```
 
 Then `pnpm --filter @lazorkit/migrate dev` serves https://localhost:3001 with a
-certificate the browser trusts.
+certificate the browser trusts. `.certs/` is gitignored; never commit it.
 
 ## Known rough edges
 

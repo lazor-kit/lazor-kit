@@ -61,21 +61,25 @@ pnpm --filter @lazorkit/migrate dev
    and has to confirm before anything of value is left. Then check that the v1
    program runs the sunset binary: if it does not, stop here; if the check
    itself fails, say so and offer to retry.
-3. Build the migration and check it fits in one transaction (about four token
-   accounts on the passkey path); if not, ask the user to untick some before
-   any prompt. An existing v2 wallet is reused only if this passkey holds it
+3. Build the migration and check it fits in one transaction — on the passkey
+   path about three token accounts in Chrome and four in Safari — before any
+   prompt; if not, ask the user to untick some. The real transaction is measured
+   again after signing, since browsers can pad the signed data. An existing v2 wallet is reused only if this passkey holds it
    alone, with its own key and relying party (the SDK checks).
 4. The passkey signs the migration. The destination, the wallet and every
    source token account are inside the signed challenge, so a relayer cannot
    redirect the funds, drop a token, or swap one for dust. The page then
-   verifies that signature against the candidate wallet's stored key — if it
-   does not verify, the wallet was planted, nothing is sent, and the next
-   "Check my wallet" skips it.
+   verifies that signature against every candidate's stored key (the check is
+   about the key, not the wallet): any that fail were planted, are remembered
+   for the session, and are skipped; if the chosen one fails, nothing is sent.
 5. Create the v2 wallet and one destination token account per token, paid by
    the paymaster. Nothing of the user's moves yet.
 6. Send the migration. The v1 wallet and authority close; their rent, and each
    closed token account's, goes to the payer — the paymaster, which just paid
    for the new wallet (`refundDestination` in the SDK can send it elsewhere).
+   Withheld Token-2022 transfer fees are harvested in the same transaction.
+7. Look again: a passkey can own more than one old wallet with funds, and the
+   page says "done" only when none is left.
 
 Setup and migration are separate transactions on purpose: a vault with several
 token accounts would not fit in one.

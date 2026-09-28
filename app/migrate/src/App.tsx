@@ -26,6 +26,9 @@ import { formatSol, formatTokenAmount, short } from './lib/format';
 import { migrationState, type MigrationState } from './lib/sunset';
 
 type Stuck = { token: V1VaultToken; reason: UnmovableReason };
+/** An old wallet listing this passkey, with the key its authority stores. */
+type Candidate = { wallet: PublicKey; authority: PublicKey; pubkey: Uint8Array };
+type Moved = { destination: PublicKey; signatures: string[]; leftBehind: Stuck[] };
 
 type Phase =
   | { name: 'idle' }
@@ -43,13 +46,50 @@ type Phase =
       /** Token accounts that cannot move, and why. */
       stuck: Stuck[];
       migration: MigrationState;
+      /** Every old wallet listing this passkey, to verify all at once when it signs. */
+      candidates: Candidate[];
     }
   | { name: 'migrating'; step: string }
-  | { name: 'done'; destination: PublicKey; signatures: string[]; leftBehind: Stuck[] }
+  | { name: 'done'; moved: Moved[] }
   | { name: 'error'; message: string };
 
 /** Largest transaction the network accepts. */
 const MAX_TX_BYTES = 1232;
+
+/**
+ * The clientDataJSON the portal's passkey prompt produces: a cross-origin
+ * iframe, so browsers add crossOrigin and topOrigin. Some Chrome builds also
+ * pad it at random; that case is caught after signing, by measuring the real
+ * transaction.
+ */
+const expectedClientDataJson = () =>
+  new TextEncoder().encode(
+    JSON.stringify({
+      type: 'webauthn.get',
+      challenge: 'x'.repeat(43),
+      origin: new URL(config.portalUrl).origin,
+      crossOrigin: true,
+      topOrigin: window.location.origin,
+    }),
+  );
+
+/** Old wallets shown not to be this passkey's, remembered for the browser session. */
+const notYoursKey = (credentialIdHash: Uint8Array) =>
+  `lazorkit-migrate:not-yours:${Buffer.from(credentialIdHash).toString('hex')}`;
+function loadNotYours(credentialIdHash: Uint8Array): Set<string> {
+  try {
+    return new Set(JSON.parse(sessionStorage.getItem(notYoursKey(credentialIdHash)) ?? '[]'));
+  } catch {
+    return new Set();
+  }
+}
+function saveNotYours(credentialIdHash: Uint8Array, set: Set<string>) {
+  try {
+    sessionStorage.setItem(notYoursKey(credentialIdHash), JSON.stringify([...set]));
+  } catch {
+    // storage unavailable: the check simply runs again next time
+  }
+}
 
 const connection = new Connection(config.rpcUrl, 'confirmed');
 // The v2 client: the new wallet lives here. The v1 wallet, and the migration
@@ -67,7 +107,8 @@ const REASONS: Record<UnmovableReason, string> = {
   'non-transferable': 'its token cannot be transferred at all',
   paused: 'its token is paused by its issuer',
   'frozen-on-arrival': 'its token freezes every new account, so it could not arrive',
-  'withheld-fees': 'it holds withheld transfer fees and cannot be closed',
+  'mint-missing': 'its token no longer exists',
+  'destination-frozen': 'your new account for it is frozen by its issuer',
   'cpi-guard': 'it refuses transfers made through a program',
   excluded: 'you chose to leave it',
 };
@@ -81,8 +122,8 @@ export default function App() {
   const [seedResult, setSeedResult] = useState<string | null>(null);
   const [leaveBehind, setLeaveBehind] = useState<Set<string>>(new Set());
   const [confirmedLoss, setConfirmedLoss] = useState(false);
-  /** Old wallets shown not to be this passkey's: someone listed its public id on them. */
-  const [notYours, setNotYours] = useState<Set<string>>(new Set());
+  /** Migrations done this visit; a passkey can have more than one old wallet. */
+  const [moved, setMoved] = useState<Moved[]>([]);
 
   const fail = (e: unknown) =>
     setPhase({ name: 'error', message: e instanceof Error ? e.message : String(e) });
@@ -91,12 +132,13 @@ export default function App() {
 
   /** Step 1: who are you, and do you still have something in the old wallet? */
   const find = useCallback(
-    async (identity?: Passkey) => {
+    async (identity?: Passkey, done: Moved[] = moved) => {
       setPhase({ name: 'connecting' });
       try {
         const me = identity ?? (await connectPasskey());
         setPasskey(me);
         setPhase({ name: 'looking' });
+        const notYours = loadNotYours(me.credentialIdHash);
 
         // No user seed anywhere in this flow: wallets made through the SDK used a
         // random seed kept in browser storage, which a returning user rarely has.
@@ -108,15 +150,32 @@ export default function App() {
         const owned = (await client.findV1WalletsByOwner(me.credentialIdHash, 'secp256r1', v1ProgramId)).filter(
           (w) => w.role === 0 && !notYours.has(w.wallet.toBase58()),
         );
-        const authorities = await connection.getMultipleAccountsInfo(owned.map((w) => w.authority));
+        const authorities: (Buffer | undefined)[] = [];
+        for (let i = 0; i < owned.length; i += 100) {
+          const page = await connection.getMultipleAccountsInfo(owned.slice(i, i + 100).map((w) => w.authority));
+          authorities.push(...page.map((a) => a?.data));
+        }
+        // Made for this portal's relying party (or the portal could never sign
+        // for it), and — when the portal reported the passkey's key — holding it.
+        const reported = me.compressedPubkey.length === 33 ? me.compressedPubkey : null;
+        const candidates: Candidate[] = [];
+        owned.forEach((w, i) => {
+          const data = authorities[i];
+          if (!data || data.length < 145 || !equal(new Uint8Array(data.subarray(113, 145)), rpIdHash)) return;
+          const pubkey = new Uint8Array(data.subarray(80, 113));
+          if (reported && !equal(pubkey, reported)) return;
+          candidates.push({ wallet: w.wallet, authority: w.authority, pubkey });
+        });
 
-        for (const [i, candidate] of owned.entries()) {
-          const data = authorities[i]?.data;
-          // Made for this portal's relying party, or the portal could never sign for it.
-          if (!data || data.length < 145 || !equal(new Uint8Array(data.subarray(113, 145)), rpIdHash)) continue;
-          const state = await readV1WalletState(connection, candidate);
+        for (const candidate of candidates) {
+          const state = await readV1WalletState(connection, {
+            wallet: candidate.wallet,
+            vault: owned.find((w) => w.wallet.equals(candidate.wallet))!.vault,
+            authority: candidate.authority,
+          });
           if (!state) continue;
-          const all = await enumerateV1VaultTokens(connection, candidate.vault);
+          const vault = owned.find((w) => w.wallet.equals(candidate.wallet))!.vault;
+          const all = await enumerateV1VaultTokens(connection, vault);
           if (state.vaultLamports === 0 && all.length === 0) continue;
           const { movable, skipped } = await classifyV1VaultTokens(connection, all);
           setLeaveBehind(new Set());
@@ -128,22 +187,23 @@ export default function App() {
             // Read the owner's key off the chain, never from the WebAuthn
             // response: signing in with an existing passkey returns an
             // assertion, and an assertion carries no public key.
-            ownerPubkey: new Uint8Array(data.subarray(80, 113)),
+            ownerPubkey: candidate.pubkey,
             lamports: state.vaultLamports,
             tokens: movable,
             stuck: skipped,
             // Until v1 is retired its program has no MigrateWallet: say so now,
             // rather than after the passkey has signed something it cannot use.
             migration: await migrationState(connection, v1ProgramId, await payerKey()),
+            candidates,
           });
           return;
         }
-        setPhase({ name: 'nothing' });
+        setPhase(done.length ? { name: 'done', moved: done } : { name: 'nothing' });
       } catch (e) {
         fail(e);
       }
     },
-    [notYours],
+    [moved],
   );
 
   const seed = useCallback(async () => {
@@ -159,7 +219,7 @@ export default function App() {
         );
       }
       const { walletPda, vault } = await seedV1Wallet(passkey, v1ProgramId);
-      setSeedResult(`Created ${walletPda.toBase58().slice(0, 8)}… — vault ${vault.toBase58().slice(0, 8)}…`);
+      setSeedResult(`Created wallet ${walletPda.toBase58()} — fund its vault ${vault.toBase58()}`);
     } catch (e) {
       setSeedResult(e instanceof Error ? e.message : String(e));
     } finally {
@@ -204,20 +264,23 @@ export default function App() {
       // The whole move is one transaction. Check it fits before asking for a
       // signature: past the size limit it can only fail, after the prompt.
       const { blockhash } = await connection.getLatestBlockhash();
-      const sized = plan.migrate.finalize({
-        signature: new Uint8Array(64),
-        authenticatorData: new Uint8Array(37),
-        clientDataJsonHash: new Uint8Array(32),
-        clientDataJson: new Uint8Array(320), // a portal-origin clientDataJSON, with room to spare
-      });
-      let bytes = Infinity;
-      try {
-        bytes = new VersionedTransaction(
-          new TransactionMessage({ payerKey: payer, recentBlockhash: blockhash, instructions: sized }).compileToV0Message(),
-        ).serialize().length;
-      } catch {
-        // web3.js throws past the limit
-      }
+      const txBytes = (instructions: TransactionInstruction[]) => {
+        try {
+          return new VersionedTransaction(
+            new TransactionMessage({ payerKey: payer, recentBlockhash: blockhash, instructions }).compileToV0Message(),
+          ).serialize().length;
+        } catch {
+          return Infinity; // web3.js throws past the limit
+        }
+      };
+      const bytes = txBytes(
+        plan.migrate.finalize({
+          signature: new Uint8Array(64),
+          authenticatorData: new Uint8Array(37),
+          clientDataJsonHash: new Uint8Array(32),
+          clientDataJson: expectedClientDataJson(),
+        }),
+      );
       if (bytes > MAX_TX_BYTES) {
         throw new Error(
           `${plan.tokens.length} token accounts do not fit in one transaction. Untick the ones you ` +
@@ -239,17 +302,32 @@ export default function App() {
 
       // Before anything is sent: is this old wallet really this passkey's?
       // Its key comes from the chain, and anyone can list the passkey's public
-      // id on a wallet with a key of their own. The signature settles it.
-      const mine = provenCandidates(
-        [{ version: 1, walletPda: found.wallet, authorityPda: found.authority, pubkey: found.ownerPubkey }],
-        { challenge: plan.migrate.challenge, ...response },
-        portalRpId(),
+      // id on a wallet with a key of their own. The signature settles it — for
+      // every candidate at once, since it checks the key, not the wallet.
+      const proof = { challenge: plan.migrate.challenge, ...response };
+      const verified = new Set(
+        provenCandidates(
+          found.candidates.map((c) => ({ version: 1 as const, walletPda: c.wallet, authorityPda: c.authority, pubkey: c.pubkey })),
+          proof,
+          portalRpId(),
+        ).map((c) => c.walletPda.toBase58()),
       );
-      if (!mine.length) {
-        setNotYours((s) => new Set(s).add(found.wallet.toBase58()));
+      const notYours = loadNotYours(passkey.credentialIdHash);
+      for (const c of found.candidates) if (!verified.has(c.wallet.toBase58())) notYours.add(c.wallet.toBase58());
+      saveNotYours(passkey.credentialIdHash, notYours);
+      if (!verified.has(found.wallet.toBase58())) {
         throw new Error(
           "That old wallet was not made by your passkey — someone created it using your passkey's " +
             'public id. Nothing was sent. Press "Check my wallet" again to find your own.',
+        );
+      }
+
+      // A browser can pad its clientDataJSON; if the real transaction came out
+      // too large, nothing has been sent — sign again.
+      if (txBytes(plan.migrate.finalize(response)) > MAX_TX_BYTES) {
+        throw new Error(
+          'Your browser made that signature a little larger than usual, and the move no longer ' +
+            'fits in one transaction. Nothing was sent — press Move again.',
         );
       }
 
@@ -283,16 +361,15 @@ export default function App() {
       setPhase({ name: 'migrating', step: 'Moving your funds' });
       await send(plan.migrate.finalize(response));
 
-      setPhase({
-        name: 'done',
-        destination: plan.destinationWallet,
-        signatures,
-        leftBehind: plan.skippedTokens,
-      });
+      // A passkey can have more than one old wallet holding funds: look again,
+      // and only say "done" when there is nothing left to move.
+      const done = [...moved, { destination: plan.destinationWallet, signatures, leftBehind: plan.skippedTokens }];
+      setMoved(done);
+      await find(passkey, done);
     } catch (e) {
       fail(e);
     }
-  }, [phase, passkey, leaveBehind, find]);
+  }, [phase, passkey, leaveBehind, find, moved]);
 
   const toggle = (ata: string) => {
     setConfirmedLoss(false);
@@ -351,11 +428,18 @@ export default function App() {
             This passkey has no old wallet holding anything. Either it was already moved, or it was
             created on the new version. You can close this page.
           </p>
+          {passkey && <button onClick={() => find(passkey)}>Check again</button>}
         </section>
       )}
 
       {phase.name === 'found' && (
         <section className="card">
+          {moved.length > 0 && (
+            <p className="status">
+              Moved {moved.length} old wallet{moved.length > 1 ? 's' : ''}. This passkey has another one
+              that still holds funds:
+            </p>
+          )}
           <h2>What will move</h2>
           <dl>
             <dt>SOL</dt>
@@ -412,10 +496,13 @@ export default function App() {
             </button>
           )}
           {phase.migration.state === 'closed' && (
-            <p className="status">
-              Moving opens once LazorKit retires its old program. Your wallet keeps working in your
-              app until then; come back when your app says it is time.
-            </p>
+            <>
+              <p className="status">
+                Moving opens once LazorKit retires its old program. Your wallet keeps working in your
+                app until then; come back when your app says it is time.
+              </p>
+              <button onClick={() => find(passkey ?? undefined)}>Check again</button>
+            </>
           )}
           {phase.migration.state === 'unknown' && (
             <>
@@ -431,28 +518,32 @@ export default function App() {
       {phase.name === 'done' && (
         <section className="card">
           <h2>Done</h2>
-          <p>
-            Your funds are now in {short(phase.destination.toBase58())}. Open your app again and
-            they will be there.
-          </p>
-          {phase.leftBehind.length > 0 && (
-            <p className="muted">
-              Left in the old wallet:{' '}
-              {phase.leftBehind
-                .map(({ token, reason }) => `${short(token.mint.toBase58())} (${REASONS[reason]})`)
-                .join(', ')}
-              .
-            </p>
-          )}
-          <ul>
-            {phase.signatures.map((s) => (
-              <li key={s}>
-                <a href={explorerTx(s)} target="_blank" rel="noreferrer">
-                  {short(s)}
-                </a>
-              </li>
-            ))}
-          </ul>
+          {phase.moved.map((m) => (
+            <div key={m.destination.toBase58() + m.signatures.join()}>
+              <p>
+                Your funds are now in {short(m.destination.toBase58())}. Open your app again and they
+                will be there.
+              </p>
+              {m.leftBehind.length > 0 && (
+                <p className="muted">
+                  Left in the old wallet:{' '}
+                  {m.leftBehind
+                    .map(({ token, reason }) => `${short(token.mint.toBase58())} (${REASONS[reason]})`)
+                    .join(', ')}
+                  .
+                </p>
+              )}
+              <ul>
+                {m.signatures.map((sig) => (
+                  <li key={sig}>
+                    <a href={explorerTx(sig)} target="_blank" rel="noreferrer">
+                      {short(sig)}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
         </section>
       )}
 

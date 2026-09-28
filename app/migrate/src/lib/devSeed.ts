@@ -77,7 +77,9 @@ export async function seedV1Wallet(passkey: Passkey, v1ProgramId: PublicKey): Pr
   return { walletPda, vault, signature };
 }
 
+// Vite inlines VITE_* into production builds too; import.meta.env.DEV keeps a
+// stray flag (and the payer key it names) out of anything but the dev server.
 export const devSeedEnabled = (): boolean =>
-  import.meta.env.VITE_DEV_SETUP === '1' && !!import.meta.env.VITE_DEV_PAYER;
+  import.meta.env.DEV && import.meta.env.VITE_DEV_SETUP === '1' && !!import.meta.env.VITE_DEV_PAYER;
 
 export { Buffer };
