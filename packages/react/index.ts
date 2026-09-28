@@ -78,7 +78,12 @@ export {
   registerCluster,
 } from './core/program';
 // Prove which wallet is a passkey's own (the credential hash alone is public).
-export { findOwnedCandidates, provenCandidates, chooseOwnWallet } from './core/wallet/ownership';
+export {
+  findOwnedCandidates,
+  provenCandidates,
+  chooseOwnWallet,
+  WalletNeedsConfirmationError,
+} from './core/wallet/ownership';
 export type { OwnedCandidate, OwnershipProof } from './core/wallet/ownership';
 // Runtime error decoding helpers.
 export { errorFromCode, extractErrorCode, ERROR_NAMES } from './core/program';

@@ -6,6 +6,9 @@
  */
 
 import { useEffect } from 'react';
+import { PublicKey } from '@solana/web3.js';
+import { versionOf } from '../core/program';
+import { StorageManager } from '../core/storage';
 import type { ReactNode } from 'react';
 import { useWalletStore } from './store';
 import { DEFAULTS } from '../config';
@@ -38,6 +41,27 @@ export const LazorkitProvider = (props: LazorkitProviderProps) => {
   } = props;
 
   const { setConfig } = useWalletStore();
+  const wallet = useWalletStore((state) => state.wallet);
+  const connection = useWalletStore((state) => state.connection);
+
+  // A persisted v1 wallet may have been migrated since the app last ran — on
+  // the LazorKit migration page, say. Then it is closed and its address dead:
+  // drop it, so the app stops showing it and the user reconnects to v2.
+  useEffect(() => {
+    if (!wallet || !connection || versionOf(wallet) !== 1) return;
+    let cancelled = false;
+    connection
+      .getAccountInfo(new PublicKey(wallet.smartWallet))
+      .then(async (info) => {
+        if (cancelled || info) return;
+        await StorageManager.clearWallet();
+        useWalletStore.setState({ wallet: null });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [wallet, connection]);
 
   useEffect(() => {
     // Initialize configuration in store

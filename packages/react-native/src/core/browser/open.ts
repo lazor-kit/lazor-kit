@@ -29,6 +29,9 @@ export const openBrowser = async (url: string, redirectUrl: string): Promise<str
     // ──────────────────────────────────────────────
     return new Promise((resolve, reject) => {
       const handleUrl = (event: { url: string }) => {
+        // Only the redirect this request asked for. Any app can fire a deep
+        // link into this scheme; an unrelated one is not the portal's answer.
+        if (!event.url.startsWith(redirectUrl)) return;
         try {
           WebBrowser.dismissBrowser();
         } catch (_dismissError) {

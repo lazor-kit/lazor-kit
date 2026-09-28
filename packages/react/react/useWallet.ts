@@ -29,7 +29,7 @@ export interface WalletHookInterface {
   protocolVersion: 1 | 2 | null;
 
   // Actions
-  connect: (options?: { feeMode?: 'paymaster' | 'user' }) => Promise<WalletInfo>;
+  connect: (options?: { feeMode?: 'paymaster' | 'user'; confirmWallet?: string }) => Promise<WalletInfo>;
   disconnect: () => Promise<void>;
   signAndSendTransaction: (payload: SendTxPayload) => Promise<string>;
   signMessage: (message: string) => Promise<{ signature: string, signedPayload: string }>;
@@ -116,7 +116,7 @@ export const useWallet = (): WalletHookInterface => {
   } = useWalletStore();
 
   const handleConnect = useCallback(
-    (options?: { feeMode?: 'paymaster' | 'user' }) => connect(options),
+    (options?: { feeMode?: 'paymaster' | 'user'; confirmWallet?: string }) => connect(options),
     [connect]
   );
 
