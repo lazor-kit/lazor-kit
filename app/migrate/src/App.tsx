@@ -9,7 +9,7 @@ import {
   type TransactionInstruction,
 } from '@solana/web3.js';
 import { sha256 } from '@noble/hashes/sha2';
-import { LazorKitClient, Paymaster, provenCandidates } from '@lazorkit/wallet';
+import { LazorKitClient, Paymaster, verifyOwnershipProof } from '@lazorkit/wallet';
 import {
   classifyV1VaultTokens,
   enumerateV1VaultTokens,
@@ -306,11 +306,11 @@ export default function App() {
       // every candidate at once, since it checks the key, not the wallet.
       const proof = { challenge: plan.migrate.challenge, ...response };
       const verified = new Set(
-        provenCandidates(
-          found.candidates.map((c) => ({ version: 1 as const, walletPda: c.wallet, authorityPda: c.authority, pubkey: c.pubkey })),
+        verifyOwnershipProof(
+          found.candidates.map((c) => ({ wallet: c.wallet, publicKey: c.pubkey })),
           proof,
           portalRpId(),
-        ).map((c) => c.walletPda.toBase58()),
+        ).map((c) => c.wallet.toBase58()),
       );
       const notYours = loadNotYours(passkey.credentialIdHash);
       for (const c of found.candidates) if (!verified.has(c.wallet.toBase58())) notYours.add(c.wallet.toBase58());
@@ -324,7 +324,8 @@ export default function App() {
 
       // A browser can pad its clientDataJSON; if the real transaction came out
       // too large, nothing has been sent — sign again.
-      if (txBytes(plan.migrate.finalize(response)) > MAX_TX_BYTES) {
+      const migrateInstructions = plan.migrate.finalize(response);
+      if (txBytes(migrateInstructions) > MAX_TX_BYTES) {
         throw new Error(
           'Your browser made that signature a little larger than usual, and the move no longer ' +
             'fits in one transaction. Nothing was sent — press Move again.',
@@ -347,19 +348,31 @@ export default function App() {
         } else {
           signature = await paymaster.signAndSendVersionedTransaction(tx);
         }
-        await connection.confirmTransaction(signature, 'confirmed');
+        // A landed transaction can still have failed: confirmTransaction
+        // reports that in value.err rather than throwing.
+        const { value } = await connection.confirmTransaction(signature, 'confirmed');
+        if (value.err) throw new Error(`transaction ${signature} failed: ${JSON.stringify(value.err)}`);
         signatures.push(signature);
       };
 
       // The new wallet and a destination token account per token, paid for by
-      // the app. Nothing of the user's moves yet.
-      if (plan.setupInstructions.length) {
-        setPhase({ name: 'migrating', step: 'Setting up the new wallet' });
-        await send(plan.setupInstructions);
+      // the app, go in the same transaction as the move when they fit, so the
+      // two succeed or fail together. The signed move names the destination
+      // vault, not who owns it: if someone else's wallet landed at that address
+      // first, a setup sent on its own fails, and the move must then never be
+      // sent — it would pay into their vault.
+      const together = [...plan.setupInstructions, ...migrateInstructions];
+      if (plan.setupInstructions.length && txBytes(together) <= MAX_TX_BYTES) {
+        setPhase({ name: 'migrating', step: 'Moving your funds' });
+        await send(together);
+      } else {
+        if (plan.setupInstructions.length) {
+          setPhase({ name: 'migrating', step: 'Setting up the new wallet' });
+          await send(plan.setupInstructions);
+        }
+        setPhase({ name: 'migrating', step: 'Moving your funds' });
+        await send(migrateInstructions);
       }
-
-      setPhase({ name: 'migrating', step: 'Moving your funds' });
-      await send(plan.migrate.finalize(response));
 
       // A passkey can have more than one old wallet holding funds: look again,
       // and only say "done" when there is nothing left to move.
