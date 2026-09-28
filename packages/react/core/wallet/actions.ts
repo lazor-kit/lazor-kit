@@ -25,7 +25,7 @@ import {
     getPasskeyPublicKey,
     getPortalRpId,
 } from './utils';
-import { chooseOwnWallet, findOwnedCandidates } from './ownership';
+import { chooseOwnWallet, findOwnedCandidates, provenCandidates, type OwnershipProof } from './ownership';
 import {
     ROLE_ADMIN,
     Actions,
@@ -180,21 +180,26 @@ export const connectAction = async (
             const reportedPubkey = dialogResult.publicKey
                 ? getPasskeyPublicKey(dialogResult.publicKey)
                 : undefined;
+            // One proof per connect, shared by the wallet choice and creation.
+            let proof: OwnershipProof | undefined;
+            const prove = async (): Promise<OwnershipProof> => {
+                if (proof) return proof;
+                const challenge = randomBytes(32);
+                const result = await dialogManager.openSign(
+                    toBase64Url(challenge),
+                    '',
+                    dialogResult.credentialId,
+                );
+                proof = { challenge, ...decodeSignResult(result) };
+                return proof;
+            };
             const own = await chooseOwnWallet({
                 connection,
                 confirmWallet: options?.confirmWallet,
                 candidates: await findOwnedCandidates(connection, credentialHash, rpId),
                 reportedPubkey,
                 rpId,
-                prove: async () => {
-                    const challenge = randomBytes(32);
-                    const result = await dialogManager.openSign(
-                        toBase64Url(challenge),
-                        '',
-                        dialogResult.credentialId,
-                    );
-                    return { challenge, ...decodeSignResult(result) };
-                },
+                prove,
             });
 
             const version: ProtocolVersion = own?.version ?? 2;
@@ -216,6 +221,17 @@ export const connectAction = async (
                     throw new Error(
                         'This passkey has no wallet yet, and signing in with an existing passkey does ' +
                             'not reveal its public key. Create the wallet with "Create new account".',
+                    );
+                }
+                // The portal reports a key from its own storage on sign-in, and
+                // may report another passkey's; its reply does not say whether
+                // the key came from a registration just now. A wallet created
+                // for a wrong key can never sign — so prove it first.
+                const created = { version: 2 as const, walletPda: PublicKey.default, authorityPda: PublicKey.default, pubkey: reportedPubkey };
+                if (!provenCandidates([created], await prove(), rpId).length) {
+                    throw new Error(
+                        "The portal reported a public key this passkey does not hold, so no wallet was " +
+                            'created. Try again, or create a new passkey with "Create new account".',
                     );
                 }
                 passkeyPubkey = reportedPubkey;

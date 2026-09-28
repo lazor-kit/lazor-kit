@@ -34,7 +34,7 @@ import {
     V1WalletMigratedError,
 } from '../program';
 import { getCredentialHash, getPasskeyPublicKey } from '../wallet/utils';
-import { chooseOwnWallet, findOwnedCandidates } from '../wallet/ownership';
+import { chooseOwnWallet, findOwnedCandidates, provenCandidates, type OwnershipProof } from '../wallet/ownership';
 import { Buffer } from 'buffer';
 import { DEFAULTS } from '../../config';
 
@@ -234,13 +234,22 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         // LazorKit v2 keeps being used; only a passkey that owns neither gets a
         // new, v2, wallet.
         const reportedPubkey = dialogResult.publicKey ? getPasskeyPublicKey(dialogResult.publicKey) : undefined;
+        let proof: OwnershipProof | undefined;
+        const prove = async (): Promise<OwnershipProof> => {
+            if (proof) return proof;
+            proof = await proveOnce();
+            return proof;
+        };
         const own = await chooseOwnWallet({
             connection: probe,
             confirmWallet: this.confirmWallet,
             candidates: await findOwnedCandidates(probe, credentialHash, rpId),
             reportedPubkey,
             rpId,
-            prove: async () => {
+            prove,
+        });
+        async function proveOnce(): Promise<OwnershipProof> {
+            {
                 const challenge = randomBytes(32);
                 const r = await dialogManager.openSign(toBase64Url(challenge), '', dialogResult.credentialId);
                 const clientDataJson = new Uint8Array(Buffer.from(r.clientDataJsonBase64, 'base64'));
@@ -250,8 +259,8 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
                     authenticatorData: new Uint8Array(Buffer.from(r.authenticatorDataBase64, 'base64')),
                     clientDataJson,
                 };
-            },
-        });
+            }
+        }
         const version: ProtocolVersion = own?.version ?? 2;
         const { paymaster, client } = this._initializeClients(version);
 
@@ -259,7 +268,15 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         let passkeyPubkey: Uint8Array;
         const matches = own ? [own] : [];
         if (own) passkeyPubkey = own.pubkey;
-        else if (reportedPubkey && reportedPubkey.length === 33) passkeyPubkey = reportedPubkey;
+        else if (reportedPubkey && reportedPubkey.length === 33) {
+            // The portal may report a key from its storage, even another
+            // passkey's; prove it before creating a wallet for it.
+            const created = { version: 2 as const, walletPda: PublicKey.default, authorityPda: PublicKey.default, pubkey: reportedPubkey };
+            if (!provenCandidates([created], await prove(), rpId).length) {
+                throw new Error('The portal reported a public key this passkey does not hold; no wallet was created.');
+            }
+            passkeyPubkey = reportedPubkey;
+        }
         else {
             throw new Error(
                 'This passkey has no wallet yet, and signing in with an existing passkey does not ' +
