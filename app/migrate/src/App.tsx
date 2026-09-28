@@ -8,7 +8,8 @@ import {
   VersionedTransaction,
   type TransactionInstruction,
 } from '@solana/web3.js';
-import { LazorKitClient, Paymaster } from '@lazorkit/wallet';
+import { sha256 } from '@noble/hashes/sha2';
+import { LazorKitClient, Paymaster, provenCandidates } from '@lazorkit/wallet';
 import {
   classifyV1VaultTokens,
   enumerateV1VaultTokens,
@@ -22,7 +23,9 @@ import { config, explorerTx } from './lib/config';
 import { connectPasskey, portalRpId, signChallenge, type Passkey } from './lib/portal';
 import { devSeedEnabled, devPayer, seedV1Wallet } from './lib/devSeed';
 import { formatSol, formatTokenAmount, short } from './lib/format';
-import { isMigrationOpen } from './lib/sunset';
+import { migrationState, type MigrationState } from './lib/sunset';
+
+type Stuck = { token: V1VaultToken; reason: UnmovableReason };
 
 type Phase =
   | { name: 'idle' }
@@ -32,44 +35,44 @@ type Phase =
   | {
       name: 'found';
       wallet: PublicKey;
+      authority: PublicKey;
       ownerPubkey: Uint8Array;
       lamports: number;
       /** Token accounts that can move. The user may leave some behind. */
       tokens: V1VaultToken[];
       /** Token accounts that cannot move, and why. */
-      stuck: { token: V1VaultToken; reason: UnmovableReason }[];
-      /** False until the v1 program runs the sunset binary. */
-      open: boolean;
+      stuck: Stuck[];
+      migration: MigrationState;
     }
   | { name: 'migrating'; step: string }
-  | { name: 'done'; destination: PublicKey; signatures: string[]; seed?: Uint8Array }
+  | { name: 'done'; destination: PublicKey; signatures: string[]; leftBehind: Stuck[] }
   | { name: 'error'; message: string };
 
-/**
- * The owner's compressed key, as the v1 authority account stores it: 48-byte
- * header, then the credential-id hash, then 33 bytes of key.
- */
-async function readV1OwnerPubkey(rpc: Connection, authority: PublicKey): Promise<Uint8Array> {
-  const info = await rpc.getAccountInfo(authority);
-  if (!info || info.data.length < 113) throw new Error('authority account is not a passkey owner');
-  return new Uint8Array(info.data.subarray(80, 113));
-}
+/** Largest transaction the network accepts. */
+const MAX_TX_BYTES = 1232;
 
 const connection = new Connection(config.rpcUrl, 'confirmed');
 // The v2 client: the new wallet lives here. The v1 wallet, and the migration
 // itself, live at the v1 id paired with it.
 const client = new LazorKitClient(connection, config.programId);
 const v1ProgramId = config.v1ProgramId ?? legacyProgramIdFor(client.programId);
-
-const REASONS: Record<UnmovableReason, string> = {
-  frozen: 'frozen by its issuer',
-  'transfer-hook': 'its token program needs accounts a migration cannot pass',
-  excluded: 'you chose to leave it',
-};
 const paymaster = new Paymaster({
   paymasterUrl: config.paymasterUrl,
   apiKey: config.paymasterApiKey,
 });
+
+const REASONS: Record<UnmovableReason, string> = {
+  frozen: 'frozen by its issuer',
+  'transfer-hook': 'its token needs accounts a migration cannot pass',
+  'non-transferable': 'its token cannot be transferred at all',
+  paused: 'its token is paused by its issuer',
+  'frozen-on-arrival': 'its token freezes every new account, so it could not arrive',
+  'withheld-fees': 'it holds withheld transfer fees and cannot be closed',
+  'cpi-guard': 'it refuses transfers made through a program',
+  excluded: 'you chose to leave it',
+};
+
+const equal = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]);
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>({ name: 'idle' });
@@ -77,57 +80,71 @@ export default function App() {
   const [seeding, setSeeding] = useState(false);
   const [seedResult, setSeedResult] = useState<string | null>(null);
   const [leaveBehind, setLeaveBehind] = useState<Set<string>>(new Set());
+  const [confirmedLoss, setConfirmedLoss] = useState(false);
+  /** Old wallets shown not to be this passkey's: someone listed its public id on them. */
+  const [notYours, setNotYours] = useState<Set<string>>(new Set());
 
   const fail = (e: unknown) =>
     setPhase({ name: 'error', message: e instanceof Error ? e.message : String(e) });
 
+  const payerKey = async () => (devSeedEnabled() ? devPayer().publicKey : await paymaster.getPayer());
+
   /** Step 1: who are you, and do you still have something in the old wallet? */
-  const find = useCallback(async () => {
-    setPhase({ name: 'connecting' });
-    try {
-      const identity = await connectPasskey();
-      setPasskey(identity);
-      setPhase({ name: 'looking' });
+  const find = useCallback(
+    async (identity?: Passkey) => {
+      setPhase({ name: 'connecting' });
+      try {
+        const me = identity ?? (await connectPasskey());
+        setPasskey(me);
+        setPhase({ name: 'looking' });
 
-      // No user seed anywhere in this flow: wallets made through the SDK used a
-      // random seed kept in browser storage, which a returning user rarely has.
-      // The chain knows the answer — the authority record names its wallet.
-      const owned = (
-        await client.findV1WalletsByOwner(identity.credentialIdHash, 'secp256r1', v1ProgramId)
-      ).filter((w) => w.role === 0);
+        // No user seed anywhere in this flow: wallets made through the SDK used a
+        // random seed kept in browser storage, which a returning user rarely has.
+        // The chain knows the answer — the authority record names its wallet.
+        // Anyone can create a v1 wallet listing this passkey's (public) id, so
+        // these are only candidates: the passkey proves which one is its own
+        // when it signs, before anything is sent.
+        const rpIdHash = sha256(new TextEncoder().encode(portalRpId()));
+        const owned = (await client.findV1WalletsByOwner(me.credentialIdHash, 'secp256r1', v1ProgramId)).filter(
+          (w) => w.role === 0 && !notYours.has(w.wallet.toBase58()),
+        );
+        const authorities = await connection.getMultipleAccountsInfo(owned.map((w) => w.authority));
 
-      for (const candidate of owned) {
-        const state = await readV1WalletState(connection, candidate);
-        if (!state) continue;
-        const all = await enumerateV1VaultTokens(connection, candidate.vault);
-        if (state.vaultLamports === 0 && all.length === 0) continue;
-        const { movable, skipped } = await classifyV1VaultTokens(connection, all);
-        // Until v1 is retired its program has no MigrateWallet: say so now,
-        // rather than after the passkey has signed something it cannot use.
-        const payer = devSeedEnabled() ? devPayer().publicKey : await paymaster.getPayer();
-        const open = await isMigrationOpen(connection, v1ProgramId, payer).catch(() => false);
-        setLeaveBehind(new Set());
-        setPhase({
-          name: 'found',
-          wallet: candidate.wallet,
-          // Read the owner's key off the chain, never from the WebAuthn
-          // response: signing in with an existing passkey returns an
-          // assertion, and an assertion carries no public key.
-          ownerPubkey:
-            (candidate as { ownerPubkey?: Uint8Array }).ownerPubkey ??
-            (await readV1OwnerPubkey(connection, candidate.authority)),
-          lamports: state.vaultLamports,
-          tokens: movable,
-          stuck: skipped,
-          open,
-        });
-        return;
+        for (const [i, candidate] of owned.entries()) {
+          const data = authorities[i]?.data;
+          // Made for this portal's relying party, or the portal could never sign for it.
+          if (!data || data.length < 145 || !equal(new Uint8Array(data.subarray(113, 145)), rpIdHash)) continue;
+          const state = await readV1WalletState(connection, candidate);
+          if (!state) continue;
+          const all = await enumerateV1VaultTokens(connection, candidate.vault);
+          if (state.vaultLamports === 0 && all.length === 0) continue;
+          const { movable, skipped } = await classifyV1VaultTokens(connection, all);
+          setLeaveBehind(new Set());
+          setConfirmedLoss(false);
+          setPhase({
+            name: 'found',
+            wallet: candidate.wallet,
+            authority: candidate.authority,
+            // Read the owner's key off the chain, never from the WebAuthn
+            // response: signing in with an existing passkey returns an
+            // assertion, and an assertion carries no public key.
+            ownerPubkey: new Uint8Array(data.subarray(80, 113)),
+            lamports: state.vaultLamports,
+            tokens: movable,
+            stuck: skipped,
+            // Until v1 is retired its program has no MigrateWallet: say so now,
+            // rather than after the passkey has signed something it cannot use.
+            migration: await migrationState(connection, v1ProgramId, await payerKey()),
+          });
+          return;
+        }
+        setPhase({ name: 'nothing' });
+      } catch (e) {
+        fail(e);
       }
-      setPhase({ name: 'nothing' });
-    } catch (e) {
-      fail(e);
-    }
-  }, []);
+    },
+    [notYours],
+  );
 
   const seed = useCallback(async () => {
     if (!passkey) return;
@@ -141,7 +158,7 @@ export default function App() {
             'registering is the only flow that hands back a key.',
         );
       }
-      const { walletPda, vault } = await seedV1Wallet(passkey);
+      const { walletPda, vault } = await seedV1Wallet(passkey, v1ProgramId);
       setSeedResult(`Created ${walletPda.toBase58().slice(0, 8)}… — vault ${vault.toBase58().slice(0, 8)}…`);
     } catch (e) {
       setSeedResult(e instanceof Error ? e.message : String(e));
@@ -150,10 +167,10 @@ export default function App() {
     }
   }, [passkey]);
 
-  /** Step 2: one signature, everything moves. */
+  /** Step 2: one signature, and everything that can move moves. */
   const migrate = useCallback(async () => {
     if (phase.name !== 'found' || !passkey) return;
-    const v1Wallet = phase.wallet;
+    const found = phase;
     try {
       setPhase({ name: 'migrating', step: 'Preparing' });
       // In dev the local key pays: the shared paymaster only sponsors program
@@ -165,20 +182,83 @@ export default function App() {
         owner: {
           type: 'secp256r1',
           credentialIdHash: passkey.credentialIdHash,
-          compressedPubkey: phase.ownerPubkey,
+          compressedPubkey: found.ownerPubkey,
           rpId: portalRpId(),
         },
-        v1Wallet,
+        v1Wallet: found.wallet,
         v1ProgramId,
         excludeTokenAccounts: [...leaveBehind].map((a) => new PublicKey(a)),
       });
+      if (plan.migrate.type !== 'secp256r1') {
+        throw new Error('this wallet is owned by a key, not a passkey — migrate it from your app');
+      }
+
+      // Something the user did not see may have become unmovable since they
+      // looked (an issuer froze an account, a new token arrived). Show it first.
+      const seen = new Set([...found.stuck.map((s) => s.token.ata.toBase58()), ...leaveBehind]);
+      if (plan.skippedTokens.some((s) => !seen.has(s.token.ata.toBase58()))) {
+        await find(passkey);
+        return;
+      }
+
+      // The whole move is one transaction. Check it fits before asking for a
+      // signature: past the size limit it can only fail, after the prompt.
+      const { blockhash } = await connection.getLatestBlockhash();
+      const sized = plan.migrate.finalize({
+        signature: new Uint8Array(64),
+        authenticatorData: new Uint8Array(37),
+        clientDataJsonHash: new Uint8Array(32),
+        clientDataJson: new Uint8Array(320), // a portal-origin clientDataJSON, with room to spare
+      });
+      let bytes = Infinity;
+      try {
+        bytes = new VersionedTransaction(
+          new TransactionMessage({ payerKey: payer, recentBlockhash: blockhash, instructions: sized }).compileToV0Message(),
+        ).serialize().length;
+      } catch {
+        // web3.js throws past the limit
+      }
+      if (bytes > MAX_TX_BYTES) {
+        throw new Error(
+          `${plan.tokens.length} token accounts do not fit in one transaction. Untick the ones you ` +
+            'can do without (anything unticked stays in the old wallet for good), then try again.',
+        );
+      }
+
+      // The passkey signs the move itself: destination, wallet, and every token
+      // account are inside the challenge, so nothing can be redirected.
+      setPhase({ name: 'migrating', step: 'Waiting for your passkey' });
+      const preview = new VersionedTransaction(
+        new TransactionMessage({ payerKey: payer, recentBlockhash: blockhash, instructions: [] }).compileToV0Message(),
+      );
+      const response = await signChallenge(
+        plan.migrate.challenge,
+        passkey.credentialId,
+        Buffer.from(preview.serialize()).toString('base64'),
+      );
+
+      // Before anything is sent: is this old wallet really this passkey's?
+      // Its key comes from the chain, and anyone can list the passkey's public
+      // id on a wallet with a key of their own. The signature settles it.
+      const mine = provenCandidates(
+        [{ version: 1, walletPda: found.wallet, authorityPda: found.authority, pubkey: found.ownerPubkey }],
+        { challenge: plan.migrate.challenge, ...response },
+        portalRpId(),
+      );
+      if (!mine.length) {
+        setNotYours((s) => new Set(s).add(found.wallet.toBase58()));
+        throw new Error(
+          "That old wallet was not made by your passkey — someone created it using your passkey's " +
+            'public id. Nothing was sent. Press "Check my wallet" again to find your own.',
+        );
+      }
 
       const signatures: string[] = [];
       const send = async (instructions: TransactionInstruction[]) => {
-        const { blockhash } = await connection.getLatestBlockhash();
+        const { blockhash: recent } = await connection.getLatestBlockhash();
         const message = new TransactionMessage({
           payerKey: payer,
-          recentBlockhash: blockhash,
+          recentBlockhash: recent,
           instructions,
         }).compileToV0Message();
         const tx = new VersionedTransaction(message);
@@ -191,7 +271,6 @@ export default function App() {
         }
         await connection.confirmTransaction(signature, 'confirmed');
         signatures.push(signature);
-        return { message, signature };
       };
 
       // The new wallet and a destination token account per token, paid for by
@@ -201,27 +280,6 @@ export default function App() {
         await send(plan.setupInstructions);
       }
 
-      if (plan.migrate.type !== 'secp256r1') {
-        throw new Error('this wallet is owned by a key, not a passkey — migrate it from your app');
-      }
-
-      // The passkey signs the move itself: destination, wallet, and every token
-      // account are inside the challenge, so nothing can be redirected.
-      setPhase({ name: 'migrating', step: 'Waiting for your passkey' });
-      const { blockhash } = await connection.getLatestBlockhash();
-      const preview = new VersionedTransaction(
-        new TransactionMessage({
-          payerKey: payer,
-          recentBlockhash: blockhash,
-          instructions: [],
-        }).compileToV0Message(),
-      );
-      const response = await signChallenge(
-        plan.migrate.challenge,
-        passkey.credentialId,
-        Buffer.from(preview.serialize()).toString('base64'),
-      );
-
       setPhase({ name: 'migrating', step: 'Moving your funds' });
       await send(plan.migrate.finalize(response));
 
@@ -229,20 +287,33 @@ export default function App() {
         name: 'done',
         destination: plan.destinationWallet,
         signatures,
-        seed: plan.destinationUserSeed,
+        leftBehind: plan.skippedTokens,
       });
     } catch (e) {
       fail(e);
     }
-  }, [phase, passkey, leaveBehind]);
+  }, [phase, passkey, leaveBehind, find]);
 
-  const toggle = (ata: string) =>
+  const toggle = (ata: string) => {
+    setConfirmedLoss(false);
     setLeaveBehind((current) => {
       const next = new Set(current);
       if (next.has(ata)) next.delete(ata);
       else next.add(ata);
       return next;
     });
+  };
+
+  const stays: Stuck[] =
+    phase.name === 'found'
+      ? [
+          ...phase.stuck,
+          ...phase.tokens
+            .filter((t) => leaveBehind.has(t.ata.toBase58()))
+            .map((token) => ({ token, reason: 'excluded' as const })),
+        ]
+      : [];
+  const losing = stays.some((s) => s.token.amount > 0n);
 
   return (
     <main>
@@ -252,9 +323,7 @@ export default function App() {
         this page moves them across in one step, signed by you. Nobody else can move them.
       </p>
 
-      {phase.name === 'idle' && (
-        <button onClick={find}>Check my wallet</button>
-      )}
+      {phase.name === 'idle' && <button onClick={() => find()}>Check my wallet</button>}
 
       {(phase.name === 'connecting' || phase.name === 'looking') && (
         <p className="status">{phase.name === 'connecting' ? 'Waiting for your passkey…' : 'Looking up your wallet…'}</p>
@@ -265,8 +334,8 @@ export default function App() {
           <h2>Test setup</h2>
           <p className="muted">
             Devnet only. Creates an old-style wallet owned by the passkey you just used, so there
-            is something to move. Funding and the program upgrade happen on their own; give it a
-            minute, then press Check my wallet again.
+            is something to move. The old program must be running its v1 build for this; see
+            TESTING.md for the operator steps around it.
           </p>
           <button onClick={seed} disabled={seeding}>
             {seeding ? 'Creating…' : 'Create a test wallet'}
@@ -297,11 +366,7 @@ export default function App() {
                 <div key={ata} className="row">
                   <dt title={t.mint.toBase58()}>
                     <label>
-                      <input
-                        type="checkbox"
-                        checked={!leaveBehind.has(ata)}
-                        onChange={() => toggle(ata)}
-                      />{' '}
+                      <input type="checkbox" checked={!leaveBehind.has(ata)} onChange={() => toggle(ata)} />{' '}
                       {short(t.mint.toBase58())}
                     </label>
                   </dt>
@@ -310,33 +375,53 @@ export default function App() {
               );
             })}
           </dl>
-          {phase.stuck.length > 0 && (
+          {stays.length > 0 && (
             <>
-              <h3>Staying behind</h3>
+              <h3>Staying behind — for good</h3>
               <p className="muted">
-                These cannot move, and stay in the old wallet for good once it closes.
+                Moving closes the old wallet, and after that nothing can ever reach these again.
               </p>
               <ul>
-                {phase.stuck.map(({ token, reason }) => (
+                {stays.map(({ token, reason }) => (
                   <li key={token.ata.toBase58()} title={token.mint.toBase58()}>
                     {short(token.mint.toBase58())}: {formatTokenAmount(token.amount)} — {REASONS[reason]}
                   </li>
                 ))}
               </ul>
+              {losing && (
+                <label className="muted">
+                  <input
+                    type="checkbox"
+                    checked={confirmedLoss}
+                    onChange={(e) => setConfirmedLoss(e.target.checked)}
+                  />{' '}
+                  I understand these tokens will be lost.
+                </label>
+              )}
             </>
           )}
           <p className="muted">
             From {short(phase.wallet.toBase58())}. Every ticked token account moves in the same
-            transaction; untick one to leave it (spam you never asked for, say). The old accounts
-            are closed so their rent comes back to you.
+            transaction; untick one to leave it behind (spam you never asked for, say). Closing the
+            old accounts returns their rent to whoever pays for the move, which also pays to set up
+            your new wallet.
           </p>
-          {phase.open ? (
-            <button onClick={migrate}>Move everything</button>
-          ) : (
+          {phase.migration.state === 'open' && (
+            <button onClick={migrate} disabled={losing && !confirmedLoss}>
+              {stays.length ? 'Move the ticked items' : 'Move everything'}
+            </button>
+          )}
+          {phase.migration.state === 'closed' && (
             <p className="status">
               Moving opens once LazorKit retires its old program. Your wallet keeps working in your
               app until then; come back when your app says it is time.
             </p>
+          )}
+          {phase.migration.state === 'unknown' && (
+            <>
+              <p className="status">Could not check whether moving is open yet ({phase.migration.reason}).</p>
+              <button onClick={() => find(passkey ?? undefined)}>Check again</button>
+            </>
           )}
         </section>
       )}
@@ -350,6 +435,15 @@ export default function App() {
             Your funds are now in {short(phase.destination.toBase58())}. Open your app again and
             they will be there.
           </p>
+          {phase.leftBehind.length > 0 && (
+            <p className="muted">
+              Left in the old wallet:{' '}
+              {phase.leftBehind
+                .map(({ token, reason }) => `${short(token.mint.toBase58())} (${REASONS[reason]})`)
+                .join(', ')}
+              .
+            </p>
+          )}
           <ul>
             {phase.signatures.map((s) => (
               <li key={s}>

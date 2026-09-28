@@ -29,7 +29,7 @@ export function devPayer(): Keypair {
   return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(secret)));
 }
 
-export async function seedV1Wallet(passkey: Passkey): Promise<{
+export async function seedV1Wallet(passkey: Passkey, v1ProgramId: PublicKey): Promise<{
   walletPda: PublicKey;
   vault: PublicKey;
   signature: string;
@@ -50,8 +50,9 @@ export async function seedV1Wallet(passkey: Passkey): Promise<{
     };
   };
 
-  // The old wallet belongs to the v1 program, so that is where it is made.
-  const client = new LazorKitClient(connection, config.v1ProgramId);
+  // The old wallet belongs to the v1 program, so that is where it is made — the
+  // same id the page scans, so seeding and finding can never disagree.
+  const client = new LazorKitClient(connection, v1ProgramId);
   // Random, and deliberately discarded: the migration must not need it.
   const userSeed = crypto.getRandomValues(new Uint8Array(32));
 
