@@ -5,7 +5,7 @@
  * this JS context, and are worth nothing after a restart.
  */
 import { selectWalletByAddress, type WalletFacts } from '@lazorkit/sdk-legacy';
-import type { WalletInfo } from '../../types';
+import { PortalCancelledError, type WalletInfo } from '../../types';
 
 // ─── Remembered candidates (onConfirmWallet: 'throw') ──────────────
 
@@ -40,7 +40,9 @@ export function rememberCandidates(
 /**
  * The remembered candidate at `address` (its vault or wallet PDA), if it was
  * remembered for this scope less than two minutes ago. Taking it forgets
- * everything remembered: it is used once.
+ * everything remembered: it is used once. `null` when nothing is remembered
+ * for this scope. Throws when something is, and `address` names none of it —
+ * leaving it remembered, so that the right address still needs no portal.
  */
 export function takeRememberedCandidate(
   scope: string,
@@ -56,7 +58,7 @@ export function takeRememberedCandidate(
   }
   if (entry.scope !== scope) return null;
   const facts = selectWalletByAddress(entry.facts, address);
-  if (!facts) return null;
+  if (!facts) throw notOffered(address, entry.facts);
   remembered = null;
   return { data: entry.data, facts };
 }
@@ -69,20 +71,69 @@ export function forgetCandidates(): void {
   remembered = null;
 }
 
-// ─── The built-in chooser's host ───────────────────────────────────
-
-let chooserHosts = 0;
+/** A `confirmWallet` (or a chooser's answer) that names none of the wallets offered. Never ignored. */
+export function notOffered(address: string, offered: readonly WalletFacts[]): Error {
+  const vaults = offered.map((f) => f.vaultPda.toBase58());
+  return new Error(
+    `${address} is not a wallet this passkey is proven to hold, so no wallet was connected. ` +
+      (vaults.length
+        ? `Pass the vault (or wallet) address of one of: ${vaults.join(', ')}.`
+        : 'This passkey holds no wallet that could be confirmed.'),
+  );
+}
 
 /**
- * Called by the component that draws the built-in chooser, while it is
- * mounted. Returns the unregister function.
+ * What a connect rejects with once `disconnect` has abandoned it. The same
+ * type as the user closing the portal, so an app treats both as a cancel.
  */
-export function registerChooserHost(): () => void {
-  chooserHosts += 1;
-  let registered = true;
+export function connectAbandoned(): PortalCancelledError {
+  return new PortalCancelledError('disconnect was called while connecting, so no wallet was connected.');
+}
+
+// ─── The built-in chooser's hosts ──────────────────────────────────
+
+/**
+ * A mounted component that can draw the built-in chooser. `LazorKitProvider`
+ * mounts one as the fallback; an app can mount `<WalletChooser />` inside its
+ * own top-most modal (on iOS nothing else can appear over that), and while it
+ * is mounted it draws instead.
+ */
+interface ChooserHost {
+  readonly fallback: boolean;
+}
+
+let hosts: ChooserHost[] = [];
+const hostListeners = new Set<() => void>();
+
+/**
+ * Called by a component that draws the built-in chooser, while it is mounted.
+ * Returns the host and its unregister function.
+ */
+export function registerChooserHost(fallback: boolean): { host: ChooserHost; unregister: () => void } {
+  const host: ChooserHost = { fallback };
+  hosts = [...hosts, host];
+  hostListeners.forEach((listener) => listener());
+  return {
+    host,
+    unregister: () => {
+      if (!hosts.includes(host)) return;
+      hosts = hosts.filter((h) => h !== host);
+      hostListeners.forEach((listener) => listener());
+    },
+  };
+}
+
+/** The host that draws: the last one an app mounted, else the provider's. */
+export function activeChooserHost(): ChooserHost | null {
+  for (let i = hosts.length - 1; i >= 0; i -= 1) if (!hosts[i].fallback) return hosts[i];
+  return hosts[hosts.length - 1] ?? null;
+}
+
+/** Told whenever a host mounts or unmounts. Returns the unsubscribe function. */
+export function subscribeChooserHosts(listener: () => void): () => void {
+  hostListeners.add(listener);
   return () => {
-    if (registered) chooserHosts -= 1;
-    registered = false;
+    hostListeners.delete(listener);
   };
 }
 
@@ -91,5 +142,5 @@ export function registerChooserHost(): () => void {
  * the user's answer would wait forever.
  */
 export function hasChooserHost(): boolean {
-  return chooserHosts > 0;
+  return hosts.length > 0;
 }

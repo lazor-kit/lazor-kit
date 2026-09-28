@@ -104,8 +104,11 @@ their own, or hand it a wallet they have used first. So `connect` never takes
    again).
 
 This runs only on a fresh `connect`; a stored wallet and sign actions never
-come through it. It reads with `getProgramAccounts`, so `rpcUrl` must allow
-that; a failed read fails `connect` rather than counting as "no wallet".
+come through it. While a wallet is connected, `connect` returns it without
+opening the portal (a `confirmWallet` naming another wallet throws: disconnect
+first to connect another). It reads with `getProgramAccounts`, so `rpcUrl`
+must allow that; a failed read fails `connect` rather than counting as "no
+wallet".
 
 ```tsx
 <LazorKitProvider
@@ -133,16 +136,38 @@ that; a failed read fails `connect` rather than counting as "no wallet".
   - `'throw'`: `connect` throws `WalletNeedsConfirmationError` with
     `credentialId` and `candidates`. Show them, then call
     `connect({ redirectUrl, confirmWallet: choice.vault })`; within two
-    minutes that adopts it without opening the portal again. Disconnecting,
+    minutes that adopts it without opening the portal again (an address that
+    is none of them throws at once, and they stay remembered). Disconnecting,
     or any `connect` that opens the portal, forgets the candidates.
 
   `connect({ redirectUrl, onConfirmWallet })` overrides it for one call.
   While the chooser (or your function) waits for the user, `isLoading` is
   `false` and `isConnecting` stays `true`, so an overlay you show while
   loading does not cover it.
+
+  **iOS shows one modal at a time.** The built-in chooser is a React Native
+  `Modal` that `LazorKitProvider` renders beside your app, and iOS will not
+  present it over another modal that is open — your own `<Modal>`, or a
+  screen presented modally (`presentation: 'modal'` in Expo Router /
+  React Navigation). If you connect from inside one, render the chooser
+  there as well; while it is mounted it draws instead of the provider's:
+
+  ```tsx
+  import { WalletChooser } from '@lazorkit/wallet-mobile-adapter';
+
+  <Modal visible={signInOpen}>
+    <SignInScreen />
+    <WalletChooser />
+  </Modal>
+  ```
+
+  If the chooser still is not on screen within a few seconds, `connect`
+  rejects with `WalletChooserNotShownError` instead of waiting for an answer
+  nobody can give. Android shows it over anything.
 - **`confirmWallet`** — the user's pick, by vault or wallet PDA. It must be a
   wallet this passkey is proven to hold a key of; any other address throws
-  rather than being ignored.
+  rather than being ignored. While a wallet is connected it must name that
+  one.
 - **`trustedAuthorities`** — Ed25519 keys you control (a backend admin, session
   keys your app issues). An authority, session or token approval held by one
   of them does not stop a wallet from being used. Passkeys, pending
@@ -159,7 +184,8 @@ Errors:
 |---|---|
 | `WalletNeedsConfirmationError` | `onConfirmWallet: 'throw'` and the user has to choose. |
 | `WalletConfirmationDeclinedError` | The user chose "None of these" (or your handler returned `null`). Nothing was saved, and no wallet was created. |
-| `PortalCancelledError` | The user closed the portal (iOS cancel, or an Android Custom Tab dismissed without a redirect). Also for sign actions. |
+| `PortalCancelledError` | The user closed the portal (iOS cancel, or an Android Custom Tab dismissed without a redirect), or `disconnect` was called while `connect` ran — then that connect saves and remembers nothing, and its chooser closes. Also for sign actions. |
+| `WalletChooserNotShownError` | iOS could not show the built-in chooser (another modal is open); see above. Nothing was saved. |
 | `LazorKitError` with `code: 'PORTAL_ERROR'` | The portal redirected with an `error`; its text is the message. |
 
 A second sign action while one is running rejects with `SigningError` (and
@@ -183,7 +209,8 @@ Connects to the wallet.
 
 #### `disconnect()`
 
-Disconnects the wallet.
+Disconnects the wallet. A `connect` still running is abandoned: it rejects
+with `PortalCancelledError` and connects nothing.
 
 #### `signMessage(message, options)`
 

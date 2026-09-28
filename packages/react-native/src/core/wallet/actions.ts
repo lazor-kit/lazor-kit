@@ -37,7 +37,7 @@ import {
   verifyOwnershipProof,
   versionOf,
 } from '../../program';
-import { rememberCandidates, takeRememberedCandidate } from './confirmation';
+import { connectAbandoned, rememberCandidates, takeRememberedCandidate } from './confirmation';
 import { resolveWallet } from './resolveWallet';
 import { API_ENDPOINTS, DEFAULTS } from '../../config';
 import { openBrowser } from '../browser/open';
@@ -64,7 +64,8 @@ export const createWalletActions = (
    * The wallet the user picked after `connect` threw
    * `WalletNeedsConfirmationError`, if it was one of that error's candidates
    * and is picked within two minutes — without the portal: the candidates came
-   * from a proof verified in this app moments ago. `null` otherwise.
+   * from a proof verified in this app moments ago. `null` when none are
+   * remembered; throws when some are and `confirmWallet` names none of them.
    */
   const adoptRemembered = (confirmWallet: string): WalletInfo | null => {
     const remembered = takeRememberedCandidate(scope, confirmWallet);
@@ -77,7 +78,11 @@ export const createWalletActions = (
    * wallet created for it.
    */
   const saveWallet = async (data: WalletInfo, options: SaveWalletOptions = {}): Promise<WalletInfo> => {
-    const { redirectUrl } = options;
+    const { redirectUrl, signal } = options;
+    /** Stop here once `disconnect` has abandoned this connect. */
+    const checkAbandoned = () => {
+      if (signal?.aborted) throw connectAbandoned();
+    };
     setLoading(true);
     try {
       const credentialIdHash = new Uint8Array(
@@ -101,7 +106,11 @@ export const createWalletActions = (
         (proof ??=
           options.proof && verifyOwnershipProof([...candidates, reported], options.proof, rpId).length
             ? Promise.resolve(options.proof)
-            : proveViaPortal({ credentialId: data.credentialId, portalUrl: config.portalUrl, redirectUrl }));
+            : Promise.resolve().then(() => {
+                // No second portal trip for a connect nobody waits for.
+                checkAbandoned();
+                return proveViaPortal({ credentialId: data.credentialId, portalUrl: config.portalUrl, redirectUrl });
+              }));
 
       // A v1 wallet made before LazorKit v2 keeps being used as it is: a fresh
       // v2 wallet would show that user an empty account while their funds sit
@@ -122,8 +131,10 @@ export const createWalletActions = (
         // while `isLoading` would cover the chooser too, and connect would
         // wait for an answer that cannot be given.
         onAsking: (asking) => setLoading(!asking),
+        signal,
       });
       if (own) return walletInfoOf(data, own);
+      checkAbandoned();
 
       const client = v2Client(connection);
 
@@ -144,6 +155,8 @@ export const createWalletActions = (
         config.configPaymaster.apiKey,
       );
 
+      // The last moment a disconnect can still stop the creation.
+      checkAbandoned();
       const userSeed = new Uint8Array(32);
       crypto.getRandomValues(userSeed);
 
