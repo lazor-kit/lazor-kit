@@ -18,6 +18,12 @@ export interface WalletHookInterface {
   isSigning: boolean;
   error: Error | null;
   wallet: WalletInfo | null;
+  /**
+   * The protocol the connected wallet lives on: 1 for a wallet made before
+   * LazorKit v2, 2 since. `null` when disconnected. Every action already routes
+   * by it; read it to offer a v1 user the move to v2.
+   */
+  protocolVersion: 1 | 2 | null;
 
   // Actions
   connect: (options?: { feeMode?: 'paymaster' | 'user' }) => Promise<WalletInfo>;
@@ -37,12 +43,18 @@ export interface WalletHookInterface {
      * delegation). Accepts base58 string or `PublicKey`.
      */
     sessionKey?: PublicKey | string;
+    /**
+     * Mint a session with no spending limits — it can spend the whole vault
+     * through any program until it expires. Required when `spendingLimits` is
+     * omitted; without either, `createSession` throws.
+     */
+    unrestricted?: boolean;
   }) => Promise<{ sessionPda: string; sessionPublicKey: string }>;
   revokeSession: (payload?: { sessionPda?: PublicKey | string }) => Promise<void>;
   signAndSendWithSession: (payload: SendTxPayload) => Promise<string>;
 
   // Ed25519 authority actions
-  addAuthority: (payload?: { role?: number }) => Promise<{ authorityPda: string; authorityPublicKey: string }>;
+  addAuthority: (payload?: { role?: number; policy?: Uint8Array }) => Promise<{ authorityPda: string; authorityPublicKey: string }>;
   removeAuthority: (targetAuthorityPda: string) => Promise<void>;
   signAndSendWithAuthority: (payload: SendTxPayload) => Promise<string>;
 
@@ -151,6 +163,7 @@ export const useWallet = (): WalletHookInterface => {
     isSigning,
     error,
     wallet,
+    protocolVersion: wallet ? (wallet.protocolVersion ?? 1) : null,
 
     // Actions
     connect: handleConnect,
@@ -165,6 +178,7 @@ export const useWallet = (): WalletHookInterface => {
         expiresInSlots?: bigint;
         spendingLimits?: SpendingLimits;
         sessionKey?: PublicKey | string;
+        unrestricted?: boolean;
       }) => createSession(payload),
       [createSession]
     ),
@@ -179,7 +193,7 @@ export const useWallet = (): WalletHookInterface => {
 
     // Ed25519 authority actions
     addAuthority: useCallback(
-      (payload?: { role?: number }) => addAuthority(payload),
+      (payload?: { role?: number; policy?: Uint8Array }) => addAuthority(payload),
       [addAuthority]
     ),
     removeAuthority: useCallback(

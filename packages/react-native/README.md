@@ -55,6 +55,31 @@ function WalletScreen() {
 }
 ```
 
+
+## Wallets made before LazorKit v2
+
+LazorKit v2 runs at its own program id; v1 keeps its old one until it is
+retired. This package serves both: `connect` finds a user's existing v1 wallet
+and keeps using it, and only a new user gets a v2 wallet. Everything routes by
+the connected wallet, so there is nothing to branch on in your app — but
+`useWallet().protocolVersion` tells you which one a user is on (1 or 2), e.g.
+to offer the move to v2.
+
+If your app already ran a paymaster before v2, keep it for v1 users and add
+the v2 one:
+
+```tsx
+<LazorKitProvider
+  configPaymaster={{ paymasterUrl: V2_PAYMASTER_URL }}
+  v1ConfigPaymaster={{ paymasterUrl: EXISTING_PAYMASTER_URL }}
+>
+```
+
+Once LazorKit retires v1, a v1 wallet's transactions fail with
+`V1WalletRetiredError`. Its funds are safe; move it with
+`LazorKitClient.migrateV1Wallet` from `@lazorkit/sdk-legacy`, or send the user
+to the LazorKit migration page.
+
 ## API Reference
 
 ### `useWallet()`

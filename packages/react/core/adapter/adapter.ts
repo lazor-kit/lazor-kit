@@ -22,7 +22,18 @@ import { sha256 } from 'js-sha256';
 import { DialogManager, DialogResult, SignResult } from '../portal';
 import { StorageManager, WalletInfo } from '../storage';
 import { Paymaster } from '../paymaster/paymaster';
-import { LazorKitClient } from '../program';
+import {
+    LazorKitClient,
+    ROLE_OWNER,
+    type ProtocolVersion,
+    clientFor,
+    v1Client,
+    v2Client,
+    versionOf,
+    readPasskeyPubkey,
+    isRetiredDeploymentError,
+    V1WalletRetiredError,
+} from '../program';
 import { getCredentialHash, getPasskeyPublicKey } from '../wallet/utils';
 import { Buffer } from 'buffer';
 import { DEFAULTS } from '../../config';
@@ -42,7 +53,16 @@ const getRpId = (portalUrl: string): string => new URL(portalUrl).hostname;
 export interface LazorkitAdapterConfig {
     rpcUrl: string;
     portalUrl: string;
+    /** The paymaster for v2 wallets. */
     paymasterConfig: {
+        paymasterUrl: string;
+        apiKey?: string;
+    };
+    /**
+     * The paymaster for wallets still on LazorKit v1 — the relayer used before
+     * v2. Defaults to `paymasterConfig`.
+     */
+    v1PaymasterConfig?: {
         paymasterUrl: string;
         apiKey?: string;
     };
@@ -161,23 +181,47 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         });
     }
 
-    private _initializeClients() {
+    /** Connection, paymaster and client for one protocol (see core/program/protocol). */
+    private _initializeClients(version: ProtocolVersion) {
         const connection = new Connection(this._config.rpcUrl);
-        const paymaster = new Paymaster(this._config.paymasterConfig);
-        const client = new LazorKitClient(connection);
+        const paymaster = new Paymaster(
+            version === 1
+                ? (this._config.v1PaymasterConfig ?? this._config.paymasterConfig)
+                : this._config.paymasterConfig,
+        );
+        const client: LazorKitClient = clientFor(version, connection);
         return { connection, paymaster, client };
     }
 
     private async _ensureWalletOnChain(dialogResult: DialogResult): Promise<WalletInfo> {
-        const { paymaster, client } = this._initializeClients();
         const credentialHash = getCredentialHash(dialogResult.credentialId);
-        const matches = await client.findWalletsByAuthority(credentialHash, 'secp256r1');
+        const owned = async (c: LazorKitClient) =>
+            (await c.findWalletsByAuthority(credentialHash, 'secp256r1')).filter((w) => w.role === ROLE_OWNER);
+
+        // A v2 wallet wins; a v1 wallet made before LazorKit v2 is used as it is
+        // (a fresh v2 wallet would show that user an empty account); only a
+        // passkey with neither gets a new, v2, wallet. Owner rank only: a lower
+        // rank can be granted to anyone's passkey without its consent.
+        const probe = new Connection(this._config.rpcUrl);
+        let version: ProtocolVersion = 2;
+        let matches = await owned(v2Client(probe));
+        if (matches.length === 0) {
+            const legacy = await owned(v1Client(probe));
+            if (legacy.length > 0) {
+                version = 1;
+                matches = legacy;
+            }
+        }
+        const { connection, paymaster, client } = this._initializeClients(version);
 
         let smartWalletAddress: string;
         let passkeyPubkey: string;
 
         if (!dialogResult.publicKey && matches.length > 0) {
-            passkeyPubkey = Buffer.from(matches[0].vaultPda.toBase58()).toString('base64');
+            // Cross-device: the assertion carries no public key; read it off the
+            // authority account.
+            const pubkey = await readPasskeyPubkey(version, connection, matches[0].authorityPda);
+            passkeyPubkey = Buffer.from(pubkey).toString('base64');
             localStorage.setItem('PUBLIC_KEY', passkeyPubkey);
         } else {
             passkeyPubkey = dialogResult.publicKey;
@@ -203,13 +247,16 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
             smartWalletAddress = walletPda.toBase58();
         }
 
+        const [vault] = client.findVault(new PublicKey(smartWalletAddress));
         return {
             credentialId: dialogResult.credentialId,
             passkeyPubkey: Array.from(getPasskeyPublicKey(passkeyPubkey)),
             expo: 'web',
             platform: navigator.platform,
             smartWallet: smartWalletAddress,
+            vaultPda: vault.toBase58(),
             walletDevice: '',
+            protocolVersion: version,
         };
     }
 
@@ -229,7 +276,8 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
             const instructions = this._prepareInstructions(transaction);
             if (instructions.length === 0) throw new WalletSignTransactionError('No instructions to sign');
 
-            const { connection, paymaster, client } = this._initializeClients();
+            const version = versionOf(this._wallet);
+            const { connection, paymaster, client } = this._initializeClients(version);
 
             let addressLookupTableAccounts: AddressLookupTableAccount[] = [];
             if ('version' in transaction) {
@@ -248,14 +296,16 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
 
             const feePayer = await paymaster.getPayer();
 
-            // Step 1: resolve on-chain wallet + authority from the credential.
+            // Step 1: resolve the connected wallet on chain — the stored one, not
+            // whichever wallet lists this passkey first.
             const credentialIdHash = getCredentialHash(this._wallet.credentialId);
             const matches = await client.findWalletsByAuthority(credentialIdHash, 'secp256r1');
-            if (matches.length === 0) {
-                throw new Error('No wallet found for stored credential');
+            const match = matches.find((m) => m.walletPda.toBase58() === this._wallet!.smartWallet);
+            if (!match) {
+                throw new Error('The connected wallet no longer lists this passkey');
             }
-            const { walletPda, authorityPda } = matches[0];
-            const publicKeyBytes = new Uint8Array(this._wallet.passkeyPubkey);
+            const { walletPda, authorityPda } = match;
+            const publicKeyBytes = await readPasskeyPubkey(version, connection, authorityPda);
 
             // Step 2: prepare execute context (challenge + opaque internal state).
             const prepared = await client.prepareExecute({
@@ -322,8 +372,9 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
             }
 
         } catch (error: any) {
-            this.emit('error', error);
-            throw error;
+            const err = isRetiredDeploymentError(error) ? new V1WalletRetiredError(error) : error;
+            this.emit('error', err);
+            throw err;
         }
     }
 

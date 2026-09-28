@@ -17,13 +17,27 @@ export interface WalletInfo {
   readonly vaultPda?: string;
   readonly walletDevice: string;
   readonly accountName?: string;
+  /**
+   * The protocol this wallet lives on: 1 for a wallet made before LazorKit v2,
+   * 2 since. Absent on wallets saved by earlier releases of this package, all
+   * of which are v1.
+   */
+  readonly protocolVersion?: 1 | 2;
 }
 
 import { PaymasterConfig } from '../paymaster/paymaster';
 
 export interface WalletConfig {
   readonly portalUrl: string;
+  /** The paymaster for v2 wallets. */
   readonly paymasterConfig: PaymasterConfig;
+  /**
+   * The paymaster for wallets still on LazorKit v1 — the one the app used
+   * before v2. Defaults to `paymasterConfig`. Keep them apart where you can: a
+   * relayer that sponsors the full v1 program can have its fee payer pulled
+   * into any v1 transaction's inner calls, so the v2 relayer should not.
+   */
+  readonly v1PaymasterConfig?: PaymasterConfig;
   readonly rpcUrl?: string;
 }
 

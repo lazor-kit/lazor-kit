@@ -3,10 +3,14 @@
  *
  * The protocol layer used to be vendored in this package. It is now the
  * published SDK, which is the implementation the protocol repo's own
- * validator suites cover. These shims exist only to keep this package's
- * call shape unchanged: the SDK made `programId` a required argument
- * everywhere and made its client infer the program from the RPC URL, while
- * everything here has always defaulted to PROGRAM_ID.
+ * validator suites cover. These shims keep this package's call shape: the
+ * SDK made `programId` a required argument on the PDA helpers, while
+ * everything here has always defaulted it.
+ *
+ * The client does NOT default to a fixed id. The SDK infers the v2 program
+ * from the RPC URL (devnet vs mainnet), and a fixed default here would put a
+ * devnet app's wallets at the mainnet address. The PDA helpers default to the
+ * mainnet v2 id; pass `programId` (e.g. `client.programId`) anywhere else.
  */
 import { Connection, PublicKey } from '@solana/web3.js';
 import {
@@ -27,11 +31,11 @@ import {
 
 import { PROGRAM_ID } from '../constants';
 
-/** The SDK client, with this package's historical default program id. */
+/** The SDK client. Without `programId` it picks the v2 id for the RPC's cluster. */
 export class LazorKitClient extends SdkLazorKitClient {
   constructor(
     connection: Connection,
-    programId: PublicKey = PROGRAM_ID,
+    programId?: PublicKey,
     options: LazorKitClientOptions = {},
   ) {
     super(connection, programId, options);

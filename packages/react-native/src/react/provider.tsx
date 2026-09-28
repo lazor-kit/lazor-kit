@@ -33,6 +33,7 @@ export const LazorKitProvider = ({
   configPaymaster = {
     paymasterUrl: DEFAULTS.PAYMASTER_URL,
   },
+  v1ConfigPaymaster,
   rpId = DEFAULTS.RP_ID,
   isDebug = false,
   children,
@@ -66,6 +67,7 @@ export const LazorKitProvider = ({
           paymasterUrl: effectivePaymasterUrl,
           apiKey: configPaymaster.apiKey,
         },
+        v1ConfigPaymaster,
         rpcUrl: effectiveRpcUrl,
         rpId: effectiveRpId,
       });

@@ -31,11 +31,28 @@ export interface WalletInfo {
   readonly walletPda: string;
   /** Base58 authority PDA (derived from `['authority', walletPda, credentialIdHash]`) */
   readonly walletDevice: string;
+  /**
+   * The protocol this wallet lives on: 1 for a wallet made before LazorKit v2,
+   * 2 since. Absent on wallets persisted by earlier releases of this package,
+   * all of which are v1. Every action routes by it.
+   */
+  readonly protocolVersion?: 1 | 2;
 }
 
 export interface WalletConfig {
   readonly portalUrl: string;
+  /** The paymaster for v2 wallets. */
   readonly configPaymaster: {
+    readonly paymasterUrl: string;
+    readonly apiKey?: string;
+  };
+  /**
+   * The paymaster for wallets still on LazorKit v1 — the relayer the app used
+   * before v2. Defaults to `configPaymaster`. Keep them apart where you can: a
+   * relayer that sponsors the full v1 program can have its fee payer pulled
+   * into any v1 transaction's inner calls, so the v2 relayer should not.
+   */
+  readonly v1ConfigPaymaster?: {
     readonly paymasterUrl: string;
     readonly apiKey?: string;
   };
@@ -51,6 +68,11 @@ export interface LazorKitProviderProps {
   readonly rpcUrl?: string;
   readonly portalUrl?: string;
   readonly configPaymaster?: {
+    readonly paymasterUrl: string;
+    readonly apiKey?: string;
+  };
+  /** The paymaster for users whose wallet is still on LazorKit v1. Defaults to `configPaymaster`. */
+  readonly v1ConfigPaymaster?: {
     readonly paymasterUrl: string;
     readonly apiKey?: string;
   };
@@ -314,6 +336,12 @@ export interface LazorWalletHook {
   /** Internal wallet PDA (metadata/authority account). Needed for raw SDK calls. */
   walletPdaPubkey: PublicKey | null;
   passkeyPubkey: number[] | null;
+  /**
+   * The protocol the connected wallet lives on: 1 for a wallet made before
+   * LazorKit v2, 2 since. `null` when disconnected. Every action already routes
+   * by it; read it to offer a v1 user the move to v2.
+   */
+  protocolVersion: 1 | 2 | null;
   isConnected: boolean;
   isLoading: boolean;
   isConnecting: boolean;

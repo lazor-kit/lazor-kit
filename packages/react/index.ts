@@ -61,6 +61,18 @@ export {
   PROGRAM_ID,
   PROGRAM_ADDRESS,
 } from './core/program';
+// v1 and v2 side by side: which protocol a wallet is on, the program ids of
+// both, and the error a v1 wallet gets once LazorKit v1 is retired.
+export {
+  V1WalletRetiredError,
+  isRetiredDeploymentError,
+  RETIRED_DEPLOYMENT_CODE,
+  PROGRAM_ID_MAINNET,
+  PROGRAM_ID_DEVNET,
+  PROGRAM_ID_MAINNET_V1,
+  PROGRAM_ID_DEVNET_V1,
+} from './core/program';
+export type { ProtocolVersion } from './core/program';
 // Runtime error decoding helpers.
 export { errorFromCode, extractErrorCode, ERROR_NAMES } from './core/program';
 export type { DeferredPayload, SessionAction } from './core/program';
