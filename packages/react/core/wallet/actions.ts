@@ -145,6 +145,7 @@ export const connectAction = async (
             // forget it and connect afresh, which finds the v2 wallet.
             if (version === 1 && !(await connection.getAccountInfo(new PublicKey(existingWallet.smartWallet)))) {
                 await StorageManager.clearWallet();
+                set({ wallet: null });
                 existingWallet = null;
             } else if (!existingWallet.vaultPda) {
                 // Saved by a release that did not record the vault: derive it
@@ -180,6 +181,8 @@ export const connectAction = async (
                 ? getPasskeyPublicKey(dialogResult.publicKey)
                 : undefined;
             const own = await chooseOwnWallet({
+                connection,
+                confirmWallet: options?.confirmWallet,
                 candidates: await findOwnedCandidates(connection, credentialHash, rpId),
                 reportedPubkey,
                 rpId,
@@ -649,6 +652,8 @@ export const signAndSendWithSessionAction = async (
     if (!connection) throw new Error('No connection available');
 
     set({ isSigning: true, error: null });
+    // The protocol this flow runs on, from its own account — for error reporting.
+    let flowVersion: ProtocolVersion | undefined;
     try {
         const sessionRaw = localStorage.getItem('lazorkit-session');
         if (!sessionRaw) throw new Error('No session key found. Create a session first.');
@@ -659,6 +664,7 @@ export const signAndSendWithSessionAction = async (
 
         // A stored session may predate v2; its owner says which program it is.
         const version = await versionOfAccount(connection, sessionPda);
+        flowVersion = version;
         const paymaster = paymasterFor(config, version);
         const client = clientFor(version, connection);
         const feePayer = await paymaster.getPayer();
@@ -682,7 +688,7 @@ export const signAndSendWithSessionAction = async (
         payload.onSuccess?.(txSignature);
         return txSignature;
     } catch (error) {
-        return handleActionError(error, set, payload.onFail, walletVersion(get));
+        return handleActionError(error, set, payload.onFail, flowVersion ?? walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -981,8 +987,11 @@ export const executeDeferredAction = async (
     if (!connection) throw new Error('No connection available');
 
     set({ isSigning: true, error: null });
+    // The protocol this flow runs on, from its own account — for error reporting.
+    let flowVersion: ProtocolVersion | undefined;
     try {
         const { version, payload: deferredPayload } = deserializeDeferred(payload.deferredPayload);
+        flowVersion = version;
         const paymaster = paymasterFor(config, version);
         const client = clientFor(version, connection);
         const feePayer = await paymaster.getPayer();
@@ -1004,7 +1013,7 @@ export const executeDeferredAction = async (
         payload.onSuccess?.(signature);
         return signature;
     } catch (error) {
-        return handleActionError(error, set, payload.onFail, walletVersion(get));
+        return handleActionError(error, set, payload.onFail, flowVersion ?? walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -1023,6 +1032,8 @@ export const signAndSendWithAuthorityAction = async (
     if (!connection) throw new Error('No connection available');
 
     set({ isSigning: true, error: null });
+    // The protocol this flow runs on, from its own account — for error reporting.
+    let flowVersion: ProtocolVersion | undefined;
     try {
         const authRaw = localStorage.getItem('lazorkit-authority');
         if (!authRaw) throw new Error('No authority key found. Add an authority first.');
@@ -1032,6 +1043,7 @@ export const signAndSendWithAuthorityAction = async (
         const walletPda = new PublicKey(authInfo.walletPda);
 
         const version = await versionOfAccount(connection, authorityPda);
+        flowVersion = version;
         const paymaster = paymasterFor(config, version);
         const client = clientFor(version, connection);
         const feePayer = await paymaster.getPayer();
@@ -1055,7 +1067,7 @@ export const signAndSendWithAuthorityAction = async (
         payload.onSuccess?.(txSignature);
         return txSignature;
     } catch (error) {
-        return handleActionError(error, set, payload.onFail, walletVersion(get));
+        return handleActionError(error, set, payload.onFail, flowVersion ?? walletVersion(get));
     } finally {
         set({ isSigning: false });
     }

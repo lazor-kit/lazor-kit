@@ -111,6 +111,12 @@ export interface BrowserResult {
  */
 export interface ConnectOptions {
   readonly redirectUrl: string;
+  /**
+   * Adopt this wallet (its address) although other keys can also spend from
+   * it — after connect threw `WalletNeedsConfirmationError` and the user
+   * recognised it.
+   */
+  readonly confirmWallet?: string;
   readonly onSuccess?: (wallet: WalletInfo) => void;
   readonly onFail?: (error: Error) => void;
 }
@@ -415,7 +421,7 @@ export type ExecuteFinalize = (response: WebAuthnResponse) => {
  */
 export interface WalletActions {
   /** `redirectUrl` lets it ask the passkey to prove which wallet is its own. */
-  saveWallet: (data: WalletInfo, redirectUrl?: string) => Promise<WalletInfo>;
+  saveWallet: (data: WalletInfo, redirectUrl?: string, confirmWallet?: string) => Promise<WalletInfo>;
   executeWallet: (
     data: WalletInfo,
     feePayer: PublicKey,

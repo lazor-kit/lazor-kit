@@ -96,10 +96,10 @@ async function withSigningState<T>(
  * wallet after LazorKit v1 was retired gets `V1WalletRetiredError`, which
  * says what happened and what to do, rather than a bare `0xfb2`.
  */
-function toActionError(error: unknown, get: () => WalletStateClient): Error {
+function toActionError(error: unknown, get: () => WalletStateClient, flowVersion?: ProtocolVersion): Error {
   if (error instanceof V1WalletRetiredError || error instanceof V1WalletMigratedError) return error;
   const wallet = get().wallet;
-  if (isRetiredDeploymentError(error, wallet ? versionOf(wallet) : undefined)) {
+  if (isRetiredDeploymentError(error, flowVersion ?? (wallet ? versionOf(wallet) : undefined))) {
     return new V1WalletRetiredError(error);
   }
   return error instanceof Error ? error : new Error(String(error));
@@ -194,7 +194,7 @@ export const connectAction = async (
       config,
     );
 
-    const savedWallet = await saveWallet(walletInfo, redirectUrl);
+    const savedWallet = await saveWallet(walletInfo, redirectUrl, options.confirmWallet);
     set({ wallet: savedWallet });
     return savedWallet;
   } catch (error: unknown) {
@@ -468,10 +468,13 @@ export const signAndSendWithSessionAction = async (
   options: { onSuccess?: (sig: string) => void; onFail?: (err: Error) => void },
 ): Promise<string | undefined> => {
   return withSigningState(get, set, async () => {
+    // The protocol this flow runs on, from its own account — for error reporting.
+    let flowVersion: ProtocolVersion | undefined;
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
       // The session account's owner says which program it belongs to.
       const version = await versionOfAccount(connection, payload.sessionPda);
+      flowVersion = version;
       const client = clientFor(version, connection);
       const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
@@ -511,7 +514,7 @@ export const signAndSendWithSessionAction = async (
       options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
-      const error = toActionError(err, get);
+      const error = toActionError(err, get, flowVersion);
       logger.error('signAndSendWithSessionAction failed:', error);
       options?.onFail?.(error);
       throw error;
@@ -823,11 +826,14 @@ export const executeDeferredAction = async (
   options?: TxCallbacks,
 ): Promise<string | undefined> => {
   return withSigningState(get, set, async () => {
+    // The protocol this flow runs on, from its own account — for error reporting.
+    let flowVersion: ProtocolVersion | undefined;
     try {
       const { connection, config } = requireWalletAndConnection(get);
       // A payload may come from anywhere; its authorization account's owner
       // says which program wrote it.
       const version = await versionOfAccount(connection, payload.deferredPayload.deferredExecPda);
+      flowVersion = version;
       const client = clientFor(version, connection);
       const feePayer = await feePayerFor(config, version);
 
@@ -860,7 +866,7 @@ export const executeDeferredAction = async (
       options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
-      const error = toActionError(err, get);
+      const error = toActionError(err, get, flowVersion);
       logger.error('executeDeferredAction failed:', error);
       options?.onFail?.(error);
       throw error;
@@ -879,9 +885,12 @@ export const reclaimDeferredAction = async (
   options?: TxCallbacks,
 ): Promise<string | undefined> => {
   return withSigningState(get, set, async () => {
+    // The protocol this flow runs on, from its own account — for error reporting.
+    let flowVersion: ProtocolVersion | undefined;
     try {
       const { connection, config } = requireWalletAndConnection(get);
       const version = await versionOfAccount(connection, payload.deferredExecPda);
+      flowVersion = version;
       const client = clientFor(version, connection);
       const feePayer = await feePayerFor(config, version);
 
@@ -902,7 +911,7 @@ export const reclaimDeferredAction = async (
       options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
-      const error = toActionError(err, get);
+      const error = toActionError(err, get, flowVersion);
       logger.error('reclaimDeferredAction failed:', error);
       options?.onFail?.(error);
       throw error;

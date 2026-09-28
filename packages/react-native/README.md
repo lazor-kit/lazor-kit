@@ -76,10 +76,13 @@ points at a v2 relayer, `v1ConfigPaymaster` is required:
 >
 ```
 
-`connect` adopts a wallet only when the passkey is shown to hold its key —
-the credential-id hash alone is public, and anyone can list it on a wallet of
-their own. Signing in with an existing passkey on a new device therefore costs
-one extra passkey prompt. Show users the vault (`WalletInfo.vaultPda`); the
+`connect` adopts a wallet only when the passkey is shown to hold its key and
+controls it alone — the credential-id hash is public, and anyone can list it on
+a wallet of their own, even beside their own Owner key. Proving the key can
+cost one extra passkey prompt. If the passkey's wallet also answers to other
+keys (ones the user added, or not), `connect` throws
+`WalletNeedsConfirmationError` with the candidates; after the user confirms,
+call `connect({ redirectUrl, confirmWallet })` with the chosen address. Show users the vault (`WalletInfo.vaultPda`); the
 exported PDA helpers derive v2 addresses and are wrong for a v1 wallet.
 
 Once LazorKit retires v1, a v1 wallet's transactions fail with

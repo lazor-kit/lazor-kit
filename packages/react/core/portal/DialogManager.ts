@@ -677,8 +677,16 @@ export class DialogManager extends EventEmitter {
    */
   private setupMessageListener(): void {
     window.addEventListener('message', (event) => {
-      // Verify origin for security
-      if (!event.origin.includes(new URL(this.config.portalUrl).hostname)) {
+      // Only the portal, and only the dialog this manager opened. A substring
+      // match on the hostname let `portal.lazor.sh.attacker.example` speak for
+      // the portal — and connect now trusts the key the portal reports.
+      if (event.origin !== new URL(this.config.portalUrl).origin) {
+        return;
+      }
+      const fromOurDialog =
+        (this.iframeRef !== null && event.source === this.iframeRef.contentWindow) ||
+        (this.popupWindow !== null && event.source === this.popupWindow);
+      if (!fromOurDialog) {
         return;
       }
 

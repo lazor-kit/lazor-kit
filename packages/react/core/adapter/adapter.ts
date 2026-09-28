@@ -31,6 +31,7 @@ import {
     isRetiredDeploymentError,
     V1WalletRetiredError,
     registerCluster,
+    V1WalletMigratedError,
 } from '../program';
 import { getCredentialHash, getPasskeyPublicKey } from '../wallet/utils';
 import { chooseOwnWallet, findOwnedCandidates } from '../wallet/ownership';
@@ -113,6 +114,12 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
     private _connecting: boolean = false;
     private _wallet: WalletInfo | null = null;
     private _config: LazorkitAdapterConfig = DEFAULT_CONFIG;
+    /**
+     * Set to a wallet address to adopt it on the next connect although other
+     * keys can also spend from it — after connect threw
+     * `WalletNeedsConfirmationError` and the user recognised the wallet.
+     */
+    confirmWallet?: string;
 
     constructor(config?: Partial<LazorkitAdapterConfig>) {
         super();
@@ -228,6 +235,8 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         // new, v2, wallet.
         const reportedPubkey = dialogResult.publicKey ? getPasskeyPublicKey(dialogResult.publicKey) : undefined;
         const own = await chooseOwnWallet({
+            connection: probe,
+            confirmWallet: this.confirmWallet,
             candidates: await findOwnedCandidates(probe, credentialHash, rpId),
             reportedPubkey,
             rpId,
@@ -334,6 +343,12 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
             const matches = await client.findWalletsByAuthority(credentialIdHash, 'secp256r1');
             const match = matches.find((m) => m.walletPda.toBase58() === this._wallet!.smartWallet);
             if (!match) {
+                // A v1 wallet that is gone has been migrated while this page was
+                // open: stop presenting its dead vault as the account.
+                if (version === 1 && !(await connection.getAccountInfo(new PublicKey(this._wallet.smartWallet)))) {
+                    await this.disconnect();
+                    throw new V1WalletMigratedError();
+                }
                 throw new Error('The connected wallet no longer lists this passkey');
             }
             const { walletPda, authorityPda } = match;

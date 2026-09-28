@@ -121,6 +121,12 @@ export interface AddAuthorityPayload {
 }
 
 export interface ConnectOptions {
+    /**
+     * Adopt this wallet (its address) although other keys can also spend from
+     * it — after `connect` threw `WalletNeedsConfirmationError` and the user
+     * recognised it. See `WalletNeedsConfirmationError.candidates`.
+     */
+    readonly confirmWallet?: string;
     readonly onSuccess?: (wallet: WalletInfo) => void;
     readonly onFail?: (error: Error) => void;
 }

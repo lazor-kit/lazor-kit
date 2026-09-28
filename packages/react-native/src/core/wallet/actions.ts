@@ -33,7 +33,7 @@ import {
   v2Client,
   versionOf,
 } from '../../program';
-import { chooseOwnWallet, findOwnedCandidates } from './ownership';
+import { chooseOwnWallet, findOwnedCandidates, provenCandidates } from './ownership';
 import { API_ENDPOINTS, DEFAULTS } from '../../config';
 import { openBrowser } from '../browser/open';
 import { handleBrowserResult } from '../browser/parseResult';
@@ -54,7 +54,11 @@ export const createWalletActions = (
   /**
    * Ensures the smart wallet exists on-chain, creating it if needed.
    */
-  const saveWallet = async (data: WalletInfo, redirectUrl?: string): Promise<WalletInfo> => {
+  const saveWallet = async (
+    data: WalletInfo,
+    redirectUrl?: string,
+    confirmWallet?: string,
+  ): Promise<WalletInfo> => {
     setLoading(true);
     try {
       const credentialIdHash = new Uint8Array(
@@ -66,30 +70,37 @@ export const createWalletActions = (
       // keeps being used as it is: a fresh v2 wallet would show that user an
       // empty account while their funds sit in the v1 one. Only a passkey that
       // owns neither gets a new, v2, wallet.
-      const reported = new Uint8Array(data.passkeyPubkey ?? []);
+      const prove = async () => {
+        if (!redirectUrl) {
+          throw new Error("Proving which wallet is this passkey's needs a redirectUrl for the portal");
+        }
+        const challenge = new Uint8Array(32);
+        crypto.getRandomValues(challenge);
+        const response = await signChallengeViaPortal({
+          challenge,
+          credentialId: data.credentialId,
+          portalUrl: config.portalUrl,
+          redirectUrl,
+        });
+        return {
+          challenge,
+          signature: response.signature,
+          authenticatorData: response.authenticatorData,
+          clientDataJson: response.clientDataJson,
+        };
+      };
+      // The key in a redirect is not proof: on Android any app can deliver a
+      // deep link into this scheme. So the passkey always signs, and a wallet
+      // counts only if that signature verifies against its key.
+      let proof: Awaited<ReturnType<typeof prove>> | undefined;
+      const proveOnce = async () => (proof ??= await prove());
       const own = await chooseOwnWallet({
+        connection,
         candidates: await findOwnedCandidates(connection, credentialIdHash, rpId),
-        reportedPubkey: reported.length === 33 ? reported : undefined,
+        trustReportedKey: false,
         rpId,
-        prove: async () => {
-          if (!redirectUrl) {
-            throw new Error('Proving which wallet is this passkey\'s needs a redirectUrl for the portal');
-          }
-          const challenge = new Uint8Array(32);
-          crypto.getRandomValues(challenge);
-          const response = await signChallengeViaPortal({
-            challenge,
-            credentialId: data.credentialId,
-            portalUrl: config.portalUrl,
-            redirectUrl,
-          });
-          return {
-            challenge,
-            signature: response.signature,
-            authenticatorData: response.authenticatorData,
-            clientDataJson: response.clientDataJson,
-          };
-        },
+        prove: proveOnce,
+        confirmWallet,
       });
       if (own) {
         const client = clientFor(own.version, connection);
@@ -111,6 +122,12 @@ export const createWalletActions = (
         throw new Error(
           `Unexpected passkey pubkey length: ${compressedPubkey.length}, expected 33 bytes (compressed secp256r1)`,
         );
+      }
+      // A new wallet is owned by the reported key, so that key must be the
+      // passkey's own before anyone pays to create it.
+      const created = { version: 2 as const, walletPda: PublicKey.default, authorityPda: PublicKey.default, pubkey: compressedPubkey };
+      if (!provenCandidates([created], await proveOnce(), rpId).length) {
+        throw new Error("The portal's reply could not be verified against this passkey; nothing was created.");
       }
 
       const feePayer = await getFeePayer(

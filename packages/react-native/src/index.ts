@@ -12,3 +12,4 @@ export * from './types';
 export { logger } from './core/logger';
 export * from './config';
 export * from './program';
+export { WalletNeedsConfirmationError } from './core/wallet/ownership';
