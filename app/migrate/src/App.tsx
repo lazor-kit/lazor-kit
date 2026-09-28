@@ -9,12 +9,20 @@ import {
   type TransactionInstruction,
 } from '@solana/web3.js';
 import { LazorKitClient, Paymaster } from '@lazorkit/wallet';
-import { readV1WalletState, enumerateV1VaultTokens, type V1VaultToken } from '@lazorkit/sdk-legacy';
+import {
+  classifyV1VaultTokens,
+  enumerateV1VaultTokens,
+  legacyProgramIdFor,
+  readV1WalletState,
+  type UnmovableReason,
+  type V1VaultToken,
+} from '@lazorkit/sdk-legacy';
 
 import { config, explorerTx } from './lib/config';
 import { connectPasskey, portalRpId, signChallenge, type Passkey } from './lib/portal';
 import { devSeedEnabled, devPayer, seedV1Wallet } from './lib/devSeed';
 import { formatSol, formatTokenAmount, short } from './lib/format';
+import { isMigrationOpen } from './lib/sunset';
 
 type Phase =
   | { name: 'idle' }
@@ -26,7 +34,12 @@ type Phase =
       wallet: PublicKey;
       ownerPubkey: Uint8Array;
       lamports: number;
+      /** Token accounts that can move. The user may leave some behind. */
       tokens: V1VaultToken[];
+      /** Token accounts that cannot move, and why. */
+      stuck: { token: V1VaultToken; reason: UnmovableReason }[];
+      /** False until the v1 program runs the sunset binary. */
+      open: boolean;
     }
   | { name: 'migrating'; step: string }
   | { name: 'done'; destination: PublicKey; signatures: string[]; seed?: Uint8Array }
@@ -43,7 +56,16 @@ async function readV1OwnerPubkey(rpc: Connection, authority: PublicKey): Promise
 }
 
 const connection = new Connection(config.rpcUrl, 'confirmed');
+// The v2 client: the new wallet lives here. The v1 wallet, and the migration
+// itself, live at the v1 id paired with it.
 const client = new LazorKitClient(connection, config.programId);
+const v1ProgramId = config.v1ProgramId ?? legacyProgramIdFor(client.programId);
+
+const REASONS: Record<UnmovableReason, string> = {
+  frozen: 'frozen by its issuer',
+  'transfer-hook': 'its token program needs accounts a migration cannot pass',
+  excluded: 'you chose to leave it',
+};
 const paymaster = new Paymaster({
   paymasterUrl: config.paymasterUrl,
   apiKey: config.paymasterApiKey,
@@ -54,6 +76,7 @@ export default function App() {
   const [passkey, setPasskey] = useState<Passkey | null>(null);
   const [seeding, setSeeding] = useState(false);
   const [seedResult, setSeedResult] = useState<string | null>(null);
+  const [leaveBehind, setLeaveBehind] = useState<Set<string>>(new Set());
 
   const fail = (e: unknown) =>
     setPhase({ name: 'error', message: e instanceof Error ? e.message : String(e) });
@@ -69,14 +92,21 @@ export default function App() {
       // No user seed anywhere in this flow: wallets made through the SDK used a
       // random seed kept in browser storage, which a returning user rarely has.
       // The chain knows the answer — the authority record names its wallet.
-      const owned = (await client.findV1WalletsByOwner(identity.credentialIdHash, 'secp256r1'))
-        .filter((w) => w.role === 0);
+      const owned = (
+        await client.findV1WalletsByOwner(identity.credentialIdHash, 'secp256r1', v1ProgramId)
+      ).filter((w) => w.role === 0);
 
       for (const candidate of owned) {
         const state = await readV1WalletState(connection, candidate);
         if (!state) continue;
-        const tokens = await enumerateV1VaultTokens(connection, candidate.vault);
-        if (state.vaultLamports === 0 && tokens.length === 0) continue;
+        const all = await enumerateV1VaultTokens(connection, candidate.vault);
+        if (state.vaultLamports === 0 && all.length === 0) continue;
+        const { movable, skipped } = await classifyV1VaultTokens(connection, all);
+        // Until v1 is retired its program has no MigrateWallet: say so now,
+        // rather than after the passkey has signed something it cannot use.
+        const payer = devSeedEnabled() ? devPayer().publicKey : await paymaster.getPayer();
+        const open = await isMigrationOpen(connection, v1ProgramId, payer).catch(() => false);
+        setLeaveBehind(new Set());
         setPhase({
           name: 'found',
           wallet: candidate.wallet,
@@ -87,7 +117,9 @@ export default function App() {
             (candidate as { ownerPubkey?: Uint8Array }).ownerPubkey ??
             (await readV1OwnerPubkey(connection, candidate.authority)),
           lamports: state.vaultLamports,
-          tokens,
+          tokens: movable,
+          stuck: skipped,
+          open,
         });
         return;
       }
@@ -137,6 +169,8 @@ export default function App() {
           rpId: portalRpId(),
         },
         v1Wallet,
+        v1ProgramId,
+        excludeTokenAccounts: [...leaveBehind].map((a) => new PublicKey(a)),
       });
 
       const signatures: string[] = [];
@@ -200,7 +234,15 @@ export default function App() {
     } catch (e) {
       fail(e);
     }
-  }, [phase, passkey]);
+  }, [phase, passkey, leaveBehind]);
+
+  const toggle = (ata: string) =>
+    setLeaveBehind((current) => {
+      const next = new Set(current);
+      if (next.has(ata)) next.delete(ata);
+      else next.add(ata);
+      return next;
+    });
 
   return (
     <main>
@@ -249,18 +291,53 @@ export default function App() {
           <dl>
             <dt>SOL</dt>
             <dd>{formatSol(phase.lamports)}</dd>
-            {phase.tokens.map((t) => (
-              <div key={t.ata.toBase58()} className="row">
-                <dt title={t.mint.toBase58()}>{short(t.mint.toBase58())}</dt>
-                <dd>{formatTokenAmount(t.amount)}</dd>
-              </div>
-            ))}
+            {phase.tokens.map((t) => {
+              const ata = t.ata.toBase58();
+              return (
+                <div key={ata} className="row">
+                  <dt title={t.mint.toBase58()}>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={!leaveBehind.has(ata)}
+                        onChange={() => toggle(ata)}
+                      />{' '}
+                      {short(t.mint.toBase58())}
+                    </label>
+                  </dt>
+                  <dd>{formatTokenAmount(t.amount)}</dd>
+                </div>
+              );
+            })}
           </dl>
+          {phase.stuck.length > 0 && (
+            <>
+              <h3>Staying behind</h3>
+              <p className="muted">
+                These cannot move, and stay in the old wallet for good once it closes.
+              </p>
+              <ul>
+                {phase.stuck.map(({ token, reason }) => (
+                  <li key={token.ata.toBase58()} title={token.mint.toBase58()}>
+                    {short(token.mint.toBase58())}: {formatTokenAmount(token.amount)} — {REASONS[reason]}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
           <p className="muted">
-            From {short(phase.wallet.toBase58())}. Every token account moves in the same
-            transaction, and the old accounts are closed so their rent comes back to you.
+            From {short(phase.wallet.toBase58())}. Every ticked token account moves in the same
+            transaction; untick one to leave it (spam you never asked for, say). The old accounts
+            are closed so their rent comes back to you.
           </p>
-          <button onClick={migrate}>Move everything</button>
+          {phase.open ? (
+            <button onClick={migrate}>Move everything</button>
+          ) : (
+            <p className="status">
+              Moving opens once LazorKit retires its old program. Your wallet keeps working in your
+              app until then; come back when your app says it is time.
+            </p>
+          )}
         </section>
       )}
 

@@ -5,9 +5,16 @@ signature, everything moves, nobody else can do it for them.
 
 ## Why it exists
 
-v2 namespaces every PDA seed, so a v1 wallet is unreachable from v2 code. The
-funds are safe where they are, and `MigrateWallet` is the one instruction that
-moves them — authorized by the wallet's Owner, never by an operator.
+LazorKit v2 runs at its own program id. A v1 wallet stays at the v1 id, and
+works as before until LazorKit retires v1 — upgrades that id to a sunset
+binary that refuses everything but the ways out. From then on the wallet can do
+one useful thing: move. `MigrateWallet` executes at the v1 id (the only program
+that can sign for the old vault) and delivers into a v2 wallet at the v2 id,
+authorized by the wallet's Owner, never by an operator.
+
+Before the sunset, the v1 program has no `MigrateWallet`. The page checks
+first — it simulates an instruction only the sunset binary refuses with 4018 —
+and says "not yet" instead of asking for a signature it cannot use.
 
 ## The part that decides the design
 
@@ -36,17 +43,23 @@ pnpm --filter @lazorkit/migrate dev
 |---|---|---|
 | `VITE_RPC_URL` | devnet | must allow `getProgramAccounts` |
 | `VITE_PORTAL_URL` | `https://portal.lazor.sh` | also supplies the rp id |
-| `VITE_PAYMASTER_URL` | `https://kora.devnet.lazorkit.com` | sponsors both transactions |
+| `VITE_PAYMASTER_URL` | `https://kora.devnet.lazorkit.com` | sponsors both transactions: setup at the v2 id, the migration at the v1 id |
 | `VITE_PAYMASTER_API_KEY` | empty | |
-| `VITE_PROGRAM_ID` | inferred from the RPC url | |
+| `VITE_PROGRAM_ID` | inferred from the RPC url | the v2 program |
+| `VITE_V1_PROGRAM_ID` | paired with the v2 id | the v1 program; set it only for a non-standard pairing |
 
 ## What a run does
 
 1. Portal connect, to learn the passkey and its credential hash.
 2. Scan for v1 wallets this passkey owns, then read the vault's SOL and every
-   token account it holds.
+   token account it holds. Frozen accounts and Token-2022 mints with a transfer
+   hook cannot move and are listed as staying behind; the user can untick any
+   other token (spam, typically) to leave it too. Check that the v1 program
+   runs the sunset binary; if not, stop here.
 3. Create the v2 wallet and one destination token account per token, paid by
-   the paymaster. Nothing of the user's moves yet.
+   the paymaster. Nothing of the user's moves yet. An existing v2 wallet is
+   reused only if this passkey holds it alone — a wallet someone else can also
+   spend from is never a destination (the SDK checks).
 4. The passkey signs the migration. The destination, the wallet and every
    source token account are inside the signed challenge, so a relayer cannot
    redirect the funds, drop a token, or swap one for dust.

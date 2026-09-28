@@ -3,7 +3,9 @@
 The only thing that cannot be set up for you is the passkey: it lives on your
 device and only you can unlock it. Everything else is automated.
 
-Devnet test program: `3AN3WnaAN6SteghykdM96qHSGUJiVAUHWFjiyz31myAA`.
+Devnet test programs: v1 at the rehearsal slot
+`3AN3WnaAN6SteghykdM96qHSGUJiVAUHWFjiyz31myAA`, v2 at
+`57bTNWqtYTJbWuLWASKo6GqUTAK6oFDUR5c6hEc6V8nv` (inferred from the RPC).
 
 ## What you do
 
@@ -13,7 +15,8 @@ Devnet test program: `3AN3WnaAN6SteghykdM96qHSGUJiVAUHWFjiyz31myAA`.
 3. **Create a test wallet** → this makes an old-style wallet owned by the
    passkey you just used. No prompt: creating one needs no signature from you.
 4. Wait about two minutes. In the background the vault is funded with SOL and a
-   token, and the program is upgraded to the new version.
+   token, and the v1 program is retired to its sunset binary (the
+   `rehearsal-v1` build) — the step that opens migration on mainnet.
 5. **Check my wallet** again → it should now list what is in the old vault.
 6. **Move everything** → one passkey prompt, and the funds land in the new
    wallet.
@@ -31,7 +34,7 @@ either lands or does not. The error text on the page names the step.
 git checkout feat/migrate-app && pnpm install
 VITE_DEV_SETUP=1 \
 VITE_DEV_PAYER="$(cat ../lazorkit-protocol/keys/devnet-init-authority.json)" \
-VITE_PROGRAM_ID=3AN3WnaAN6SteghykdM96qHSGUJiVAUHWFjiyz31myAA \
+VITE_V1_PROGRAM_ID=3AN3WnaAN6SteghykdM96qHSGUJiVAUHWFjiyz31myAA \
 VITE_RPC_URL=https://api.devnet.solana.com \
 pnpm --filter @lazorkit/migrate dev
 ```
@@ -64,5 +67,5 @@ certificate the browser trusts.
   `VITE_RPC_URL` somewhere better.
 - The portal opens as a modal iframe. A browser blocking third-party frames
   stops step 2.
-- Step 4 is a real program upgrade, so it takes a couple of minutes, and the
-  page shows nothing until it finishes.
+- Step 4 is a real program upgrade, so it takes a couple of minutes. Until it
+  lands, step 5 says moving has not opened yet — which is the check working.

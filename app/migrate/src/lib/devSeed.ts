@@ -19,7 +19,8 @@ import type { Passkey } from './portal';
  * through the environment, and the protocol v1 SDK is imported lazily so none
  * of it reaches a production bundle.
  *
- * The program must be running its v1 binary when this is called.
+ * The v1 program must be running its full v1 binary when this is called; set
+ * VITE_V1_PROGRAM_ID for anything but the cluster's paired v1 id.
  */
 /** The devnet key that pays in dev runs, in place of the shared paymaster. */
 export function devPayer(): Keypair {
@@ -49,7 +50,8 @@ export async function seedV1Wallet(passkey: Passkey): Promise<{
     };
   };
 
-  const client = new LazorKitClient(connection, config.programId);
+  // The old wallet belongs to the v1 program, so that is where it is made.
+  const client = new LazorKitClient(connection, config.v1ProgramId);
   // Random, and deliberately discarded: the migration must not need it.
   const userSeed = crypto.getRandomValues(new Uint8Array(32));
 
