@@ -25,21 +25,19 @@ import {
     getPasskeyPublicKey,
     getPortalRpId,
 } from './utils';
+import { chooseOwnWallet, findOwnedCandidates } from './ownership';
 import {
-    LazorKitClient,
     ROLE_ADMIN,
-    ROLE_OWNER,
     Actions,
     SessionAction,
     type ProtocolVersion,
     clientFor,
-    v1Client,
-    v2Client,
     versionOf,
     versionOfAccount,
     readPasskeyPubkey,
     serializeDeferred,
     deserializeDeferred,
+    V1WalletMigratedError,
 } from '../program';
 import type { WalletConfig } from '../storage';
 import { SpendingLimits } from '../types';
@@ -58,6 +56,12 @@ function toBase64Url(bytes: Uint8Array): string {
         .replace(/=+$/, '');
 }
 
+/** The connected wallet's protocol, for error reporting. */
+function walletVersion(get: () => WalletState): ProtocolVersion | undefined {
+    const wallet = get().wallet;
+    return wallet ? versionOf(wallet) : undefined;
+}
+
 /**
  * The paymaster for a wallet's protocol. v1 wallets keep the relayer the app
  * used before v2 (`v1PaymasterConfig`, defaulting to the main one).
@@ -66,16 +70,6 @@ function paymasterFor(config: WalletConfig, version: ProtocolVersion): Paymaster
     return new Paymaster(
         version === 1 ? (config.v1PaymasterConfig ?? config.paymasterConfig) : config.paymasterConfig,
     );
-}
-
-/**
- * The wallets that list this passkey at Owner rank, on one protocol. A lower
- * rank is not the user's wallet: anyone can add a stranger's passkey to a
- * wallet they control, as a Delegate or Admin, without the passkey's consent.
- */
-async function ownedWallets(client: LazorKitClient, credentialHash: Uint8Array) {
-    const found = await client.findWalletsByAuthority(credentialHash, 'secp256r1');
-    return found.filter((w) => w.role === ROLE_OWNER);
 }
 
 /**
@@ -140,8 +134,27 @@ export const connectAction = async (
     set({ isConnecting: true, error: null });
 
     try {
-        const existingWallet = await StorageManager.getWallet();
+        let existingWallet = await StorageManager.getWallet();
         cleanupLegacyStorage();
+
+        if (existingWallet) {
+            const version = versionOf(existingWallet);
+            const connection = get().connection;
+            // A stored v1 wallet may have been migrated since — on the LazorKit
+            // migration page, say. Then it is closed and its address is dead;
+            // forget it and connect afresh, which finds the v2 wallet.
+            if (version === 1 && !(await connection.getAccountInfo(new PublicKey(existingWallet.smartWallet)))) {
+                await StorageManager.clearWallet();
+                existingWallet = null;
+            } else if (!existingWallet.vaultPda) {
+                // Saved by a release that did not record the vault: derive it
+                // with the wallet's own protocol, so `vaultPda` is always the
+                // address funds belong at.
+                const [vault] = clientFor(version, connection).findVault(new PublicKey(existingWallet.smartWallet));
+                existingWallet = { ...existingWallet, vaultPda: vault.toBase58() };
+                await StorageManager.saveWallet(existingWallet);
+            }
+        }
 
         if (existingWallet) {
             set({ wallet: existingWallet });
@@ -155,48 +168,54 @@ export const connectAction = async (
             const dialogResult: DialogResult = await dialogManager.openConnect();
             const connection = get().connection;
             const credentialHash = getCredentialHash(dialogResult.credentialId);
+            const rpId = getPortalRpId(config.portalUrl);
 
-            // Where this passkey's wallet lives. A v2 wallet wins; failing that,
-            // a v1 wallet made before LazorKit v2 keeps being used as it is —
-            // creating a fresh v2 wallet for that user would show them an empty
-            // account while their funds sit, unseen, in the v1 one. Only a
-            // passkey with neither gets a new (v2) wallet.
-            let version: ProtocolVersion = 2;
-            let client = v2Client(connection);
-            let owned = await ownedWallets(client, credentialHash);
-            if (owned.length === 0) {
-                const legacy = v1Client(connection);
-                const legacyOwned = await ownedWallets(legacy, credentialHash);
-                if (legacyOwned.length > 0) {
-                    version = 1;
-                    client = legacy;
-                    owned = legacyOwned;
-                }
-            }
-            const existing = owned[0];
+            // Where this passkey's wallet lives — proven, not guessed from the
+            // public credential hash (see ./ownership). A v1 wallet made before
+            // LazorKit v2 keeps being used as it is: creating a fresh v2 wallet
+            // for that user would show them an empty account while their funds
+            // sit, unseen, in the v1 one. Only a passkey that owns neither gets
+            // a new (v2) wallet.
+            const reportedPubkey = dialogResult.publicKey
+                ? getPasskeyPublicKey(dialogResult.publicKey)
+                : undefined;
+            const own = await chooseOwnWallet({
+                candidates: await findOwnedCandidates(connection, credentialHash, rpId),
+                reportedPubkey,
+                rpId,
+                prove: async () => {
+                    const challenge = randomBytes(32);
+                    const result = await dialogManager.openSign(
+                        toBase64Url(challenge),
+                        '',
+                        dialogResult.credentialId,
+                    );
+                    return { challenge, ...decodeSignResult(result) };
+                },
+            });
 
+            const version: ProtocolVersion = own?.version ?? 2;
+            const client = clientFor(version, connection);
             let smartWalletAddress: string;
-            let passkeyPubkey: string;
+            let passkeyPubkey: Uint8Array;
 
-            if (!dialogResult.publicKey && existing) {
-                // Cross-device case (e.g. iCloud-synced passkey: created on iPhone,
-                // reused on Mac). WebAuthn get() returns only credentialId, so we read
-                // the compressed secp256r1 pubkey from the authority account that
-                // findWalletsByAuthority already matched.
-                const secp256r1Pubkey = await readPasskeyPubkey(version, connection, existing.authorityPda);
-                passkeyPubkey = Buffer.from(secp256r1Pubkey).toString('base64');
-            } else {
-                passkeyPubkey = dialogResult.publicKey;
-            }
-
-            if (existing) {
+            if (own) {
                 // smartWallet = walletPda (internal authority account), NOT vaultPda.
                 // The vault is derived from it below via findVault; storing the vault
                 // here would apply findVault twice and yield a bogus PDA that
                 // SystemProgram.transfer(from=vaultPda) then treats as a signer,
                 // breaking tx-level sig verification.
-                smartWalletAddress = existing.walletPda.toBase58();
+                smartWalletAddress = own.walletPda.toBase58();
+                // The key on chain, which the passkey just proved it holds.
+                passkeyPubkey = own.pubkey;
             } else {
+                if (!reportedPubkey || reportedPubkey.length !== 33) {
+                    throw new Error(
+                        'This passkey has no wallet yet, and signing in with an existing passkey does ' +
+                            'not reveal its public key. Create the wallet with "Create new account".',
+                    );
+                }
+                passkeyPubkey = reportedPubkey;
                 const paymaster = paymasterFor(config, 2);
                 const feePayer = await paymaster.getPayer();
                 const { instructions, walletPda } = await client.createWallet({
@@ -205,8 +224,8 @@ export const connectAction = async (
                     owner: {
                         type: 'secp256r1',
                         credentialIdHash: credentialHash,
-                        compressedPubkey: getPasskeyPublicKey(passkeyPubkey),
-                        rpId: getPortalRpId(config.portalUrl),
+                        compressedPubkey: reportedPubkey,
+                        rpId,
                     },
                 });
                 await buildAndSendTx({
@@ -221,7 +240,7 @@ export const connectAction = async (
             const [vaultAddress] = client.findVault(new PublicKey(smartWalletAddress));
             const walletInfo: WalletInfo = {
                 credentialId: dialogResult.credentialId,
-                passkeyPubkey: Array.from(Buffer.from(getPasskeyPublicKey(passkeyPubkey))),
+                passkeyPubkey: Array.from(passkeyPubkey),
                 expo: 'web',
                 platform: navigator.platform,
                 smartWallet: smartWalletAddress,
@@ -241,7 +260,7 @@ export const connectAction = async (
         }
 
     } catch (error: unknown) {
-        return handleActionError(error, set, options?.onFail);
+        return handleActionError(error, set, options?.onFail, walletVersion(get));
     } finally {
         set({ isConnecting: false });
     }
@@ -342,7 +361,7 @@ export const signAndSendTransactionAction = async (
         }
 
     } catch (error: unknown) {
-        return handleActionError(error, set, payload.onFail);
+        return handleActionError(error, set, payload.onFail, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -396,7 +415,14 @@ async function resolvePasskeyWallet(wallet: WalletInfo, connection: Connection) 
     const credentialIdHash = getCredentialHash(wallet.credentialId);
     const matches = await client.findWalletsByAuthority(credentialIdHash, 'secp256r1');
     const match = matches.find((m) => m.walletPda.toBase58() === wallet.smartWallet);
-    if (!match) throw new Error('The connected wallet no longer lists this passkey');
+    if (!match) {
+        // A v1 wallet that is gone has been migrated: the user's funds are in
+        // their v2 wallet now, and the stored address is dead.
+        if (version === 1 && !(await connection.getAccountInfo(new PublicKey(wallet.smartWallet)))) {
+            throw new V1WalletMigratedError();
+        }
+        throw new Error('The connected wallet no longer lists this passkey');
+    }
 
     // Always source the compressed secp256r1 pubkey from the on-chain authority
     // account instead of the cached `wallet.passkeyPubkey`. The cache can be
@@ -518,7 +544,7 @@ export const createSessionAction = async (
             dialogManager.destroy();
         }
     } catch (error) {
-        return handleActionError(error, set, payload.onFail);
+        return handleActionError(error, set, payload.onFail, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -604,7 +630,7 @@ export const revokeSessionAction = async (
             dialogManager.destroy();
         }
     } catch (error) {
-        return handleActionError(error, set, payload.onFail);
+        return handleActionError(error, set, payload.onFail, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -656,7 +682,7 @@ export const signAndSendWithSessionAction = async (
         payload.onSuccess?.(txSignature);
         return txSignature;
     } catch (error) {
-        return handleActionError(error, set, payload.onFail);
+        return handleActionError(error, set, payload.onFail, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -684,6 +710,22 @@ export const addAuthorityAction = async (
         const feePayer = await paymaster.getPayer();
         const authorityKeypair = Keypair.generate();
         const role = payload.role ?? ROLE_ADMIN;
+
+        // v1 has no spending policies, and its Execute never checked rank: any
+        // key added to a v1 wallet can move the whole vault. Refuse to pretend
+        // otherwise — a policy would be dropped without a word.
+        if (version === 1 && payload.policy) {
+            throw new Error(
+                'This wallet is on LazorKit v1, which cannot limit what an added key may spend. ' +
+                    'Move the wallet to v2 first, or add the key without a policy and unrestricted: true.',
+            );
+        }
+        if (version === 1 && !payload.unrestricted) {
+            throw new Error(
+                'On a LazorKit v1 wallet any added key can spend the whole vault. Pass ' +
+                    'unrestricted: true to add one anyway, or move the wallet to v2 for bounded keys.',
+            );
+        }
 
         const prepared = await client.prepareAddAuthority({
             payer: feePayer,
@@ -723,7 +765,7 @@ export const addAuthorityAction = async (
             dialogManager.destroy();
         }
     } catch (error) {
-        return handleActionError(error, set, payload.onFail);
+        return handleActionError(error, set, payload.onFail, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -780,7 +822,7 @@ export const removeAuthorityAction = async (
             dialogManager.destroy();
         }
     } catch (error) {
-        return handleActionError(error, set, payload.onFail);
+        return handleActionError(error, set, payload.onFail, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -855,7 +897,7 @@ export const authorizeAndExecuteAction = async (
             dialogManager.destroy();
         }
     } catch (error) {
-        return handleActionError(error, set, payload.onFail);
+        return handleActionError(error, set, payload.onFail, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -918,7 +960,7 @@ export const authorizeDeferredAction = async (
             dialogManager.destroy();
         }
     } catch (error) {
-        return handleActionError(error, set, payload.onFail);
+        return handleActionError(error, set, payload.onFail, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -962,7 +1004,7 @@ export const executeDeferredAction = async (
         payload.onSuccess?.(signature);
         return signature;
     } catch (error) {
-        return handleActionError(error, set, payload.onFail);
+        return handleActionError(error, set, payload.onFail, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -1013,7 +1055,7 @@ export const signAndSendWithAuthorityAction = async (
         payload.onSuccess?.(txSignature);
         return txSignature;
     } catch (error) {
-        return handleActionError(error, set, payload.onFail);
+        return handleActionError(error, set, payload.onFail, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }

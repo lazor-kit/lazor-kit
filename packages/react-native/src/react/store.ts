@@ -8,7 +8,7 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
-import { v1Client } from '../program';
+import { registerCluster, v1Client } from '../program';
 import {
   WalletStateClient,
   WalletInfo,
@@ -120,7 +120,7 @@ export const useWalletStore = create<WalletStateClient>()(
 
       setConfig: (config: WalletConfig) => {
         try {
-          // Info log removed
+          registerCluster(config.rpcUrl || DEFAULTS.RPC_ENDPOINT, config.cluster);
           const connection = new Connection(
             config.rpcUrl || DEFAULTS.RPC_ENDPOINT!,
             DEFAULT_COMMITMENT

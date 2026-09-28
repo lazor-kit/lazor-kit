@@ -55,6 +55,7 @@
   },
   "dependencies": {
     "@lazorkit/sdk-legacy": "^1.2.0",
+    "@noble/curves": "^1.9.7",
     "bs58": "^6.0.0",
     "lazorkit-sdk-v1": "npm:@lazorkit/sdk-legacy@0.3.2",
     "buffer": "^6.0.3",

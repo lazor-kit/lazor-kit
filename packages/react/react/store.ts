@@ -3,6 +3,7 @@
  * Includes state management, persistence, and wallet actions
  */
 
+import { registerCluster } from '../core/program';
 import { Connection } from '@solana/web3.js';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
@@ -48,6 +49,7 @@ export const useWalletStore = create<WalletState>()(
 
       // State setters
       setConfig: (config: WalletConfig) => {
+        registerCluster(config.rpcUrl || DEFAULTS.RPC_ENDPOINT, config.cluster);
         const connection = new Connection(
           config.rpcUrl || DEFAULTS.RPC_ENDPOINT!,
           DEFAULT_COMMITMENT

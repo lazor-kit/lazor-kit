@@ -42,6 +42,7 @@ import {
   versionOfAccount,
   isRetiredDeploymentError,
   V1WalletRetiredError,
+  V1WalletMigratedError,
 } from './program';
 import {
   AddAuthorityPayload,
@@ -80,18 +81,28 @@ async function withSigningState<T>(
   try {
     return await fn();
   } catch (error) {
-    // A v1 wallet after LazorKit v1 was retired: say what happened and what
-    // to do, rather than surface a bare `custom program error: 0xfb2`.
-    const err = isRetiredDeploymentError(error)
-      ? new V1WalletRetiredError(error)
-      : error instanceof Error
-        ? error
-        : new Error(String(error));
+    const err = toActionError(error, get);
+    // The stored wallet is gone from the chain; stop showing its address.
+    if (err instanceof V1WalletMigratedError) set({ wallet: null });
     set({ error: err });
     throw err;
   } finally {
     set({ isSigning: false });
   }
+}
+
+/**
+ * The error an action reports, to its onFail and to its caller alike. A v1
+ * wallet after LazorKit v1 was retired gets `V1WalletRetiredError`, which
+ * says what happened and what to do, rather than a bare `0xfb2`.
+ */
+function toActionError(error: unknown, get: () => WalletStateClient): Error {
+  if (error instanceof V1WalletRetiredError || error instanceof V1WalletMigratedError) return error;
+  const wallet = get().wallet;
+  if (isRetiredDeploymentError(error, wallet ? versionOf(wallet) : undefined)) {
+    return new V1WalletRetiredError(error);
+  }
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 /** Common guard: connected wallet + connection. Throws SigningError if missing. */
@@ -107,9 +118,16 @@ function requireWalletAndConnection(get: () => WalletStateClient) {
  * LazorKit v2, v2 since. Sending one protocol's instruction to the other's
  * program fails, so nothing here uses a single global program id.
  */
-function buildClient(get: () => WalletStateClient): { client: LazorKitClient; version: ProtocolVersion } {
+async function buildClient(
+  get: () => WalletStateClient,
+): Promise<{ client: LazorKitClient; version: ProtocolVersion }> {
   const { wallet, connection } = get();
   const version = wallet ? versionOf(wallet) : 2;
+  // A v1 wallet that no longer exists has been migrated: its funds are in the
+  // passkey's v2 wallet now, and the persisted address is dead.
+  if (wallet && version === 1 && !(await connection.getAccountInfo(new PublicKey(wallet.walletPda)))) {
+    throw new V1WalletMigratedError();
+  }
   return { client: clientFor(version, connection), version };
 }
 
@@ -176,7 +194,7 @@ export const connectAction = async (
       config,
     );
 
-    const savedWallet = await saveWallet(walletInfo);
+    const savedWallet = await saveWallet(walletInfo, redirectUrl);
     set({ wallet: savedWallet });
     return savedWallet;
   } catch (error: unknown) {
@@ -227,8 +245,9 @@ export const signAndExecuteTransaction = async (
         smartWallet: get().wallet?.smartWallet,
         redirectUrl: options.redirectUrl,
       });
-      options?.onFail?.(err instanceof Error ? err : new Error(String(err)));
-      throw err;
+      const error = toActionError(err, get);
+      options?.onFail?.(error);
+      throw error;
     }
   });
 };
@@ -239,7 +258,7 @@ async function performPasskeyExecute(
   options: SignOptions,
 ): Promise<string> {
   const { connection, wallet, config } = requireWalletAndConnection(get);
-  const { client, version } = buildClient(get);
+  const { client, version } = await buildClient(get);
   const feePayer = await feePayerFor(config, version);
 
   const walletPda = new PublicKey(wallet!.walletPda);
@@ -313,7 +332,7 @@ export const signMessageAction = async (
       options?.onSuccess?.(result);
       return result;
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toActionError(err, get);
       logger.error('signMessageAction failed:', error);
       options?.onFail?.(error);
       throw error;
@@ -337,7 +356,7 @@ export const createSessionAction = async (
   return withSigningState(get, set, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
-      const { client, version } = buildClient(get);
+      const { client, version } = await buildClient(get);
       const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
 
@@ -381,7 +400,7 @@ export const createSessionAction = async (
       options?.onSuccess?.({ signature, sessionPda });
       return { signature, sessionPda };
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toActionError(err, get);
       logger.error('createSessionAction failed:', error);
       options?.onFail?.(error);
       throw error;
@@ -399,7 +418,7 @@ export const revokeSessionAction = async (
   return withSigningState(get, set, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
-      const { client, version } = buildClient(get);
+      const { client, version } = await buildClient(get);
       const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
 
@@ -430,7 +449,7 @@ export const revokeSessionAction = async (
       options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toActionError(err, get);
       logger.error('revokeSessionAction failed:', error);
       options?.onFail?.(error);
       throw error;
@@ -492,7 +511,7 @@ export const signAndSendWithSessionAction = async (
       options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toActionError(err, get);
       logger.error('signAndSendWithSessionAction failed:', error);
       options?.onFail?.(error);
       throw error;
@@ -515,9 +534,25 @@ export const addAuthorityEd25519Action = async (
   return withSigningState(get, set, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
-      const { client, version } = buildClient(get);
+      const { client, version } = await buildClient(get);
       const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
+
+      // v1 has no spending policies, and its Execute never checked rank: any
+      // key added to a v1 wallet can move the whole vault. Refuse to pretend
+      // otherwise — a policy would be dropped without a word.
+      if (version === 1 && params.policy) {
+        throw new Error(
+          'This wallet is on LazorKit v1, which cannot limit what an added key may spend. ' +
+            'Move the wallet to v2 first, or add the key without a policy and unrestricted: true.',
+        );
+      }
+      if (version === 1 && !params.unrestricted) {
+        throw new Error(
+          'On a LazorKit v1 wallet any added key can spend the whole vault. Pass ' +
+            'unrestricted: true to add one anyway, or move the wallet to v2 for bounded keys.',
+        );
+      }
 
       const prepared = await client.prepareAddAuthority({
         payer: feePayer,
@@ -551,7 +586,7 @@ export const addAuthorityEd25519Action = async (
       options?.onSuccess?.({ signature, newAuthorityPda });
       return { signature, newAuthorityPda };
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toActionError(err, get);
       logger.error('addAuthorityEd25519Action failed:', error);
       options?.onFail?.(error);
       throw error;
@@ -569,7 +604,7 @@ export const removeAuthorityAction = async (
   return withSigningState(get, set, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
-      const { client, version } = buildClient(get);
+      const { client, version } = await buildClient(get);
       const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
 
@@ -600,7 +635,7 @@ export const removeAuthorityAction = async (
       options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toActionError(err, get);
       logger.error('removeAuthorityAction failed:', error);
       options?.onFail?.(error);
       throw error;
@@ -624,7 +659,7 @@ export const authorizeAndExecuteAction = async (
   return withSigningState(get, set, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
-      const { client, version } = buildClient(get);
+      const { client, version } = await buildClient(get);
       const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
 
@@ -694,7 +729,7 @@ export const authorizeAndExecuteAction = async (
       options?.onSuccess?.(executeSig);
       return executeSig;
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toActionError(err, get);
       logger.error('authorizeAndExecuteAction failed:', error);
       options?.onFail?.(error);
       throw error;
@@ -719,7 +754,7 @@ export const authorizeDeferredAction = async (
   return withSigningState(get, set, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
-      const { client, version } = buildClient(get);
+      const { client, version } = await buildClient(get);
       const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
       const secp256r1 = buildSecp256r1Params(wallet!);
@@ -767,7 +802,7 @@ export const authorizeDeferredAction = async (
       options?.onSuccess?.(result);
       return result;
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toActionError(err, get);
       logger.error('authorizeDeferredAction failed:', error);
       options?.onFail?.(error);
       throw error;
@@ -825,7 +860,7 @@ export const executeDeferredAction = async (
       options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toActionError(err, get);
       logger.error('executeDeferredAction failed:', error);
       options?.onFail?.(error);
       throw error;
@@ -867,7 +902,7 @@ export const reclaimDeferredAction = async (
       options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toActionError(err, get);
       logger.error('reclaimDeferredAction failed:', error);
       options?.onFail?.(error);
       throw error;

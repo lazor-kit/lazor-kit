@@ -57,6 +57,12 @@ export interface WalletConfig {
     readonly apiKey?: string;
   };
   readonly rpcUrl?: string;
+  /**
+   * Which cluster `rpcUrl` serves, when its URL does not say. Without it the
+   * cluster is read from the URL (mainnet / devnet / localhost), and anything
+   * else is taken as mainnet, as every release before v2 did.
+   */
+  readonly cluster?: 'mainnet' | 'devnet';
   /** WebAuthn Relying Party ID, e.g. "portal.lazor.sh". Defaults to portal host. */
   readonly rpId?: string;
 }
@@ -76,6 +82,8 @@ export interface LazorKitProviderProps {
     readonly paymasterUrl: string;
     readonly apiKey?: string;
   };
+  /** Which cluster `rpcUrl` serves, if its URL does not say. See WalletConfig. */
+  readonly cluster?: 'mainnet' | 'devnet';
   readonly rpId?: string;
   readonly isDebug?: boolean;
   readonly children:
@@ -221,9 +229,15 @@ export interface AddAuthorityPayload {
   /**
    * Spending policy, required when the role is ROLE_SPENDER (Delegate).
    * Build it with `serializeActions([...])`. Protocol v2 rejects a Delegate
-   * without one (3033) and a policy on any other rank (3035).
+   * without one (3033) and a policy on any other rank (3035). v1 wallets have
+   * no policies: passing one for a v1 wallet throws.
    */
   readonly policy?: Uint8Array;
+  /**
+   * Required to add a key to a v1 wallet, where any added key can spend the
+   * whole vault (v1 never checked rank at Execute). Ignored for v2.
+   */
+  readonly unrestricted?: boolean;
 }
 
 /** Payload for `removeAuthority`. */
@@ -400,7 +414,8 @@ export type ExecuteFinalize = (response: WebAuthnResponse) => {
  * Wallet Actions interface (low-level, used by the connect flow).
  */
 export interface WalletActions {
-  saveWallet: (data: WalletInfo) => Promise<WalletInfo>;
+  /** `redirectUrl` lets it ask the passkey to prove which wallet is its own. */
+  saveWallet: (data: WalletInfo, redirectUrl?: string) => Promise<WalletInfo>;
   executeWallet: (
     data: WalletInfo,
     feePayer: PublicKey,

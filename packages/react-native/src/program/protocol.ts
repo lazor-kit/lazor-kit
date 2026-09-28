@@ -23,6 +23,8 @@ import {
 } from 'lazorkit-sdk-v1';
 import {
   LazorKitClient,
+  PROGRAM_ID_DEVNET,
+  PROGRAM_ID_MAINNET,
   legacyProgramIdFor,
   readAuthorityPubkey,
   deserializeDeferredPayload,
@@ -53,10 +55,40 @@ export class V1WalletRetiredError extends Error {
   }
 }
 
-/** True for the error a retired v1 program returns. */
-export function isRetiredDeploymentError(error: unknown): boolean {
-  const text = error instanceof Error ? `${error.message} ${JSON.stringify((error as { logs?: unknown }).logs ?? '')}` : String(error);
-  return /custom program error: 0xfb2\b/i.test(text) || /"Custom":\s*4018\b/.test(text);
+const V1_PROGRAM_IDS = [
+  'LazorjRFNavitUaBu5m3WaNPjU1maipvSW2rZfAFAKi',
+  '4h3XoNReAgEcHVxcZ8sw2aufi9MTr7BbvYYjzjWDyDxS',
+];
+
+/**
+ * True for the error a retired v1 program returns. 4018 is only that when it
+ * came from a v1 program: when the logs name one, or when the transaction was
+ * a v1 wallet's (`version === 1`). Any other program is free to use the code.
+ */
+export function isRetiredDeploymentError(error: unknown, version?: ProtocolVersion): boolean {
+  const text =
+    error instanceof Error
+      ? `${error.message} ${JSON.stringify((error as { logs?: unknown }).logs ?? '')}`
+      : String(error);
+  if (!/custom program error: 0xfb2\b/i.test(text) && !/"Custom":\s*4018\b/.test(text)) return false;
+  if (V1_PROGRAM_IDS.some((id) => new RegExp(`Program ${id} failed: custom program error: 0xfb2`).test(text))) {
+    return true;
+  }
+  return version === 1;
+}
+
+/**
+ * The connected v1 wallet no longer exists: it has been migrated to v2 (or
+ * otherwise closed). Connect again to pick up the passkey's v2 wallet.
+ */
+export class V1WalletMigratedError extends Error {
+  constructor() {
+    super(
+      'This wallet has moved to LazorKit v2 and the old one is closed. Connect again to use ' +
+        'the new wallet; nothing should be sent to the old address.',
+    );
+    this.name = 'V1WalletMigratedError';
+  }
 }
 
 /**
@@ -67,9 +99,35 @@ export function versionOf(wallet: { protocolVersion?: ProtocolVersion }): Protoc
   return wallet.protocolVersion ?? 1;
 }
 
-/** The v2 client for this connection's cluster. */
+export type Cluster = 'mainnet' | 'devnet';
+
+/** Clusters named in config, by RPC URL — see `registerCluster`. */
+const clusters = new Map<string, Cluster>();
+
+/**
+ * Pin an RPC URL to a cluster. The provider/adapter calls this with the app's
+ * `cluster` setting, for RPC URLs that do not say which cluster they serve
+ * (an app's own proxy, most keyed provider URLs).
+ */
+export function registerCluster(rpcUrl: string | undefined, cluster: Cluster | undefined): void {
+  if (rpcUrl && cluster) clusters.set(rpcUrl, cluster);
+}
+
+/**
+ * The v2 client for this connection's cluster: the configured `cluster` if
+ * there is one, else what the RPC URL says (mainnet / devnet / localhost),
+ * else mainnet — what every release before v2 assumed.
+ */
 export function v2Client(connection: Connection): LazorKitClient {
-  return new LazorKitClient(connection);
+  const cluster = clusters.get(connection.rpcEndpoint);
+  if (cluster) {
+    return new LazorKitClient(connection, cluster === 'devnet' ? PROGRAM_ID_DEVNET : PROGRAM_ID_MAINNET);
+  }
+  try {
+    return new LazorKitClient(connection);
+  } catch {
+    return new LazorKitClient(connection, PROGRAM_ID_MAINNET);
+  }
 }
 
 /**

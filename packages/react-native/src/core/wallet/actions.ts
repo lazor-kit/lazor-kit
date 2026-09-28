@@ -27,15 +27,13 @@ import {
   WalletInfo,
 } from '../../types';
 import {
-  LazorKitClient,
-  ROLE_OWNER,
   type ProtocolVersion,
   type WebAuthnResponse,
-  v1Client,
+  clientFor,
   v2Client,
   versionOf,
-  readPasskeyPubkey,
 } from '../../program';
+import { chooseOwnWallet, findOwnedCandidates } from './ownership';
 import { API_ENDPOINTS, DEFAULTS } from '../../config';
 import { openBrowser } from '../browser/open';
 import { handleBrowserResult } from '../browser/parseResult';
@@ -56,63 +54,57 @@ export const createWalletActions = (
   /**
    * Ensures the smart wallet exists on-chain, creating it if needed.
    */
-  const saveWallet = async (data: WalletInfo): Promise<WalletInfo> => {
+  const saveWallet = async (data: WalletInfo, redirectUrl?: string): Promise<WalletInfo> => {
     setLoading(true);
     try {
       const credentialIdHash = new Uint8Array(
         sha256.arrayBuffer(Buffer.from(data.credentialId, 'base64'))
       );
 
-      // Where this passkey's wallet lives. A v2 wallet wins; failing that, a v1
-      // wallet made before LazorKit v2 keeps being used as it is — a fresh v2
-      // wallet would show that user an empty account while their funds sit in
-      // the v1 one. Only a passkey with neither gets a new, v2, wallet. Owner
-      // rank only: anyone can add a stranger's passkey to a wallet they control
-      // at a lower rank, without the passkey's consent.
-      const owned = async (c: LazorKitClient) =>
-        (await c.findWalletsByAuthority(credentialIdHash, 'secp256r1')).filter(
-          (w) => w.role === ROLE_OWNER,
-        );
-      let version: ProtocolVersion = 2;
-      let client = v2Client(connection);
-      let existing = await owned(client);
-      if (existing.length === 0) {
-        const legacy = v1Client(connection);
-        const legacyOwned = await owned(legacy);
-        if (legacyOwned.length > 0) {
-          version = 1;
-          client = legacy;
-          existing = legacyOwned;
-        }
-      }
-      if (existing.length > 0) {
-        const [found] = existing;
-        // Cross-device recovery: the passkey the portal reported may differ
-        // slightly from what was registered on first sign-up (e.g. when the
-        // user is authenticating on a secondary device with an iCloud-synced
-        // passkey). The on-chain Authority account is the source of truth —
-        // read the pubkey from there and persist it so later sign flows never
-        // rely on a stale client-side cache.
-        let passkeyPubkey = data.passkeyPubkey;
-        try {
-          const onchainPubkey = await readPasskeyPubkey(version, connection, found.authorityPda);
-          passkeyPubkey = Array.from(onchainPubkey);
-        } catch (err) {
-          logger.error(
-            'Failed to read on-chain passkey pubkey during recovery; falling back to portal-reported bytes',
-            err,
-            { authorityPda: found.authorityPda.toBase58() },
-          );
-        }
+      // Where this passkey's wallet lives — proven, not guessed from the public
+      // credential hash (see ./ownership). A v1 wallet made before LazorKit v2
+      // keeps being used as it is: a fresh v2 wallet would show that user an
+      // empty account while their funds sit in the v1 one. Only a passkey that
+      // owns neither gets a new, v2, wallet.
+      const reported = new Uint8Array(data.passkeyPubkey ?? []);
+      const own = await chooseOwnWallet({
+        candidates: await findOwnedCandidates(connection, credentialIdHash, rpId),
+        reportedPubkey: reported.length === 33 ? reported : undefined,
+        rpId,
+        prove: async () => {
+          if (!redirectUrl) {
+            throw new Error('Proving which wallet is this passkey\'s needs a redirectUrl for the portal');
+          }
+          const challenge = new Uint8Array(32);
+          crypto.getRandomValues(challenge);
+          const response = await signChallengeViaPortal({
+            challenge,
+            credentialId: data.credentialId,
+            portalUrl: config.portalUrl,
+            redirectUrl,
+          });
+          return {
+            challenge,
+            signature: response.signature,
+            authenticatorData: response.authenticatorData,
+            clientDataJson: response.clientDataJson,
+          };
+        },
+      });
+      if (own) {
+        const client = clientFor(own.version, connection);
+        const [vault] = client.findVault(own.walletPda);
         return {
           ...data,
-          passkeyPubkey,
-          smartWallet: found.vaultPda.toBase58(),
-          walletPda: found.walletPda.toBase58(),
-          walletDevice: found.authorityPda.toBase58(),
-          protocolVersion: version,
+          // The key on chain, which the passkey has just been shown to hold.
+          passkeyPubkey: Array.from(own.pubkey),
+          smartWallet: vault.toBase58(),
+          walletPda: own.walletPda.toBase58(),
+          walletDevice: own.authorityPda.toBase58(),
+          protocolVersion: own.version,
         };
       }
+      const client = v2Client(connection);
 
       const compressedPubkey = new Uint8Array(data.passkeyPubkey);
       if (compressedPubkey.length !== 33) {
