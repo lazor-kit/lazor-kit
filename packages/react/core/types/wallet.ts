@@ -104,6 +104,13 @@ export interface RevokeSessionPayload {
 
 export interface AddAuthorityPayload {
     readonly role?: number;
+    /**
+     * Spending policy, required when the role is ROLE_SPENDER (Delegate) on a
+     * v2 wallet. Build it with `serializeActions([...])`. v2 rejects a Delegate
+     * without one (3033) and a policy on any other rank (3035); v1 wallets have
+     * no policies and ignore it.
+     */
+    readonly policy?: Uint8Array;
     readonly onSuccess?: (authorityPda: string, authorityPublicKey: string) => void;
     readonly onFail?: (error: Error) => void;
 }

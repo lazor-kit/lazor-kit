@@ -26,7 +26,16 @@ import {
   WalletConfig,
   WalletInfo,
 } from '../../types';
-import { LazorKitClient, readAuthorityPubkey, type WebAuthnResponse } from '../../program';
+import {
+  LazorKitClient,
+  ROLE_OWNER,
+  type ProtocolVersion,
+  type WebAuthnResponse,
+  v1Client,
+  v2Client,
+  versionOf,
+  readPasskeyPubkey,
+} from '../../program';
 import { API_ENDPOINTS, DEFAULTS } from '../../config';
 import { openBrowser } from '../browser/open';
 import { handleBrowserResult } from '../browser/parseResult';
@@ -42,7 +51,6 @@ export const createWalletActions = (
   setLoading: (isLoading: boolean) => void,
   config: WalletConfig,
 ): WalletActions => {
-  const client = new LazorKitClient(connection);
   const rpId = config.rpId ?? DEFAULTS.RP_ID;
 
   /**
@@ -55,7 +63,28 @@ export const createWalletActions = (
         sha256.arrayBuffer(Buffer.from(data.credentialId, 'base64'))
       );
 
-      const existing = await client.findWalletsByAuthority(credentialIdHash, 'secp256r1');
+      // Where this passkey's wallet lives. A v2 wallet wins; failing that, a v1
+      // wallet made before LazorKit v2 keeps being used as it is — a fresh v2
+      // wallet would show that user an empty account while their funds sit in
+      // the v1 one. Only a passkey with neither gets a new, v2, wallet. Owner
+      // rank only: anyone can add a stranger's passkey to a wallet they control
+      // at a lower rank, without the passkey's consent.
+      const owned = async (c: LazorKitClient) =>
+        (await c.findWalletsByAuthority(credentialIdHash, 'secp256r1')).filter(
+          (w) => w.role === ROLE_OWNER,
+        );
+      let version: ProtocolVersion = 2;
+      let client = v2Client(connection);
+      let existing = await owned(client);
+      if (existing.length === 0) {
+        const legacy = v1Client(connection);
+        const legacyOwned = await owned(legacy);
+        if (legacyOwned.length > 0) {
+          version = 1;
+          client = legacy;
+          existing = legacyOwned;
+        }
+      }
       if (existing.length > 0) {
         const [found] = existing;
         // Cross-device recovery: the passkey the portal reported may differ
@@ -66,7 +95,7 @@ export const createWalletActions = (
         // rely on a stale client-side cache.
         let passkeyPubkey = data.passkeyPubkey;
         try {
-          const onchainPubkey = await readAuthorityPubkey(connection, found.authorityPda);
+          const onchainPubkey = await readPasskeyPubkey(version, connection, found.authorityPda);
           passkeyPubkey = Array.from(onchainPubkey);
         } catch (err) {
           logger.error(
@@ -81,6 +110,7 @@ export const createWalletActions = (
           smartWallet: found.vaultPda.toBase58(),
           walletPda: found.walletPda.toBase58(),
           walletDevice: found.authorityPda.toBase58(),
+          protocolVersion: version,
         };
       }
 
@@ -134,6 +164,7 @@ export const createWalletActions = (
         smartWallet: vaultPda.toBase58(),
         walletPda: walletPda.toBase58(),
         walletDevice: authorityPda.toBase58(),
+        protocolVersion: 2,
       };
     } catch (error) {
       logger.error('SaveWallet action failed:', error, { walletData: data });
@@ -175,6 +206,7 @@ export const createWalletActions = (
         connection,
         feePayer,
         config,
+        version: versionOf(data),
         addressLookupTables: alts,
         feeToken: transactionOptions?.feeToken,
       });
@@ -258,11 +290,26 @@ export async function signChallengeViaPortal(params: {
  * Signs and sends a prebuilt list of instructions through the paymaster.
  * Used by every mutation path (passkey- or session-signed).
  */
+/**
+ * The paymaster for a wallet's protocol. v1 wallets keep the relayer the app
+ * used before v2 (`v1ConfigPaymaster`, defaulting to the main one).
+ */
+export function paymasterFor(
+  config: WalletConfig,
+  version: ProtocolVersion,
+): { paymasterUrl: string; apiKey?: string } {
+  return version === 1
+    ? (config.v1ConfigPaymaster ?? config.configPaymaster)
+    : config.configPaymaster;
+}
+
 export async function sendInstructionsViaPaymaster(params: {
   instructions: TransactionInstruction[];
   connection: Connection;
   feePayer: PublicKey;
   config: WalletConfig;
+  /** The protocol of the wallet paying through this transaction. Defaults to 2. */
+  version?: ProtocolVersion;
   addressLookupTables?: AddressLookupTableAccount[];
   feeToken?: string;
   /** Optional extra signers (e.g., session Keypair for Ed25519 auth). */
@@ -281,11 +328,12 @@ export async function sendInstructionsViaPaymaster(params: {
   }
 
   const serialized = Buffer.from(tx.serialize()).toString('base64');
+  const paymaster = paymasterFor(params.config, params.version ?? 2);
   return signAndExecuteTransaction(
     serialized,
-    params.config.configPaymaster.paymasterUrl,
+    paymaster.paymasterUrl,
     params.feePayer.toBase58(),
-    params.config.configPaymaster.apiKey,
+    paymaster.apiKey,
     params.feeToken,
   );
 }

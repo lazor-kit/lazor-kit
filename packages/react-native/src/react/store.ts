@@ -8,7 +8,7 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
-import { findVaultPda } from '../program';
+import { v1Client } from '../program';
 import {
   WalletStateClient,
   WalletInfo,
@@ -210,8 +210,11 @@ export const useWalletStore = create<WalletStateClient>()(
       migrate: (persisted: any, fromVersion: number) => {
         if (fromVersion < 1 && persisted?.wallet && !persisted.wallet.walletPda) {
           try {
+            // Wallets persisted this far back were made on LazorKit v1: derive
+            // the vault with v1 seeds, at the v1 program for this cluster.
             const oldWalletPda = new PublicKey(persisted.wallet.smartWallet);
-            const [vaultPda] = findVaultPda(oldWalletPda);
+            const rpcUrl = persisted?.config?.rpcUrl ?? DEFAULTS.RPC_ENDPOINT!;
+            const [vaultPda] = v1Client(new Connection(rpcUrl)).findVault(oldWalletPda);
             persisted.wallet = {
               ...persisted.wallet,
               smartWallet: vaultPda.toBase58(),

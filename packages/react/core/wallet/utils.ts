@@ -1,4 +1,5 @@
 import { sha256 } from 'js-sha256';
+import { V1WalletRetiredError, isRetiredDeploymentError } from '../program/protocol';
 import { DialogManager } from '../portal';
 import { WalletConfig } from '../storage';
 import { WalletState } from '../types';
@@ -41,7 +42,13 @@ export const handleActionError = (
     set: (state: Partial<WalletState>) => void,
     onFail?: (error: Error) => void
 ): never => {
-    const err = error instanceof Error ? error : new Error(String(error));
+    // A v1 wallet after LazorKit v1 was retired: say what happened and what to
+    // do, rather than surface a bare `custom program error: 0xfb2`.
+    const err = isRetiredDeploymentError(error)
+        ? new V1WalletRetiredError(error)
+        : error instanceof Error
+          ? error
+          : new Error(String(error));
     set({ error: err });
     onFail?.(err);
     throw err;

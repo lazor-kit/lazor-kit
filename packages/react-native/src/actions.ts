@@ -21,6 +21,7 @@ import {
   buildPreviewTransactionBase64,
   createWalletActions,
   decodeWebAuthnResponse,
+  paymasterFor,
   sendInstructionsViaPaymaster,
   signChallengeViaPortal,
   toBase64Url,
@@ -31,9 +32,16 @@ import {
   LazorKitClient,
   type SessionAction,
   type Secp256r1Params,
+  type ProtocolVersion,
   ROLE_SPENDER,
   ACCOUNT_DISCRIMINATOR,
   AUTH_TYPE_ED25519,
+  V1_DISC_AUTHORITY,
+  clientFor,
+  versionOf,
+  versionOfAccount,
+  isRetiredDeploymentError,
+  V1WalletRetiredError,
 } from './program';
 import {
   AddAuthorityPayload,
@@ -72,7 +80,13 @@ async function withSigningState<T>(
   try {
     return await fn();
   } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
+    // A v1 wallet after LazorKit v1 was retired: say what happened and what
+    // to do, rather than surface a bare `custom program error: 0xfb2`.
+    const err = isRetiredDeploymentError(error)
+      ? new V1WalletRetiredError(error)
+      : error instanceof Error
+        ? error
+        : new Error(String(error));
     set({ error: err });
     throw err;
   } finally {
@@ -88,9 +102,21 @@ function requireWalletAndConnection(get: () => WalletStateClient) {
   return state;
 }
 
-/** Build a LazorKitClient bound to the current connection. */
-function buildClient(get: () => WalletStateClient): LazorKitClient {
-  return new LazorKitClient(get().connection);
+/**
+ * The client for the connected wallet's protocol — v1 for a wallet made before
+ * LazorKit v2, v2 since. Sending one protocol's instruction to the other's
+ * program fails, so nothing here uses a single global program id.
+ */
+function buildClient(get: () => WalletStateClient): { client: LazorKitClient; version: ProtocolVersion } {
+  const { wallet, connection } = get();
+  const version = wallet ? versionOf(wallet) : 2;
+  return { client: clientFor(version, connection), version };
+}
+
+/** The fee payer of the paymaster that serves this protocol. */
+function feePayerFor(config: WalletStateClient['config'], version: ProtocolVersion) {
+  const paymaster = paymasterFor(config, version);
+  return getFeePayer(paymaster.paymasterUrl, paymaster.apiKey);
 }
 
 /**
@@ -213,11 +239,8 @@ async function performPasskeyExecute(
   options: SignOptions,
 ): Promise<string> {
   const { connection, wallet, config } = requireWalletAndConnection(get);
-  const client = buildClient(get);
-  const feePayer = await getFeePayer(
-    config.configPaymaster.paymasterUrl,
-    config.configPaymaster.apiKey,
-  );
+  const { client, version } = buildClient(get);
+  const feePayer = await feePayerFor(config, version);
 
   const walletPda = new PublicKey(wallet!.walletPda);
 
@@ -259,6 +282,7 @@ async function performPasskeyExecute(
     connection,
     feePayer,
     config,
+    version,
     addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
     feeToken: payload.transactionOptions?.feeToken,
   });
@@ -313,11 +337,8 @@ export const createSessionAction = async (
   return withSigningState(get, set, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
-      const client = buildClient(get);
-      const feePayer = await getFeePayer(
-        config.configPaymaster.paymasterUrl,
-        config.configPaymaster.apiKey,
-      );
+      const { client, version } = buildClient(get);
+      const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
 
       if (!params.actions?.length && !params.unrestricted) {
@@ -353,6 +374,7 @@ export const createSessionAction = async (
         connection,
         feePayer,
         config,
+        version,
       });
       await connection.confirmTransaction(signature, 'confirmed');
       const sessionPda = prepared.sessionPda;
@@ -377,11 +399,8 @@ export const revokeSessionAction = async (
   return withSigningState(get, set, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
-      const client = buildClient(get);
-      const feePayer = await getFeePayer(
-        config.configPaymaster.paymasterUrl,
-        config.configPaymaster.apiKey,
-      );
+      const { client, version } = buildClient(get);
+      const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
 
       const prepared = await client.prepareRevokeSession({
@@ -405,6 +424,7 @@ export const revokeSessionAction = async (
         connection,
         feePayer,
         config,
+        version,
       });
       await connection.confirmTransaction(signature, 'confirmed');
       options?.onSuccess?.(signature);
@@ -431,11 +451,10 @@ export const signAndSendWithSessionAction = async (
   return withSigningState(get, set, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
-      const client = buildClient(get);
-      const feePayer = await getFeePayer(
-        config.configPaymaster.paymasterUrl,
-        config.configPaymaster.apiKey,
-      );
+      // The session account's owner says which program it belongs to.
+      const version = await versionOfAccount(connection, payload.sessionPda);
+      const client = clientFor(version, connection);
+      const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
 
       const { instructions } = await client.execute({
@@ -464,6 +483,7 @@ export const signAndSendWithSessionAction = async (
         connection,
         feePayer,
         config,
+        version,
         addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
         feeToken: payload.transactionOptions?.feeToken,
         extraSigners: [payload.sessionKeypair],
@@ -495,11 +515,8 @@ export const addAuthorityEd25519Action = async (
   return withSigningState(get, set, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
-      const client = buildClient(get);
-      const feePayer = await getFeePayer(
-        config.configPaymaster.paymasterUrl,
-        config.configPaymaster.apiKey,
-      );
+      const { client, version } = buildClient(get);
+      const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
 
       const prepared = await client.prepareAddAuthority({
@@ -527,6 +544,7 @@ export const addAuthorityEd25519Action = async (
         connection,
         feePayer,
         config,
+        version,
       });
       await connection.confirmTransaction(signature, 'confirmed');
       const newAuthorityPda = prepared.newAuthorityPda;
@@ -551,11 +569,8 @@ export const removeAuthorityAction = async (
   return withSigningState(get, set, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
-      const client = buildClient(get);
-      const feePayer = await getFeePayer(
-        config.configPaymaster.paymasterUrl,
-        config.configPaymaster.apiKey,
-      );
+      const { client, version } = buildClient(get);
+      const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
 
       const prepared = await client.prepareRemoveAuthority({
@@ -579,6 +594,7 @@ export const removeAuthorityAction = async (
         connection,
         feePayer,
         config,
+        version,
       });
       await connection.confirmTransaction(signature, 'confirmed');
       options?.onSuccess?.(signature);
@@ -608,11 +624,8 @@ export const authorizeAndExecuteAction = async (
   return withSigningState(get, set, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
-      const client = buildClient(get);
-      const feePayer = await getFeePayer(
-        config.configPaymaster.paymasterUrl,
-        config.configPaymaster.apiKey,
-      );
+      const { client, version } = buildClient(get);
+      const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
 
       const prepared = await client.prepareAuthorize({
@@ -648,6 +661,7 @@ export const authorizeAndExecuteAction = async (
         connection,
         feePayer,
         config,
+        version,
       });
       await connection.confirmTransaction(authorizeSig, 'confirmed');
 
@@ -672,6 +686,7 @@ export const authorizeAndExecuteAction = async (
         connection,
         feePayer,
         config,
+        version,
         addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
         feeToken: payload.transactionOptions?.feeToken,
       });
@@ -704,11 +719,8 @@ export const authorizeDeferredAction = async (
   return withSigningState(get, set, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
-      const client = buildClient(get);
-      const feePayer = await getFeePayer(
-        config.configPaymaster.paymasterUrl,
-        config.configPaymaster.apiKey,
-      );
+      const { client, version } = buildClient(get);
+      const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
       const secp256r1 = buildSecp256r1Params(wallet!);
 
@@ -747,6 +759,7 @@ export const authorizeDeferredAction = async (
         connection,
         feePayer,
         config,
+        version,
       });
       await connection.confirmTransaction(signature, 'confirmed');
 
@@ -777,11 +790,11 @@ export const executeDeferredAction = async (
   return withSigningState(get, set, async () => {
     try {
       const { connection, config } = requireWalletAndConnection(get);
-      const client = buildClient(get);
-      const feePayer = await getFeePayer(
-        config.configPaymaster.paymasterUrl,
-        config.configPaymaster.apiKey,
-      );
+      // A payload may come from anywhere; its authorization account's owner
+      // says which program wrote it.
+      const version = await versionOfAccount(connection, payload.deferredPayload.deferredExecPda);
+      const client = clientFor(version, connection);
+      const feePayer = await feePayerFor(config, version);
 
       const { instructions } = await client.executeDeferredFromPayload({
         payer: feePayer,
@@ -804,6 +817,7 @@ export const executeDeferredAction = async (
         connection,
         feePayer,
         config,
+        version,
         addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
         feeToken: payload.transactionOptions?.feeToken,
       });
@@ -832,11 +846,9 @@ export const reclaimDeferredAction = async (
   return withSigningState(get, set, async () => {
     try {
       const { connection, config } = requireWalletAndConnection(get);
-      const client = buildClient(get);
-      const feePayer = await getFeePayer(
-        config.configPaymaster.paymasterUrl,
-        config.configPaymaster.apiKey,
-      );
+      const version = await versionOfAccount(connection, payload.deferredExecPda);
+      const client = clientFor(version, connection);
+      const feePayer = await feePayerFor(config, version);
 
       const { instructions } = client.reclaimDeferred({
         payer: feePayer,
@@ -849,6 +861,7 @@ export const reclaimDeferredAction = async (
         connection,
         feePayer,
         config,
+        version,
       });
       await connection.confirmTransaction(signature, 'confirmed');
       options?.onSuccess?.(signature);
@@ -878,16 +891,19 @@ export const listAuthoritiesAction = async (
   const { connection, wallet } = requireWalletAndConnection(get);
   const walletPda = new PublicKey(wallet!.walletPda);
 
-  const programId = new LazorKitClient(connection).programId;
+  // The wallet's own program, and its authority discriminator: 0x22 in v2
+  // (the high nibble carries the protocol major), 2 in v1. The header layout —
+  // wallet at 16, credential at 48, passkey at 80 — is the same in both.
+  const version = versionOf(wallet!);
+  const programId = clientFor(version, connection).programId;
+  const authorityDisc = version === 1 ? V1_DISC_AUTHORITY : ACCOUNT_DISCRIMINATOR.AUTHORITY;
   const accounts = await connection.getProgramAccounts(programId, {
     encoding: 'base64',
     filters: [
-      // Authority discriminator — 0x22 in protocol v2, where the high nibble
-      // carries the protocol major.
       {
         memcmp: {
           offset: 0,
-          bytes: Buffer.from([ACCOUNT_DISCRIMINATOR.AUTHORITY]).toString('base64'),
+          bytes: Buffer.from([authorityDisc]).toString('base64'),
           encoding: 'base64',
         },
       },

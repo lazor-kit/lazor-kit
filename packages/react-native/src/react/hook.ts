@@ -228,6 +228,7 @@ export function useWallet(): LazorWalletHook {
     vaultPubkey,
     walletPdaPubkey,
     passkeyPubkey: wallet?.passkeyPubkey || null,
+    protocolVersion: wallet ? (wallet.protocolVersion ?? 1) : null,
     isConnected: !!wallet,
     isLoading,
     isConnecting,
