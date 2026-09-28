@@ -123,4 +123,8 @@ pre.copyable {
   font-size: 0.8rem;
   overflow-x: auto;
   margin: 0 0 0.75rem;
+  /* One click selects the whole address; it wraps on a narrow screen. */
+  user-select: all;
+  white-space: pre-wrap;
+  word-break: break-all;
 }

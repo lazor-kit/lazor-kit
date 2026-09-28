@@ -28,7 +28,14 @@ import { migrationState, type MigrationState } from './lib/sunset';
 type Stuck = { token: V1VaultToken; reason: UnmovableReason };
 /** An old wallet listing this passkey, with the key its authority stores. */
 type Candidate = { wallet: PublicKey; authority: PublicKey; pubkey: Uint8Array };
-type Moved = { destination: PublicKey; signatures: string[]; leftBehind: Stuck[] };
+type Moved = {
+  /** The new wallet's vault: where the funds are now, and the address apps show. */
+  vault: PublicKey;
+  lamports: number;
+  tokens: number;
+  signatures: string[];
+  leftBehind: Stuck[];
+};
 
 type Phase =
   | { name: 'idle' }
@@ -38,6 +45,8 @@ type Phase =
   | {
       name: 'found';
       wallet: PublicKey;
+      /** The old wallet's vault: where its funds are, and the address apps showed. */
+      vault: PublicKey;
       authority: PublicKey;
       ownerPubkey: Uint8Array;
       lamports: number;
@@ -88,6 +97,45 @@ function saveNotYours(credentialIdHash: Uint8Array, set: Set<string>) {
     sessionStorage.setItem(notYoursKey(credentialIdHash), JSON.stringify([...set]));
   } catch {
     // storage unavailable: the check simply runs again next time
+  }
+}
+
+/**
+ * The seed of the new wallet this passkey's moves go into, kept once its
+ * setup transaction has landed successfully. Without it, every later move — the
+ * passkey's next old wallet, or a retry after the setup landed and the move
+ * did not — would get another new wallet: the SDK reuses a wallet on its own
+ * only once the passkey has signed for it, and a wallet a move just created
+ * has never been signed for. Apps would then offer several unused wallets,
+ * and once the user picked and used one, stop showing the others.
+ *
+ * Only a seed whose setup landed is kept: the seed is public from the moment
+ * a transaction carrying it is sent, and a wallet someone else created there
+ * first is theirs. Kept in localStorage, so a retry after closing the page
+ * still finds it; the SDK checks the wallet again before every move.
+ */
+const destinationKey = (credentialIdHash: Uint8Array) =>
+  `lazorkit-migrate:destination:${client.programId.toBase58()}:${Buffer.from(credentialIdHash).toString('hex')}`;
+function loadDestinationSeed(credentialIdHash: Uint8Array): Uint8Array | undefined {
+  try {
+    const hex = localStorage.getItem(destinationKey(credentialIdHash));
+    return hex && /^[0-9a-f]{64}$/.test(hex) ? new Uint8Array(Buffer.from(hex, 'hex')) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+function saveDestinationSeed(credentialIdHash: Uint8Array, seed: Uint8Array) {
+  try {
+    localStorage.setItem(destinationKey(credentialIdHash), Buffer.from(seed).toString('hex'));
+  } catch {
+    // storage unavailable: a later move gets a wallet of its own
+  }
+}
+function forgetDestinationSeed(credentialIdHash: Uint8Array) {
+  try {
+    localStorage.removeItem(destinationKey(credentialIdHash));
+  } catch {
+    // nothing kept
   }
 }
 
@@ -183,6 +231,7 @@ export default function App() {
           setPhase({
             name: 'found',
             wallet: candidate.wallet,
+            vault,
             authority: candidate.authority,
             // Read the owner's key off the chain, never from the WebAuthn
             // response: signing in with an existing passkey returns an
@@ -237,18 +286,40 @@ export default function App() {
       // ids on its allow-list, and a throwaway test program is not one.
       const local: Keypair | null = devSeedEnabled() ? devPayer() : null;
       const payer = local ? local.publicKey : await paymaster.getPayer();
+      const owner = {
+        type: 'secp256r1' as const,
+        credentialIdHash: passkey.credentialIdHash,
+        compressedPubkey: found.ownerPubkey,
+        rpId: portalRpId(),
+      };
+      // Into the new wallet an earlier move of this passkey's created, while
+      // it is still this passkey's alone — checked as the SDK will, the mints
+      // moving now included. Otherwise (a session opened on it since, say) a
+      // new wallet, as for a first move.
+      let destinationUserSeed = loadDestinationSeed(passkey.credentialIdHash);
+      if (destinationUserSeed) {
+        const [kept] = client.findWallet(destinationUserSeed);
+        const problem = await client.vetMigrationDestination(kept, owner, {
+          watchMints: found.tokens.map((t) => t.mint),
+        });
+        if (problem) {
+          forgetDestinationSeed(passkey.credentialIdHash);
+          destinationUserSeed = undefined;
+        }
+      }
       const plan = await client.migrateV1Wallet({
         payer,
-        owner: {
-          type: 'secp256r1',
-          credentialIdHash: passkey.credentialIdHash,
-          compressedPubkey: found.ownerPubkey,
-          rpId: portalRpId(),
-        },
+        owner,
         v1Wallet: found.wallet,
         v1ProgramId,
+        destinationUserSeed,
         excludeTokenAccounts: [...leaveBehind].map((a) => new PublicKey(a)),
       });
+      // Once a setup carrying it has landed, the new wallet exists and is
+      // this passkey's: keep its seed for the next move.
+      const keepDestination = () => {
+        if (plan.destinationUserSeed) saveDestinationSeed(passkey.credentialIdHash, plan.destinationUserSeed);
+      };
       if (plan.migrate.type !== 'secp256r1') {
         throw new Error('this wallet is owned by a key, not a passkey — migrate it from your app');
       }
@@ -365,18 +436,32 @@ export default function App() {
       if (plan.setupInstructions.length && txBytes(together) <= MAX_TX_BYTES) {
         setPhase({ name: 'migrating', step: 'Moving your funds' });
         await send(together);
+        keepDestination();
       } else {
         if (plan.setupInstructions.length) {
           setPhase({ name: 'migrating', step: 'Setting up the new wallet' });
           await send(plan.setupInstructions);
+          // Before the move: if it fails now, pressing Move again delivers
+          // into this wallet instead of making another.
+          keepDestination();
         }
         setPhase({ name: 'migrating', step: 'Moving your funds' });
         await send(migrateInstructions);
+        keepDestination();
       }
 
       // A passkey can have more than one old wallet holding funds: look again,
       // and only say "done" when there is nothing left to move.
-      const done = [...moved, { destination: plan.destinationWallet, signatures, leftBehind: plan.skippedTokens }];
+      const done = [
+        ...moved,
+        {
+          vault: plan.v2Vault,
+          lamports: found.lamports,
+          tokens: plan.tokens.length,
+          signatures,
+          leftBehind: plan.skippedTokens,
+        },
+      ];
       setMoved(done);
       await find(passkey, done);
     } catch (e) {
@@ -498,7 +583,7 @@ export default function App() {
             </>
           )}
           <p className="muted">
-            From {short(phase.wallet.toBase58())}. Every ticked token account moves in the same
+            From your old wallet {short(phase.vault.toBase58())}. Every ticked token account moves in the same
             transaction; untick one to leave it behind (spam you never asked for, say). Closing the
             old accounts returns their rent to whoever pays for the move, which also pays to set up
             your new wallet.
@@ -531,30 +616,43 @@ export default function App() {
       {phase.name === 'done' && (
         <section className="card">
           <h2>Done</h2>
-          {phase.moved.map((m) => (
-            <div key={m.destination.toBase58() + m.signatures.join()}>
-              <p>
-                Your funds are now in {short(m.destination.toBase58())}. Open your app again and they
-                will be there.
+          {[...new Set(phase.moved.map((m) => m.vault.toBase58()))].map((vault) => (
+            <div key={vault}>
+              <p>Your funds are now in your new wallet:</p>
+              <pre className="copyable">{vault}</pre>
+              <p className="muted">
+                The next time you open your app, it may ask once which wallet is yours, and show
+                this one as not used with your passkey yet. It is yours: choose the one with this
+                address (ending in {vault.slice(-4)}).
               </p>
-              {m.leftBehind.length > 0 && (
-                <p className="muted">
-                  Left in the old wallet:{' '}
-                  {m.leftBehind
-                    .map(({ token, reason }) => `${short(token.mint.toBase58())} (${REASONS[reason]})`)
-                    .join(', ')}
-                  .
-                </p>
-              )}
-              <ul>
-                {m.signatures.map((sig) => (
-                  <li key={sig}>
-                    <a href={explorerTx(sig)} target="_blank" rel="noreferrer">
-                      {short(sig)}
-                    </a>
-                  </li>
+              {phase.moved
+                .filter((m) => m.vault.toBase58() === vault)
+                .map((m) => (
+                  <div key={m.signatures.join()}>
+                    <p className="muted">
+                      Moved {formatSol(m.lamports)}
+                      {m.tokens > 0 ? ` and ${m.tokens} token account${m.tokens > 1 ? 's' : ''}` : ''}.
+                    </p>
+                    {m.leftBehind.length > 0 && (
+                      <p className="muted">
+                        Left in the old wallet:{' '}
+                        {m.leftBehind
+                          .map(({ token, reason }) => `${short(token.mint.toBase58())} (${REASONS[reason]})`)
+                          .join(', ')}
+                        .
+                      </p>
+                    )}
+                    <ul>
+                      {m.signatures.map((sig) => (
+                        <li key={sig}>
+                          <a href={explorerTx(sig)} target="_blank" rel="noreferrer">
+                            {short(sig)}
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 ))}
-              </ul>
             </div>
           ))}
         </section>
