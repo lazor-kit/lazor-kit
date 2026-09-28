@@ -6,7 +6,7 @@ import {
   PublicKey,
   TransactionInstruction,
 } from '@solana/web3.js';
-import type { DeferredPayload, SessionAction, WebAuthnResponse } from './program';
+import type { DeferredPayload, OwnershipProof, SessionAction, WebAuthnResponse } from './program';
 
 /**
  * Core wallet types
@@ -65,6 +65,121 @@ export interface WalletConfig {
   readonly cluster?: 'mainnet' | 'devnet';
   /** WebAuthn Relying Party ID, e.g. "portal.lazor.sh". Defaults to portal host. */
   readonly rpId?: string;
+  /**
+   * What `connect` does when the passkey's wallet cannot be adopted on its
+   * own and the user has to say which wallet is theirs. Default `'builtin'`.
+   * See {@link OnConfirmWallet}.
+   */
+  readonly onConfirmWallet?: OnConfirmWallet;
+  /**
+   * Base58 Ed25519 keys of your own (a backend admin key, session keys your
+   * app issues). An authority, session or token approval held by one of them
+   * does not stop `connect` from adopting a wallet. Passkeys and pending
+   * transactions cannot be trusted this way.
+   */
+  readonly trustedAuthorities?: readonly string[];
+  /**
+   * Base58 SPL Token mints your app receives. The vault's token account for
+   * each is checked for having been handed to someone else, on top of wSOL,
+   * USDC, USDT and devnet USDC.
+   */
+  readonly watchMints?: readonly string[];
+}
+
+/**
+ * A wallet the passkey is proven to hold a key of, that `connect` will not
+ * adopt without the user: someone else can also spend from it, or the passkey
+ * has never signed for it, or it is one of several. Show the vault address;
+ * it is the one users recognise. The order is not a recommendation.
+ */
+export interface WalletChoice {
+  /** Wallet PDA. */
+  wallet: string;
+  /** Vault PDA — where the funds are, and the address to show. */
+  vault: string;
+  version: 1 | 2;
+  /** Vault balance, lamports. */
+  lamports: number;
+  /** Times this passkey has signed for the wallet; 0 = not used with it yet. */
+  signatureCount: number;
+  /**
+   * `false`: the vault was handed to another program, and the passkey no
+   * longer controls what leaves it — nor what is sent to it later.
+   */
+  vaultIsSystemAccount: boolean;
+  /** Every authority on the wallet except this passkey's. */
+  otherAuthorities: {
+    /** The authority account. */
+    address: string;
+    type: 'passkey' | 'key';
+    role: 'owner' | 'admin' | 'spender' | 'unknown';
+    /** `type: 'key'` only: the Ed25519 key. */
+    key?: string;
+    /** `type: 'passkey'` only: created under the same relying party as this passkey. */
+    sameRelyingParty?: boolean;
+    /** Listed in `trustedAuthorities`. A passkey never is. */
+    trusted: boolean;
+  }[];
+  /** Sessions that can still sign. */
+  liveSessions: {
+    address: string;
+    /** `null` when the session account is too short to read. */
+    sessionKey: string | null;
+    /**
+     * About when it stops signing, ms since the epoch (slots × 400 ms). `null`
+     * when the account is too short to read.
+     */
+    approxExpiresAt: number | null;
+    trusted: boolean;
+  }[];
+  /** Transactions authorized and not yet run or expired. Never trusted. */
+  pendingDeferred: {
+    address: string;
+    approxExpiresAt: number | null;
+  }[];
+  /** Rights over the vault's token accounts held by someone else. */
+  tokenGrants: {
+    tokenAccount: string;
+    tokenProgram: string;
+    /** `null` when the account is too short to read. */
+    mint: string | null;
+    kind: 'delegate' | 'closeAuthority' | 'owner' | 'unreadable';
+    /** Who holds the right; `null` when the account is too short to read. */
+    grantee: string | null;
+    /** `grantee` is listed in `trustedAuthorities`. */
+    trusted: boolean;
+  }[];
+}
+
+/** What a wallet chooser gets: the passkey, and the wallets to choose from. */
+export interface ConfirmWalletRequest {
+  credentialId: string;
+  candidates: WalletChoice[];
+}
+
+/**
+ * Your own wallet chooser. Resolve with the chosen candidate's `wallet` (or
+ * `vault`), or `null` when the user recognises none of them. Never choose for
+ * the user.
+ */
+export type ConfirmWalletHandler = (
+  request: ConfirmWalletRequest,
+) => Promise<{ wallet: string } | null> | { wallet: string } | null;
+
+/**
+ * `'builtin'`: `LazorKitProvider` shows its own chooser.
+ * `'throw'`: `connect` throws {@link WalletNeedsConfirmationError}; call
+ * `connect({ redirectUrl, confirmWallet })` with the user's pick within two
+ * minutes and it is adopted without opening the portal again.
+ * A function: your own chooser ({@link ConfirmWalletHandler}).
+ */
+export type OnConfirmWallet = ConfirmWalletHandler | 'builtin' | 'throw';
+
+/** The built-in chooser's open request, as the store holds it while it is shown. */
+export interface PendingWalletConfirmation {
+  readonly request: ConfirmWalletRequest;
+  /** The user's answer: a candidate's `wallet`, or `null` for none of these. */
+  readonly resolve: (choice: { wallet: string } | null) => void;
 }
 
 /**
@@ -85,6 +200,12 @@ export interface LazorKitProviderProps {
   /** Which cluster `rpcUrl` serves, if its URL does not say. See WalletConfig. */
   readonly cluster?: 'mainnet' | 'devnet';
   readonly rpId?: string;
+  /** Default `'builtin'`. See WalletConfig. */
+  readonly onConfirmWallet?: OnConfirmWallet;
+  /** Your own Ed25519 keys, base58. See WalletConfig. */
+  readonly trustedAuthorities?: readonly string[];
+  /** SPL Token mints your app receives, base58. See WalletConfig. */
+  readonly watchMints?: readonly string[];
   readonly isDebug?: boolean;
   readonly children:
   | React.JSX.Element
@@ -112,11 +233,14 @@ export interface BrowserResult {
 export interface ConnectOptions {
   readonly redirectUrl: string;
   /**
-   * Adopt this wallet (its address) although other keys can also spend from
-   * it — after connect threw `WalletNeedsConfirmationError` and the user
-   * recognised it.
+   * The wallet the user chose — its vault or wallet PDA, from
+   * `WalletNeedsConfirmationError.candidates`. Within two minutes of that
+   * error it is adopted without opening the portal again. It must be one of
+   * the passkey's proven wallets: an address that is not throws.
    */
   readonly confirmWallet?: string;
+  /** Overrides the provider's `onConfirmWallet` for this call. */
+  readonly onConfirmWallet?: OnConfirmWallet;
   readonly onSuccess?: (wallet: WalletInfo) => void;
   readonly onFail?: (error: Error) => void;
 }
@@ -288,6 +412,12 @@ export interface WalletStateClient {
   isConnecting: boolean;
   isSigning: boolean;
   error: Error | null;
+  /**
+   * The built-in wallet chooser's open request, while `connect` waits for the
+   * user (`onConfirmWallet: 'builtin'`). `LazorKitProvider` draws it. Not
+   * persisted.
+   */
+  pendingWalletConfirmation: PendingWalletConfirmation | null;
 
   // State setters
   setConfig: (config: WalletConfig) => void;
@@ -307,39 +437,39 @@ export interface WalletStateClient {
   createSession: (
     payload: CreateSessionPayload,
     options: SignOptions,
-  ) => Promise<{ signature: string; sessionPda: PublicKey } | undefined>;
+  ) => Promise<{ signature: string; sessionPda: PublicKey }>;
   revokeSession: (
     payload: RevokeSessionPayload,
     options: SignOptions,
-  ) => Promise<string | undefined>;
+  ) => Promise<string>;
   signAndSendWithSession: (
     payload: SessionSignPayload,
     options: { onSuccess?: (sig: string) => void; onFail?: (err: Error) => void },
-  ) => Promise<string | undefined>;
+  ) => Promise<string>;
   addAuthorityEd25519: (
     payload: AddAuthorityPayload,
     options: SignOptions,
-  ) => Promise<{ signature: string; newAuthorityPda: PublicKey } | undefined>;
+  ) => Promise<{ signature: string; newAuthorityPda: PublicKey }>;
   removeAuthority: (
     payload: RemoveAuthorityPayload,
     options: SignOptions,
-  ) => Promise<string | undefined>;
+  ) => Promise<string>;
   authorizeAndExecute: (
     payload: AuthorizeExecutePayload,
     options: SignOptions,
-  ) => Promise<string | undefined>;
+  ) => Promise<string>;
   authorizeDeferred: (
     payload: AuthorizePayload,
     options: SignOptions,
-  ) => Promise<AuthorizeResult | undefined>;
+  ) => Promise<AuthorizeResult>;
   executeDeferred: (
     payload: ExecuteDeferredPayload,
     options?: TxCallbacks,
-  ) => Promise<string | undefined>;
+  ) => Promise<string>;
   reclaimDeferred: (
     payload: ReclaimDeferredPayload,
     options?: TxCallbacks,
-  ) => Promise<string | undefined>;
+  ) => Promise<string>;
   listAuthorities: () => Promise<ListAuthoritiesResult>;
   transferSol: (payload: TransferSolPayload, options: SignOptions) => Promise<void>;
 }
@@ -363,6 +493,11 @@ export interface LazorWalletHook {
    */
   protocolVersion: 1 | 2 | null;
   isConnected: boolean;
+  /**
+   * The SDK is working. `false` while the wallet chooser (or your
+   * `onConfirmWallet` function) waits for the user, so a loading overlay does
+   * not cover it; `isConnecting` stays `true` for the whole connect.
+   */
   isLoading: boolean;
   isConnecting: boolean;
   isSigning: boolean;
@@ -416,12 +551,36 @@ export type ExecuteFinalize = (response: WebAuthnResponse) => {
   instructions: TransactionInstruction[];
 };
 
+/** How `saveWallet` settles which wallet is the passkey's own. */
+export interface SaveWalletOptions {
+  /** Lets it ask the passkey, through the portal, to prove which wallet is its own. */
+  readonly redirectUrl?: string;
+  /**
+   * An assertion that came with the connect reply, over the challenge the
+   * connect URL carried. Used instead of asking the portal again when it
+   * verifies against a candidate's key or the reported one (and counts only
+   * for the keys it verifies against); otherwise the portal is asked once.
+   */
+  readonly proof?: OwnershipProof;
+  /** See ConnectOptions. */
+  readonly confirmWallet?: string;
+  /** Default: the config's, else `'builtin'`. */
+  readonly onConfirmWallet?: OnConfirmWallet;
+  /** Draws the built-in chooser. Without it, `'builtin'` throws. */
+  readonly openChooser?: (request: ConfirmWalletRequest) => Promise<{ wallet: string } | null>;
+}
+
 /**
  * Wallet Actions interface (low-level, used by the connect flow).
  */
 export interface WalletActions {
-  /** `redirectUrl` lets it ask the passkey to prove which wallet is its own. */
-  saveWallet: (data: WalletInfo, redirectUrl?: string, confirmWallet?: string) => Promise<WalletInfo>;
+  saveWallet: (data: WalletInfo, options?: SaveWalletOptions) => Promise<WalletInfo>;
+  /**
+   * The remembered candidate at `confirmWallet`, as a wallet to save, when
+   * `connect` threw `WalletNeedsConfirmationError` for it less than two
+   * minutes ago; else `null`.
+   */
+  adoptRemembered: (confirmWallet: string) => WalletInfo | null;
   executeWallet: (
     data: WalletInfo,
     feePayer: PublicKey,
@@ -452,5 +611,45 @@ export class SigningError extends LazorKitError {
   constructor(message: string) {
     super(message, 'SIGNING_ERROR');
     this.name = 'SigningError';
+  }
+}
+
+/**
+ * The user closed the portal — dismissed the browser, or went back to the
+ * app — before it answered. Nothing was signed.
+ */
+export class PortalCancelledError extends LazorKitError {
+  constructor() {
+    super('The LazorKit portal was closed before it answered; nothing was signed.', 'PORTAL_CANCELLED');
+    this.name = 'PortalCancelledError';
+  }
+}
+
+/**
+ * The passkey's wallet cannot be adopted without the user (`onConfirmWallet:
+ * 'throw'`). Show `candidates` — the vault address, balance, and who else can
+ * spend from each — and let the user pick one they recognise; then call
+ * `connect({ redirectUrl, confirmWallet: choice.vault })`. Within two minutes
+ * that adopts it without opening the portal again. Never pick for the user.
+ */
+export class WalletNeedsConfirmationError extends Error {
+  constructor(
+    readonly credentialId: string,
+    readonly candidates: WalletChoice[],
+  ) {
+    super(
+      "This passkey's wallet needs the user to confirm it: anyone can add a passkey to a wallet " +
+        'of their own, so only a wallet the user recognises should be used. Show the candidates ' +
+        'and call connect with confirmWallet set to the chosen vault.',
+    );
+    this.name = 'WalletNeedsConfirmationError';
+  }
+}
+
+/** The user recognised none of the wallets offered. Nothing was saved. */
+export class WalletConfirmationDeclinedError extends Error {
+  constructor() {
+    super('No wallet was chosen, so none was connected.');
+    this.name = 'WalletConfirmationDeclinedError';
   }
 }

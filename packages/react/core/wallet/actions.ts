@@ -13,7 +13,7 @@ import {
     TransactionInstruction,
     Connection,
 } from '@solana/web3.js';
-import { DialogResult, SignResult } from '../portal';
+import { SignResult } from '../portal';
 import { StorageManager, WalletInfo } from '../storage';
 import { Paymaster } from '../paymaster/paymaster';
 import { WalletState, ConnectOptions, DisconnectOptions, SignAndSendTransactionPayload, CreateSessionPayload, RevokeSessionPayload, AddAuthorityPayload, AuthorizeDeferredPayload, ExecuteDeferredPayload } from '../types';
@@ -22,10 +22,8 @@ import {
     getCredentialHash,
     handleActionError,
     cleanupLegacyStorage,
-    getPasskeyPublicKey,
-    getPortalRpId,
 } from './utils';
-import { chooseOwnWallet, findOwnedCandidates, provenCandidates, type OwnershipProof } from './ownership';
+import { clearPendingConfirmation, connectAbandoned, connectFreshWallet } from './resolveWallet';
 import {
     ROLE_ADMIN,
     Actions,
@@ -118,6 +116,14 @@ async function buildAndSendTx(params: {
 
 
 /**
+ * The store's connect in flight, if any. `disconnect` aborts it: its portal or
+ * chooser closes and it saves nothing — so no wallet arrives after the user
+ * disconnected, or beside a connect started after that. (The store is one per
+ * page, as is this.)
+ */
+let connectInFlight: AbortController | null = null;
+
+/**
  * Connect wallet action
  */
 export const connectAction = async (
@@ -131,6 +137,8 @@ export const connectAction = async (
         throw new Error('Already connecting');
     }
 
+    const attempt = new AbortController();
+    connectInFlight = attempt;
     set({ isConnecting: true, error: null });
 
     try {
@@ -158,132 +166,77 @@ export const connectAction = async (
         }
 
         if (existingWallet) {
+            // A connected wallet is never swapped silently for another.
+            if (options?.confirmWallet && !namesWallet(existingWallet, options.confirmWallet)) {
+                throw new Error(
+                    `confirmWallet ${options.confirmWallet} is not the connected wallet ` +
+                        `(${existingWallet.vaultPda ?? existingWallet.smartWallet}). Disconnect first to connect another.`,
+                );
+            }
+            if (attempt.signal.aborted) throw connectAbandoned();
             set({ wallet: existingWallet });
             options?.onSuccess?.(existingWallet);
             return existingWallet;
         }
 
-        const dialogManager = createDialogManager(config);
-
-        try {
-            const dialogResult: DialogResult = await dialogManager.openConnect();
-            const connection = get().connection;
-            const credentialHash = getCredentialHash(dialogResult.credentialId);
-            const rpId = getPortalRpId(config.portalUrl);
-
-            // Where this passkey's wallet lives — proven, not guessed from the
-            // public credential hash (see ./ownership). A v1 wallet made before
-            // LazorKit v2 keeps being used as it is: creating a fresh v2 wallet
-            // for that user would show them an empty account while their funds
-            // sit, unseen, in the v1 one. Only a passkey that owns neither gets
-            // a new (v2) wallet.
-            const reportedPubkey = dialogResult.publicKey
-                ? getPasskeyPublicKey(dialogResult.publicKey)
-                : undefined;
-            // One proof per connect, shared by the wallet choice and creation.
-            let proof: OwnershipProof | undefined;
-            const prove = async (): Promise<OwnershipProof> => {
-                if (proof) return proof;
-                const challenge = randomBytes(32);
-                const result = await dialogManager.openSign(
-                    toBase64Url(challenge),
-                    '',
-                    dialogResult.credentialId,
-                );
-                proof = { challenge, ...decodeSignResult(result) };
-                return proof;
-            };
-            const own = await chooseOwnWallet({
-                connection,
-                confirmWallet: options?.confirmWallet,
-                candidates: await findOwnedCandidates(connection, credentialHash, rpId),
-                reportedPubkey,
-                rpId,
-                prove,
-            });
-
-            const version: ProtocolVersion = own?.version ?? 2;
-            const client = clientFor(version, connection);
-            let smartWalletAddress: string;
-            let passkeyPubkey: Uint8Array;
-
-            if (own) {
-                // smartWallet = walletPda (internal authority account), NOT vaultPda.
-                // The vault is derived from it below via findVault; storing the vault
-                // here would apply findVault twice and yield a bogus PDA that
-                // SystemProgram.transfer(from=vaultPda) then treats as a signer,
-                // breaking tx-level sig verification.
-                smartWalletAddress = own.walletPda.toBase58();
-                // The key on chain, which the passkey just proved it holds.
-                passkeyPubkey = own.pubkey;
-            } else {
-                if (!reportedPubkey || reportedPubkey.length !== 33) {
-                    throw new Error(
-                        'This passkey has no wallet yet, and signing in with an existing passkey does ' +
-                            'not reveal its public key. Create the wallet with "Create new account".',
-                    );
-                }
-                // The portal reports a key from its own storage on sign-in, and
-                // may report another passkey's; its reply does not say whether
-                // the key came from a registration just now. A wallet created
-                // for a wrong key can never sign — so prove it first.
-                const created = { version: 2 as const, walletPda: PublicKey.default, authorityPda: PublicKey.default, pubkey: reportedPubkey };
-                if (!provenCandidates([created], await prove(), rpId).length) {
-                    throw new Error(
-                        "The portal reported a public key this passkey does not hold, so no wallet was " +
-                            'created. Try again, or create a new passkey with "Create new account".',
-                    );
-                }
-                passkeyPubkey = reportedPubkey;
+        const connection = get().connection;
+        // See ./resolveWallet: which wallet is this passkey's own is proven,
+        // not guessed from the public credential hash, and a wallet the rule
+        // will not adopt goes to the user. A v1 wallet made before LazorKit v2
+        // keeps being used as it is; only a passkey proven to hold neither
+        // gets a new (v2) wallet.
+        const walletInfo = await connectFreshWallet({
+            connection,
+            portalUrl: config.portalUrl,
+            trustedAuthorities: config.trustedAuthorities,
+            watchMints: config.watchMints,
+            onConfirmWallet: options?.onConfirmWallet ?? config.onConfirmWallet,
+            confirmWallet: options?.confirmWallet,
+            openPortal: () => createDialogManager(config),
+            createWallet: async (owner) => {
+                const client = clientFor(2, connection);
                 const paymaster = paymasterFor(config, 2);
                 const feePayer = await paymaster.getPayer();
                 const { instructions, walletPda } = await client.createWallet({
                     payer: feePayer,
                     userSeed: randomBytes(32),
-                    owner: {
-                        type: 'secp256r1',
-                        credentialIdHash: credentialHash,
-                        compressedPubkey: reportedPubkey,
-                        rpId,
-                    },
+                    owner: { type: 'secp256r1', ...owner },
                 });
-                await buildAndSendTx({
-                    paymaster,
-                    connection,
-                    feePayer,
-                    instructions,
-                });
-                smartWalletAddress = walletPda.toBase58();
-            }
+                await buildAndSendTx({ paymaster, connection, feePayer, instructions });
+                return walletPda;
+            },
+            signal: attempt.signal,
+        });
 
-            const [vaultAddress] = client.findVault(new PublicKey(smartWalletAddress));
-            const walletInfo: WalletInfo = {
-                credentialId: dialogResult.credentialId,
-                passkeyPubkey: Array.from(passkeyPubkey),
-                expo: 'web',
-                platform: navigator.platform,
-                smartWallet: smartWalletAddress,
-                vaultPda: vaultAddress.toBase58(),
-                walletDevice: '',
-                accountName: dialogResult.accountName,
-                protocolVersion: version,
-            };
-
-            await StorageManager.saveWallet(walletInfo);
-            set({ wallet: walletInfo });
-            options?.onSuccess?.(walletInfo);
-            return walletInfo;
-
-        } finally {
-            dialogManager.destroy();
-        }
+        if (attempt.signal.aborted) throw connectAbandoned();
+        await StorageManager.saveWallet(walletInfo);
+        set({ wallet: walletInfo });
+        options?.onSuccess?.(walletInfo);
+        return walletInfo;
 
     } catch (error: unknown) {
+        if (attempt.signal.aborted) {
+            // Abandoned by disconnect, which already reset the store: leave
+            // its `error` alone, but still fail this call.
+            const err = connectAbandoned();
+            options?.onFail?.(err);
+            throw err;
+        }
         return handleActionError(error, set, options?.onFail, walletVersion(get));
     } finally {
-        set({ isConnecting: false });
+        // An abandoned connect no longer owns `isConnecting`: disconnect reset
+        // it, and a connect started since may have set it again.
+        if (connectInFlight === attempt) {
+            connectInFlight = null;
+            set({ isConnecting: false });
+        }
     }
 };
+
+/** `address` is this stored wallet's vault or wallet PDA. */
+function namesWallet(wallet: WalletInfo, address: string): boolean {
+    return address === wallet.vaultPda || address === wallet.smartWallet;
+}
 
 /**
  * Disconnect wallet action
@@ -294,6 +247,11 @@ export const disconnectAction = async (
 ): Promise<void> => {
 
     try {
+        // A connect still running is abandoned (see connectInFlight), so
+        // resetting `isConnecting` below cannot let two run side by side.
+        connectInFlight?.abort();
+        connectInFlight = null;
+        clearPendingConfirmation();
         await StorageManager.clearWallet();
         set({ wallet: null, error: null, isConnecting: false, isSigning: false, isLoading: false });
         options?.onSuccess?.();

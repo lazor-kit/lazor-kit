@@ -10,11 +10,11 @@ export { useWalletStore } from './react/store';
 
 // Type exports
 export type { WalletInfo, WalletConfig } from '././core/storage';
-export type { WalletHookInterface } from './react/useWallet';
+export type { WalletHookInterface, ConnectHookOptions } from './react/useWallet';
 export type { SpendingLimits } from './core/types';
 
 // Core exports (for advanced usage)
-export { DialogManager } from './core/portal';
+export { DialogManager, PortalCancelledError } from './core/portal';
 export { StorageManager } from '././core/storage';
 
 // Configuration exports
@@ -77,14 +77,32 @@ export {
   V1WalletMigratedError,
   registerCluster,
 } from './core/program';
-// Prove which wallet is a passkey's own (the credential hash alone is public).
+// Which wallet is a passkey's own (the credential hash alone is public): what
+// connect asks the user when it will not adopt one on its own.
 export {
-  findOwnedCandidates,
-  provenCandidates,
-  chooseOwnWallet,
   WalletNeedsConfirmationError,
-} from './core/wallet/ownership';
-export type { OwnedCandidate, OwnershipProof } from './core/wallet/ownership';
+  WalletConfirmationDeclinedError,
+} from './core/wallet/confirmation';
+export type {
+  WalletChoice,
+  ConfirmWalletRequest,
+  ConfirmWalletHandler,
+  OnConfirmWallet,
+} from './core/wallet/confirmation';
+// The rule itself, from @lazorkit/sdk-legacy, for apps that find wallets on
+// their own.
+export {
+  createOwnershipChallenge,
+  verifyOwnershipProof,
+  pickOwnWallet,
+  selectWalletByAddress,
+} from './core/program';
+export type {
+  OwnershipProof,
+  PasskeyWalletCandidate,
+  WalletFacts,
+  AuthorityRoleName,
+} from './core/program';
 // Runtime error decoding helpers.
 export { errorFromCode, extractErrorCode, ERROR_NAMES } from './core/program';
 export type { DeferredPayload, SessionAction } from './core/program';

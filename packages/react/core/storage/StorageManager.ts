@@ -26,6 +26,7 @@ export interface WalletInfo {
 }
 
 import { PaymasterConfig } from '../paymaster/paymaster';
+import type { OnConfirmWallet } from '../wallet/confirmation';
 
 export interface WalletConfig {
   readonly portalUrl: string;
@@ -46,6 +47,23 @@ export interface WalletConfig {
    * mainnet, as every release before v2 did.
    */
   readonly cluster?: 'mainnet' | 'devnet';
+  /**
+   * How `connect` asks the user to confirm a wallet it will not adopt on its
+   * own — see `OnConfirmWallet`. Default `'builtin'`: the SDK's chooser.
+   */
+  readonly onConfirmWallet?: OnConfirmWallet;
+  /**
+   * Your own Ed25519 keys (base58) — a backend admin, session keys you issue.
+   * An authority, session or token approval held by one of them does not stop
+   * a wallet from being adopted. Passkeys cannot be listed.
+   */
+  readonly trustedAuthorities?: string[];
+  /**
+   * SPL Token mints your app receives (base58). A wallet whose vault token
+   * account for one of them was handed to someone else is not adopted. wSOL,
+   * USDC, USDT and devnet USDC are always checked.
+   */
+  readonly watchMints?: string[];
 }
 
 /**

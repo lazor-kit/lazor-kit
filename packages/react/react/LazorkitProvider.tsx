@@ -14,6 +14,7 @@ import { useWalletStore } from './store';
 import { DEFAULTS } from '../config';
 
 import { PaymasterConfig } from '../core/paymaster/paymaster';
+import type { OnConfirmWallet } from '../core/wallet/confirmation';
 
 export interface LazorkitProviderProps {
   children: ReactNode;
@@ -28,6 +29,24 @@ export interface LazorkitProviderProps {
   v1PaymasterConfig?: PaymasterConfig;
   /** Which cluster `rpcUrl` serves, if its URL does not say. See WalletConfig. */
   cluster?: 'mainnet' | 'devnet';
+  /**
+   * How `connect` asks the user to confirm a wallet it will not adopt on its
+   * own: `'builtin'` (default) shows the SDK's chooser, a function shows your
+   * own UI, `'throw'` makes `connect` throw `WalletNeedsConfirmationError`.
+   */
+  onConfirmWallet?: OnConfirmWallet;
+  /**
+   * Your own Ed25519 keys (base58) — a backend admin, session keys you issue.
+   * An authority, session or token approval held by one of them does not stop
+   * a wallet from being adopted. Default none.
+   */
+  trustedAuthorities?: string[];
+  /**
+   * SPL Token mints your app receives (base58), checked on top of wSOL, USDC,
+   * USDT and devnet USDC: a wallet whose vault account for one of them was
+   * handed to someone else is not adopted. Default none.
+   */
+  watchMints?: string[];
 }
 
 export const LazorkitProvider = (props: LazorkitProviderProps) => {
@@ -38,6 +57,9 @@ export const LazorkitProvider = (props: LazorkitProviderProps) => {
     paymasterConfig = { paymasterUrl: DEFAULTS.PAYMASTER_URL },
     v1PaymasterConfig,
     cluster,
+    onConfirmWallet,
+    trustedAuthorities,
+    watchMints,
   } = props;
 
   const { setConfig } = useWalletStore();
@@ -71,8 +93,21 @@ export const LazorkitProvider = (props: LazorkitProviderProps) => {
       v1PaymasterConfig,
       rpcUrl,
       cluster,
+      onConfirmWallet,
+      trustedAuthorities,
+      watchMints,
     });
-  }, [rpcUrl, portalUrl, paymasterConfig, v1PaymasterConfig, cluster, setConfig]);
+  }, [
+    rpcUrl,
+    portalUrl,
+    paymasterConfig,
+    v1PaymasterConfig,
+    cluster,
+    onConfirmWallet,
+    trustedAuthorities,
+    watchMints,
+    setConfig,
+  ]);
 
   return <>{children}</>;
 };

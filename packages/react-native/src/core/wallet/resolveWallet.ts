@@ -1,0 +1,139 @@
+/**
+ * Which on-chain wallet is this passkey's own — or none yet.
+ *
+ * Finding wallets by credential-id hash is not enough to answer that. The hash
+ * is public (it sits in every authority account the passkey has touched), and
+ * `CreateWallet` / `AddAuthority` / `TransferOwnership` take any key without
+ * its owner's consent, on v1 and v2 alike. So anyone can list a victim's
+ * credential beside their own key, add the victim's real passkey to a wallet
+ * they still spend from, or hand the passkey a wallet they have already
+ * rigged. The rule for what is adopted without asking the user lives in
+ * `@lazorkit/sdk-legacy` (`pickOwnWallet`); this is the wallet adapter's side
+ * of it: prove, describe, pick, and ask the user when the pick is not clear.
+ *
+ * Only for a fresh connect. A stored wallet, or a sign action, never comes
+ * through here.
+ */
+import {
+  pickOwnWallet,
+  selectWalletByAddress,
+  verifyOwnershipProof,
+  type LazorKitClient,
+  type OwnershipProof,
+  type WalletFacts,
+} from '@lazorkit/sdk-legacy';
+import {
+  type ConfirmWalletHandler,
+  type ConfirmWalletRequest,
+  type OnConfirmWallet,
+  WalletConfirmationDeclinedError,
+  WalletNeedsConfirmationError,
+} from '../../types';
+import { toWalletChoice } from './walletChoice';
+
+export interface ResolveWalletParams {
+  /** The v2 client for the cluster; it also scans the v1 deployment paired with it. */
+  client: Pick<LazorKitClient, 'findPasskeyWalletCandidates' | 'describeWalletCandidates'>;
+  credentialId: string;
+  credentialIdHash: Uint8Array;
+  rpId: string;
+  /**
+   * The passkey's assertion over a challenge chosen here. Asked for only when
+   * there are candidates to prove, and told which, so that an assertion the
+   * connect reply carried is used only if it proves something. The caller
+   * keeps it for creating a wallet, so the passkey signs at most once per
+   * connect.
+   */
+  prove: (candidates: readonly { publicKey: Uint8Array }[]) => Promise<OwnershipProof>;
+  trustedAuthorities?: readonly string[];
+  watchMints?: readonly string[];
+  onConfirmWallet: OnConfirmWallet;
+  /** The user's pick, by vault or wallet PDA. It must be a proven wallet. */
+  confirmWallet?: string;
+  /** Draws the built-in chooser (`onConfirmWallet: 'builtin'`). */
+  openChooser?: (request: ConfirmWalletRequest) => Promise<{ wallet: string } | null>;
+  /** Keeps the candidates for a later `confirmWallet` (`onConfirmWallet: 'throw'`). */
+  remember?: (facts: WalletFacts[]) => void;
+  /**
+   * Told when the wait for the user's answer starts (`true`) and ends
+   * (`false`). That wait has no time limit.
+   */
+  onAsking?: (asking: boolean) => void;
+}
+
+/**
+ * The passkey's wallet, or `null` when it has no live wallet it is proven to
+ * hold a key of — create one then.
+ *
+ * Throws, never guesses: an RPC failure while describing the wallets is an
+ * error, not "no wallet"; a `confirmWallet` that is not a proven wallet is an
+ * error, not ignored; the user choosing none is
+ * `WalletConfirmationDeclinedError`.
+ */
+export async function resolveWallet(params: ResolveWalletParams): Promise<WalletFacts | null> {
+  const { client, credentialId, credentialIdHash, rpId, confirmWallet } = params;
+
+  const candidates = await client.findPasskeyWalletCandidates({ credentialIdHash, rpId });
+  // The hash is public; a candidate counts only if the passkey just signed
+  // our challenge with the key stored on it.
+  const proven = candidates.length ? verifyOwnershipProof(candidates, await params.prove(candidates), rpId) : [];
+  const facts = proven.length
+    ? await client.describeWalletCandidates(proven, {
+        trustedKeys: [...(params.trustedAuthorities ?? [])],
+        watchMints: [...(params.watchMints ?? [])],
+      })
+    : [];
+
+  if (confirmWallet !== undefined) {
+    const chosen = selectWalletByAddress(facts, confirmWallet);
+    if (!chosen) {
+      throw new Error(
+        `confirmWallet ${confirmWallet} is not a wallet this passkey was just proven to hold a key ` +
+          'of, so it was not connected. Pass the vault or wallet address of one of the candidates.',
+      );
+    }
+    return chosen;
+  }
+
+  // None proven, or all of them dead (a migrated v1 wallet leaves authorities behind).
+  if (!facts.length) return null;
+
+  const { adopt, needsConfirmation } = pickOwnWallet(facts);
+  if (adopt) return adopt;
+
+  const request: ConfirmWalletRequest = {
+    credentialId,
+    candidates: needsConfirmation.map((f) => toWalletChoice(f)),
+  };
+  const handler = params.onConfirmWallet;
+  if (handler === 'throw') {
+    params.remember?.(needsConfirmation);
+    throw new WalletNeedsConfirmationError(credentialId, request.candidates);
+  }
+  let ask: ConfirmWalletHandler;
+  if (handler === 'builtin') {
+    if (!params.openChooser) {
+      throw new Error('No built-in wallet chooser is available here; pass onConfirmWallet.');
+    }
+    ask = params.openChooser;
+  } else {
+    ask = handler;
+  }
+  let answer: { wallet: string } | null;
+  params.onAsking?.(true);
+  try {
+    answer = await ask(request);
+  } finally {
+    params.onAsking?.(false);
+  }
+  if (!answer) throw new WalletConfirmationDeclinedError();
+  const chosen =
+    typeof answer.wallet === 'string' ? selectWalletByAddress(needsConfirmation, answer.wallet) : null;
+  if (!chosen) {
+    throw new Error(
+      `The wallet chooser answered ${String(answer.wallet)}, which is not one of the candidates ` +
+        'it was offered; nothing was connected.',
+    );
+  }
+  return chosen;
+}

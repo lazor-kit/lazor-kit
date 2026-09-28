@@ -101,6 +101,13 @@ const storage = {
   },
 };
 
+/** The config without what is only ever this run's (see `merge` below). */
+function persistableConfig(config: WalletConfig): WalletConfig {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { onConfirmWallet, trustedAuthorities, watchMints, ...rest } = config;
+  return rest;
+}
+
 export const useWalletStore = create<WalletStateClient>()(
   persist(
     (set, get) => ({
@@ -117,6 +124,7 @@ export const useWalletStore = create<WalletStateClient>()(
       isConnecting: false,
       isSigning: false,
       error: null,
+      pendingWalletConfirmation: null,
 
       setConfig: (config: WalletConfig) => {
         try {
@@ -169,7 +177,7 @@ export const useWalletStore = create<WalletStateClient>()(
       },
 
       connect: (options: ConnectOptions) => connectAction(get, set, options),
-      disconnect: () => disconnectAction(set),
+      disconnect: () => disconnectAction(get, set),
       signAndExecuteTransaction: (payload: SignAndSendTransactionPayload, options: SignOptions) =>
         signAndExecuteTransaction(get, set, payload, options),
       signMessage: (message: string, options: SignOptions) => signMessageAction(get, set, message, options),
@@ -201,8 +209,27 @@ export const useWalletStore = create<WalletStateClient>()(
       version: 1,
       partialize: (state: WalletStateClient) => ({
         wallet: state.wallet,
-        config: state.config,
+        config: persistableConfig(state.config),
       }),
+      /**
+       * Storage can answer after the provider has set this run's config, with
+       * last run's. The wallet-confirmation settings are this run's only: a
+       * stale `trustedAuthorities` would trust a key the app no longer does,
+       * and a handler function does not survive JSON anyway.
+       */
+      merge: (persisted, current) => {
+        const saved = (persisted ?? {}) as Partial<WalletStateClient>;
+        return {
+          ...current,
+          ...saved,
+          config: {
+            ...(saved.config ?? current.config),
+            onConfirmWallet: current.config.onConfirmWallet,
+            trustedAuthorities: current.config.trustedAuthorities,
+            watchMints: current.config.watchMints,
+          },
+        };
+      },
       /**
        * v0 → v1: `smartWallet` used to hold the wallet PDA; now it holds the
        * vault PDA. Derive the vault so persisted users keep working.

@@ -6,7 +6,9 @@
  */
 
 import { WalletInfo } from '../../types';
+import type { OwnershipProof } from '../../program';
 import { logger } from '../logger';
+import { portalErrorOf } from '../browser/parseResult';
 import { Buffer } from 'buffer';
 
 /**
@@ -14,8 +16,11 @@ import { Buffer } from 'buffer';
  *
  * @param url - Redirect URL provided by the portal after passkey auth.
  * @returns WalletInfo or null when validation fails.
+ * @throws the portal's own error, when it reported one (`error=<text>`).
  */
 export const handleAuthRedirect = (url: string): WalletInfo | null => {
+  const portalError = portalErrorOf(url);
+  if (portalError) throw portalError;
   try {
     const parsed = new URL(url);
     let passkeyPubkey: number[];
@@ -50,4 +55,33 @@ export const handleAuthRedirect = (url: string): WalletInfo | null => {
     logger.error('Failed to parse redirect URL:', err, { url });
     return null;
   }
+};
+
+/**
+ * The assertion a connect reply carries when the portal signed the
+ * `challenge` the connect URL asked for — the same fields, base64 like a sign
+ * reply's — as an ownership proof over that challenge. `undefined` when the
+ * reply has none (a portal that ignores the parameter).
+ *
+ * Whatever the reply says about itself (`kind`, the reported key) is not
+ * trusted: on Android any app can send a deep link into this scheme. Only
+ * `verifyOwnershipProof` decides what this proves.
+ */
+export const readConnectAssertion = (url: string, challenge: Uint8Array): OwnershipProof | undefined => {
+  let params: URLSearchParams;
+  try {
+    params = new URL(url).searchParams;
+  } catch {
+    return undefined;
+  }
+  const signature = params.get('signature');
+  const clientDataJson = params.get('clientDataJSONReturn');
+  const authenticatorData = params.get('authenticatorDataReturn');
+  if (!signature || !clientDataJson || !authenticatorData) return undefined;
+  return {
+    challenge,
+    signature: new Uint8Array(Buffer.from(signature, 'base64')),
+    authenticatorData: new Uint8Array(Buffer.from(authenticatorData, 'base64')),
+    clientDataJson: new Uint8Array(Buffer.from(clientDataJson, 'base64')),
+  };
 };

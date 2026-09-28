@@ -7,7 +7,17 @@ import { EventEmitter } from 'eventemitter3';
 import { API_ENDPOINTS } from '../../config';
 import { CredentialManager } from './CredentialManager';
 import { getDialogStyles } from './styles/DialogStyles';
+import { ensureChoiceStyles, renderWalletChoices } from './WalletChoiceView';
 import { Logger } from '../../utils/logger';
+import type { WalletChoice } from '../wallet/confirmation';
+
+/** A WebAuthn assertion as the portal sends it (base64 fields, like a sign reply). */
+export interface PortalAssertion {
+  readonly signature: string;
+  readonly clientDataJsonBase64: string;
+  readonly authenticatorDataBase64: string;
+}
+
 export interface DialogResult {
   readonly publicKey: string;
   readonly credentialId: string;
@@ -15,7 +25,33 @@ export interface DialogResult {
   readonly connectionType: 'create' | 'get';
   readonly timestamp: number;
   readonly accountName?: string;
+  /**
+   * What the portal did, when it says: `created` — registered the passkey
+   * just now, so `publicKey` is its own; `asserted` — signed in with it, so
+   * `publicKey` came from the portal's storage.
+   */
+  readonly kind?: 'created' | 'asserted';
+  /** An assertion over the `challenge` the connect URL carried, when the portal made one. */
+  readonly assertion?: PortalAssertion;
 }
+
+/**
+ * The user closed the portal — the dialog's X, Escape, a click outside it, or
+ * the popup window — before it answered, or the app disconnected while a
+ * connect was still going. Nothing was signed, and nothing was saved.
+ */
+export class PortalCancelledError extends Error {
+  constructor(message = 'The LazorKit portal was closed before it finished, so nothing was signed.') {
+    super(message);
+    this.name = 'PortalCancelledError';
+  }
+}
+
+/**
+ * Once the popup is gone, how long a reply it posted just before closing gets
+ * to arrive before the pending action counts as cancelled.
+ */
+const POPUP_CLOSED_GRACE_MS = 500;
 
 export interface SignResult {
   readonly signature: string;
@@ -47,6 +83,12 @@ export class DialogManager extends EventEmitter {
   private credentialManager: CredentialManager;
   private logger = new Logger('DialogManager');
   private _currentAction: DialogAction | null = null;
+  /** Rejects the portal action in flight with PortalCancelledError; null when none is. */
+  private pendingCancel: (() => void) | null = null;
+  /** Answers the open wallet chooser with `null`; null when none is open. */
+  private pendingChoice: (() => void) | null = null;
+  /** Settles when the dialog being closed is gone, so the next one does not reuse it mid-close. */
+  private closing: Promise<void> | null = null;
 
   constructor(config: DialogManagerConfig) {
     super();
@@ -58,57 +100,18 @@ export class DialogManager extends EventEmitter {
 
   /**
    * Open portal connection dialog
+   * @param options.challenge - base64url bytes for the portal to sign with the
+   *   passkey (a portal that does not know the parameter ignores it)
    * @returns Promise that resolves with connection result
    */
-  async openConnect(): Promise<DialogResult> {
-    return new Promise<DialogResult>((resolve, reject) => {
-      const cleanup = () => {
-        this.off('connect-result', connectHandler);
-        this.off('error', errorHandler);
-      };
-
-      const connectHandler = (data: DialogResult) => {
-        cleanup();
-        resolve(data);
-      };
-
-      const errorHandler = (error: Error) => {
-        cleanup();
-        reject(error);
-      };
-
-      // Register event listeners
-      this.on('connect-result', connectHandler);
-      this.on('error', errorHandler);
-
-      // Set timeout for connection
-      const timeoutId = setTimeout(() => {
-        cleanup();
-        reject(new Error('Connection timed out after 60 seconds'));
-      }, 60000);
-
-      // Clear timeout when resolved/rejected
-      const originalResolve = resolve;
-      const originalReject = reject;
-      resolve = (value) => {
-        clearTimeout(timeoutId);
-        originalResolve(value);
-      };
-      reject = (reason) => {
-        clearTimeout(timeoutId);
-        originalReject(reason);
-      };
-
-      // Store current action and open dialog
+  async openConnect(options: { challenge?: string } = {}): Promise<DialogResult> {
+    let connectUrl = `${this.config.portalUrl}?action=${API_ENDPOINTS.CONNECT}`;
+    if (options.challenge) {
+      connectUrl += `&challenge=${encodeURIComponent(options.challenge)}`;
+    }
+    return this.awaitPortal<DialogResult>('connect-result', 'Connection timed out after 60 seconds', () => {
       this._currentAction = API_ENDPOINTS.CONNECT;
-      const shouldUsePopup = this.shouldUsePopup('connect');
-
-      if (shouldUsePopup) {
-        const connectUrl = `${this.config.portalUrl}?action=${API_ENDPOINTS.CONNECT}`;
-        this.openPopup(connectUrl).catch(reject);
-      } else {
-        this.openConnectDialog().catch(reject);
-      }
+      return this.shouldUsePopup('connect') ? this.openPopup(connectUrl) : this.openModal(connectUrl);
     });
   }
 
@@ -118,58 +121,14 @@ export class DialogManager extends EventEmitter {
    * @returns Promise that resolves with signature result
    */
   async openSign(message: string, transaction: string, credentialId: string, clusterSimulation?: 'devnet' | 'mainnet'): Promise<SignResult> {
-    return new Promise<SignResult>((resolve, reject) => {
-      const cleanup = () => {
-        this.off('sign-result', signHandler);
-        this.off('error', errorHandler);
-      };
-
-      const signHandler = (data: SignResult) => {
-        cleanup();
-        resolve(data);
-      };
-
-      const errorHandler = (error: Error) => {
-        cleanup();
-        reject(error);
-      };
-
-      // Register event listeners
-      this.on('sign-result', signHandler);
-      this.on('error', errorHandler);
-
-      // Set timeout
-      const timeoutId = setTimeout(() => {
-        cleanup();
-        reject(new Error('Signing timed out after 60 seconds'));
-      }, 60000);
-
-      // Clear timeout when resolved/rejected
-      const originalResolve = resolve;
-      const originalReject = reject;
-      resolve = (value) => {
-        clearTimeout(timeoutId);
-        originalResolve(value);
-      };
-      reject = (reason) => {
-        clearTimeout(timeoutId);
-        originalReject(reason);
-      };
-
-      // Store current action and open dialog
+    const encodedMessage = encodeURIComponent(message);
+    let signUrl = `${this.config.portalUrl}?action=${API_ENDPOINTS.SIGN}&message=${encodedMessage}&transaction=${encodeURIComponent(transaction)}&credentialId=${encodeURIComponent(credentialId)}`;
+    if (clusterSimulation) {
+      signUrl += `&clusterSimulation=${clusterSimulation}`;
+    }
+    return this.awaitPortal<SignResult>('sign-result', 'Signing timed out after 60 seconds', () => {
       this._currentAction = API_ENDPOINTS.SIGN;
-      const shouldUsePopup = this.shouldUsePopup('sign');
-
-      const encodedMessage = encodeURIComponent(message);
-      let signUrl = `${this.config.portalUrl}?action=${API_ENDPOINTS.SIGN}&message=${encodedMessage}&transaction=${encodeURIComponent(transaction)}&credentialId=${encodeURIComponent(credentialId)}`;
-      if (clusterSimulation) {
-        signUrl += `&clusterSimulation=${clusterSimulation}`;
-      }
-      if (shouldUsePopup) {
-        this.openPopup(signUrl).catch(reject);
-      } else {
-        this.openSignDialog(signUrl).catch(reject);
-      }
+      return this.shouldUsePopup('sign') ? this.openPopup(signUrl) : this.openSignDialog(signUrl);
     });
   }
 
@@ -180,60 +139,87 @@ export class DialogManager extends EventEmitter {
    * @returns Promise that resolves with signature result
    */
   async openSignMessage(message: string, credentialId: string): Promise<SignResult> {
-    return new Promise<SignResult>((resolve, reject) => {
-      const cleanup = () => {
-        this.off('sign-result', signHandler);
-        this.off('error', errorHandler);
-      };
-
-      const signHandler = (data: SignResult) => {
-        cleanup();
-        resolve(data);
-      };
-
-      const errorHandler = (error: Error) => {
-        cleanup();
-        reject(error);
-      };
-
-      this.on('sign-result', signHandler);
-      this.on('error', errorHandler);
-
-      const timeoutId = setTimeout(() => {
-        cleanup();
-        reject(new Error('Signing timed out after 60 seconds'));
-      }, 60000);
-
-      const originalResolve = resolve;
-      const originalReject = reject;
-      resolve = (value) => {
-        clearTimeout(timeoutId);
-        originalResolve(value);
-      };
-      reject = (reason) => {
-        clearTimeout(timeoutId);
-        originalReject(reason);
-      };
-
+    const encodedMessage = encodeURIComponent(message);
+    const signUrl = `${this.config.portalUrl}?action=${API_ENDPOINTS.SIGN}&message=${encodedMessage}&credentialId=${encodeURIComponent(credentialId)}`;
+    return this.awaitPortal<SignResult>('sign-result', 'Signing timed out after 60 seconds', () => {
       this._currentAction = API_ENDPOINTS.SIGN;
-      const encodedMessage = encodeURIComponent(message);
-      const signUrl = `${this.config.portalUrl}?action=${API_ENDPOINTS.SIGN}&message=${encodedMessage}&credentialId=${encodeURIComponent(credentialId)}`;
-
-      const shouldUsePopup = this.shouldUsePopup('sign');
-      if (shouldUsePopup) {
-        this.openPopup(signUrl).catch(reject);
-      } else {
-        this.openSignDialog(signUrl).catch(reject);
-      }
+      return this.shouldUsePopup('sign') ? this.openPopup(signUrl) : this.openSignDialog(signUrl);
     });
   }
 
   /**
-   * Open connection dialog (modal only - popup handled separately)
+   * Wait for the portal's answer to the action `open` starts: its result, its
+   * error, the user closing it (PortalCancelledError, at once), or 60 s.
    */
-  private async openConnectDialog(): Promise<void> {
-    const connectUrl = `${this.config.portalUrl}?action=${API_ENDPOINTS.CONNECT}`;
-    await this.openModal(connectUrl);
+  private awaitPortal<T>(resultEvent: 'connect-result' | 'sign-result', timeoutMessage: string, open: () => Promise<void>): Promise<T> {
+    // Destroyed (a disconnect mid-connect): open nothing more.
+    if (this.isDestroyed) return Promise.reject(new PortalCancelledError());
+    return new Promise<T>((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        finish();
+        reject(new Error(timeoutMessage));
+      }, 60000);
+      const finish = () => {
+        clearTimeout(timeoutId);
+        this.off(resultEvent, onResult);
+        this.off('error', onError);
+        if (this.pendingCancel === onCancel) this.pendingCancel = null;
+      };
+      const onResult = (data: T) => {
+        finish();
+        resolve(data);
+      };
+      const onError = (error: Error) => {
+        finish();
+        reject(error);
+      };
+      const onCancel = () => {
+        finish();
+        reject(new PortalCancelledError());
+      };
+
+      this.on(resultEvent, onResult);
+      this.on('error', onError);
+      this.pendingCancel = onCancel;
+
+      open().catch(onError);
+    });
+  }
+
+  /**
+   * Show the SDK's wallet chooser ("Which wallet is yours?") in the portal
+   * dialog's shell — drawn here, not in the portal's iframe. Resolves with the
+   * wallet the user picked, or `null` for "None of these", the X, Escape, a
+   * click outside, or `destroy()`. Nothing is pre-selected.
+   */
+  async openWalletChoice(choices: WalletChoice[]): Promise<{ wallet: string } | null> {
+    if (this.isDestroyed) return null;
+    if (this.dialogRef && !this.isClosing) this.closeDialog();
+    if (this.closing) await this.closing;
+    if (this.isDestroyed) return null;
+    ensureChoiceStyles();
+    return new Promise((resolve) => {
+      let settled = false;
+      const settle = (wallet: string | null) => {
+        if (settled) return;
+        settled = true;
+        this.pendingChoice = null;
+        this.closeDialog();
+        resolve(wallet === null ? null : { wallet });
+      };
+      this.pendingChoice = () => settle(null);
+      const { body, footer, title } = renderWalletChoices(choices, settle);
+      const { dialog, panel } = this.createShell({ onDismiss: () => settle(null), themed: false });
+      dialog.setAttribute('data-content', 'choice');
+      dialog.setAttribute('aria-labelledby', title.id);
+      dialog.setAttribute('aria-describedby', 'lazorkit-choice-intro');
+      // Sized to its rows rather than to the portal's frame; the rows scroll.
+      Object.assign(panel.style, { height: 'auto', maxHeight: this.isMobileDevice() ? '85vh' : '90vh' });
+      panel.append(body, footer);
+      this.showDialog();
+      // Focus the title, not a row's button: pressing Enter must not choose a wallet.
+      title.focus();
+    });
   }
 
   private ensureFonts() {
@@ -333,7 +319,10 @@ export class DialogManager extends EventEmitter {
     document.head.appendChild(style);
   }
 
-  private createCloseButton(onClose: () => void): HTMLButtonElement {
+  private createCloseButton(
+    onClose: () => void,
+    colors = { idle: 'rgba(255, 255, 255, 0.6)', hover: '#ffffff', hoverBackground: 'rgba(255,255,255,0.1)' },
+  ): HTMLButtonElement {
     const btn = document.createElement('button');
     btn.type = 'button';
 
@@ -353,19 +342,19 @@ export class DialogManager extends EventEmitter {
       alignItems: 'center',
       justifyContent: 'center',
       padding: '0',
-      color: 'rgba(255, 255, 255, 0.6)',
+      color: colors.idle,
       outline: 'none', // Force remove browser default focus ring
       webkitTapHighlightColor: 'transparent',
     });
 
     // hover/focus (ButtonArea UX) - Modified: Removed blue outline, kept hover bg
     btn.addEventListener('mouseenter', () => {
-      btn.style.background = 'rgba(255,255,255,0.1)';
-      btn.style.color = '#ffffff';
+      btn.style.background = colors.hoverBackground;
+      btn.style.color = colors.hover;
     });
     btn.addEventListener('mouseleave', () => {
       btn.style.background = 'transparent';
-      btn.style.color = 'rgba(255, 255, 255, 0.6)';
+      btn.style.color = colors.idle;
     });
     // Removed focus outline event listeners as requested
 
@@ -511,6 +500,15 @@ export class DialogManager extends EventEmitter {
           clearInterval(this.popupCloseInterval);
           this.popupCloseInterval = null;
         }
+        // Closed without answering: give up on the action it was opened for
+        // now rather than at the timeout. Only that action — one started
+        // after it (a sign right after a connect) is not the popup's.
+        const cancel = this.pendingCancel;
+        if (cancel) {
+          setTimeout(() => {
+            if (this.pendingCancel === cancel) cancel();
+          }, POPUP_CLOSED_GRACE_MS);
+        }
       }
     }, 500);
   }
@@ -519,6 +517,11 @@ export class DialogManager extends EventEmitter {
    * Open modal dialog with iframe
    */
   private async openModal(url: string): Promise<void> {
+    if (this.closing) await this.closing;
+    // Destroyed while the last dialog was closing: its action has already
+    // been cancelled, and a portal shown now would answer no one.
+    if (this.isDestroyed) return;
+
     // Create dialog if it doesn't exist
     if (!this.dialogRef) {
       this.createModal();
@@ -529,7 +532,11 @@ export class DialogManager extends EventEmitter {
       this.iframeRef.src = url;
     }
 
-    // Show modal + opening animation
+    this.showDialog();
+  }
+
+  /** Show the dialog, with its opening animation. */
+  private showDialog(): void {
     if (this.dialogRef && !this.dialogRef.open) {
       // trigger opening animation
       this.dialogRef.setAttribute('data-state', 'opening');
@@ -547,92 +554,24 @@ export class DialogManager extends EventEmitter {
    * Create modal dialog with iframe
    */
   private createModal(): void {
-    this.ensureFonts();
-    this.ensureDialogBackdropCSS();
+    const { panel } = this.createShell({
+      // X, Escape or a click outside: the user walked away from the portal.
+      onDismiss: () => {
+        this.closeDialog();
+        this.emit('close');
+        this.pendingCancel?.();
+      },
+      themed: true,
+    });
 
-    const dialog = document.createElement('dialog');
-
-    dialog.id = 'lazorkit-dialog';
-    dialog.style.colorScheme = 'dark';
-    dialog.setAttribute('data-theme', 'dark');
     const isMobile = this.isMobileDevice();
     const styles = getDialogStyles(isMobile);
-
-    // 1) overlay style cho <dialog>
-    Object.assign(dialog.style, styles.overlay);
-    Object.assign(dialog.style, {
-      // Porto dark
-      '--background-color-th_base': '#191919',
-      '--background-color-th_frame': '#191919',
-      '--text-color-th_base': '#eeeeee',
-      '--border-color-th_frame': 'rgba(255,255,255,0.10)',
-    } as any);
-    // 2) panel wrapper (trắng)
-    const panel = document.createElement('div');
-    const variant = isMobile ? 'drawer' : 'floating';
-    dialog.setAttribute('data-variant', variant);
-    dialog.setAttribute('data-state', 'idle');
-    panel.id = 'lazorkit-panel';
-    Object.assign(panel.style, styles.panel);
-    Object.assign(panel.style, {
-      display: 'flex',
-      flexDirection: 'column',
-    });
-    Object.assign(panel.style, {
-      background: 'var(--background-color-th_base, #fcfcfc)',
-      color: 'var(--text-color-th_base, #202020)',
-      fontFamily: '"Roboto Flex", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-    });
-
-    const header = document.createElement('div');
-    Object.assign(header.style, {
-      height: '32px',
-      flex: '0 0 auto',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'flex-end',
-      padding: '0 12px',
-      boxSizing: 'border-box',
-      borderBottom: '1px solid rgba(0,0,0,0.08)',
-    });
-    Object.assign(header.style, {
-      background: 'var(--background-color-th_frame, var(--background-color-th_base, #fcfcfc))',
-      color: 'var(--text-color-th_base, #202020)',
-      borderBottom: '1px solid var(--border-color-th_frame, rgba(0,0,0,0.08))',
-    });
     const iframeContainer = document.createElement('div');
     Object.assign(iframeContainer.style, styles.iframeContainer);
     Object.assign(iframeContainer.style, { flex: '1 1 auto' });
     Object.assign(iframeContainer.style, {
-      background: 'var(--background-color-th_base, #fcfcfc)',
-    });
-    Object.assign(panel.style, {
-      background: 'var(--background-color-th_base, #191919)',
-      color: 'var(--text-color-th_base, #eeeeee)',
-    });
-
-    Object.assign(header.style, {
-      background: 'var(--background-color-th_frame, #191919)',
-      color: 'var(--text-color-th_base, #eeeeee)',
-      borderBottom: '1px solid var(--border-color-th_frame, rgba(255,255,255,0.10))',
-    });
-
-    Object.assign(iframeContainer.style, {
       background: 'var(--background-color-th_base, #191919)',
     });
-    // close button
-    const closeButton = this.createCloseButton(() => {
-      this.closeDialog();
-      this.emit('close');
-    });
-    Object.assign(closeButton.style, {
-      position: 'static',
-      top: '',
-      right: '',
-    });
-    closeButton.id = 'lazorkit-dialog-close';
-    closeButton.ariaLabel = 'Close';
-    Object.assign(closeButton.style, styles.closeButton);
 
     // iframe
     const iframe = document.createElement('iframe');
@@ -653,23 +592,118 @@ export class DialogManager extends EventEmitter {
     iframe.tabIndex = 0;
     iframe.title = 'Lazor';
 
-    dialog.addEventListener('cancel', () => this.closeDialog());
-    dialog.addEventListener('click', (e) => {
-      if (e.target === dialog) this.closeDialog();
-    });
-
-    // Create header content
-    header.appendChild(closeButton);
-
-    panel.appendChild(header);
     iframeContainer.appendChild(iframe);
     panel.appendChild(iframeContainer);
+
+    this.iframeRef = iframe;
+  }
+
+  /**
+   * The dialog every LazorKit surface is drawn in: overlay, panel and a header
+   * with a close button. `onDismiss` runs for the close button, Escape and a
+   * click outside the panel. `themed` keeps the portal's dark frame; without
+   * it the palette comes from the content's stylesheet (light or dark).
+   */
+  private createShell(options: { onDismiss: () => void; themed: boolean }): {
+    dialog: HTMLDialogElement;
+    panel: HTMLDivElement;
+  } {
+    this.ensureFonts();
+    this.ensureDialogBackdropCSS();
+
+    const dialog = document.createElement('dialog');
+
+    dialog.id = 'lazorkit-dialog';
+    if (options.themed) {
+      dialog.style.colorScheme = 'dark';
+      dialog.setAttribute('data-theme', 'dark');
+    }
+    const isMobile = this.isMobileDevice();
+    const styles = getDialogStyles(isMobile);
+
+    // 1) overlay style cho <dialog>
+    Object.assign(dialog.style, styles.overlay);
+    if (options.themed) {
+      Object.assign(dialog.style, {
+        // Porto dark
+        '--background-color-th_base': '#191919',
+        '--background-color-th_frame': '#191919',
+        '--text-color-th_base': '#eeeeee',
+        '--border-color-th_frame': 'rgba(255,255,255,0.10)',
+      } as any);
+    }
+    // 2) panel wrapper
+    const panel = document.createElement('div');
+    const variant = isMobile ? 'drawer' : 'floating';
+    dialog.setAttribute('data-variant', variant);
+    dialog.setAttribute('data-state', 'idle');
+    panel.id = 'lazorkit-panel';
+    Object.assign(panel.style, styles.panel);
+    Object.assign(panel.style, {
+      display: 'flex',
+      flexDirection: 'column',
+    });
+    Object.assign(panel.style, {
+      background: 'var(--background-color-th_base, #191919)',
+      color: 'var(--text-color-th_base, #eeeeee)',
+      fontFamily: '"Roboto Flex", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+    });
+
+    const header = document.createElement('div');
+    Object.assign(header.style, {
+      height: '32px',
+      flex: '0 0 auto',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'flex-end',
+      padding: '0 12px',
+      boxSizing: 'border-box',
+      background: 'var(--background-color-th_frame, #191919)',
+      color: 'var(--text-color-th_base, #eeeeee)',
+      borderBottom: '1px solid var(--border-color-th_frame, rgba(255,255,255,0.10))',
+    });
+
+    // close button
+    const closeButton = this.createCloseButton(
+      options.onDismiss,
+      options.themed
+        ? undefined
+        : { idle: 'var(--lk-muted)', hover: 'var(--lk-fg)', hoverBackground: 'var(--lk-hover)' },
+    );
+    Object.assign(closeButton.style, {
+      position: 'static',
+      top: '',
+      right: '',
+    });
+    closeButton.id = 'lazorkit-dialog-close';
+    closeButton.ariaLabel = 'Close';
+    Object.assign(closeButton.style, styles.closeButton);
+
+    dialog.addEventListener('cancel', (e) => {
+      // Escape: close with our animation, and say so.
+      e.preventDefault();
+      options.onDismiss();
+    });
+    // Outside the panel only when the press began outside too: a text
+    // selection dragged out of the panel (the full vault address, say) ends
+    // in a click on the dialog itself, and must not dismiss it.
+    let pressedOutside = false;
+    dialog.addEventListener('pointerdown', (e) => {
+      pressedOutside = e.target === dialog;
+    });
+    dialog.addEventListener('click', (e) => {
+      if (e.target === dialog && pressedOutside) options.onDismiss();
+      pressedOutside = false;
+    });
+
+    header.appendChild(closeButton);
+    panel.appendChild(header);
     dialog.appendChild(panel);
 
     document.body.appendChild(dialog);
 
     this.dialogRef = dialog;
-    this.iframeRef = iframe;
+    return { dialog, panel };
   }
 
   /**
@@ -693,7 +727,7 @@ export class DialogManager extends EventEmitter {
       const { type, data, error } = event.data;
 
       if (error) {
-        this.emit('error', new Error(error.message || 'Portal error'));
+        this.emit('error', new Error(portalErrorText(event.data)));
         return;
       }
 
@@ -707,7 +741,17 @@ export class DialogManager extends EventEmitter {
             isCreated: data.connectionType === 'create' || !!data.publickey,
             connectionType: data.connectionType || (data.publickey ? 'create' : 'get'),
             timestamp: data.timestamp || Date.now(),
-            accountName: data.accountName
+            accountName: data.accountName,
+            kind: data.kind === 'created' || data.kind === 'asserted' ? data.kind : undefined,
+            // Same field names as a sign reply.
+            assertion:
+              data.normalized && data.authenticatorDataReturn && data.clientDataJSONReturn
+                ? {
+                  signature: data.normalized,
+                  authenticatorDataBase64: data.authenticatorDataReturn,
+                  clientDataJsonBase64: data.clientDataJSONReturn,
+                }
+                : undefined,
           };
 
           this.emit('connect-result', transformedData);
@@ -725,10 +769,12 @@ export class DialogManager extends EventEmitter {
           this.closeDialog();
           break;
         case 'error':
-          this.emit('error', new Error(data?.message || 'Unknown portal error'));
+          this.emit('error', new Error(portalErrorText(event.data)));
           break;
         case 'close':
+          // The portal closed itself without an answer.
           this.closeDialog();
+          this.pendingCancel?.();
           break;
       }
     });
@@ -743,6 +789,13 @@ export class DialogManager extends EventEmitter {
 
     const dialog = this.dialogRef;
     const iframe = this.iframeRef;
+    let closed!: () => void;
+    this.closing = new Promise<void>((resolve) => (closed = resolve));
+    const done = () => {
+      this.isClosing = false;
+      this.closing = null;
+      closed();
+    };
 
     try {
       if (dialog) {
@@ -785,12 +838,12 @@ export class DialogManager extends EventEmitter {
         } catch (error) {
           this.logger.error('Error during animated close:', error);
         } finally {
-          this.isClosing = false;
+          done();
         }
       }, 170); // ⏱ match lazor-drawer-out / lazor-float-out
     } catch (error) {
       this.logger.error('Error closing dialog:', error);
-      this.isClosing = false;
+      done();
     }
   }
 
@@ -829,6 +882,11 @@ export class DialogManager extends EventEmitter {
     if (this.isDestroyed) return;
 
     this.isDestroyed = true;
+    // Whatever still waits on the dialog ends now — a portal action with
+    // PortalCancelledError, the chooser with null — rather than at the 60 s
+    // timeout, or never.
+    this.pendingCancel?.();
+    this.pendingChoice?.();
     this.closeDialog();
     this.credentialManager.destroy();
     this.removeAllListeners();
@@ -836,4 +894,22 @@ export class DialogManager extends EventEmitter {
   }
 }
 
-
+/**
+ * The portal's own words for what went wrong. It has sent them as
+ * `{ error: 'text', details }`, `{ error: { message } }` and
+ * `{ type: 'error', data: { message } }`.
+ */
+function portalErrorText(message: { error?: unknown; details?: unknown; data?: { message?: unknown } }): string {
+  const { error, details, data } = message;
+  const text =
+    typeof error === 'string'
+      ? error
+      : typeof (error as { message?: unknown })?.message === 'string'
+        ? (error as { message: string }).message
+        : typeof data?.message === 'string'
+          ? data.message
+          : '';
+  const extra = typeof details === 'string' && details && details !== text ? details : '';
+  if (text && extra) return `${text}: ${extra}`;
+  return text || extra || 'The LazorKit portal reported an error without a message';
+}

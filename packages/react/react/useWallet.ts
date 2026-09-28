@@ -8,6 +8,7 @@ import { PublicKey, TransactionInstruction, AddressLookupTableAccount } from '@s
 import { useWalletStore } from './store';
 import { WalletInfo } from '../core/storage';
 import type { SpendingLimits } from '../core/types';
+import type { OnConfirmWallet } from '../core/wallet/confirmation';
 
 export interface WalletHookInterface {
   // State
@@ -29,7 +30,13 @@ export interface WalletHookInterface {
   protocolVersion: 1 | 2 | null;
 
   // Actions
-  connect: (options?: { feeMode?: 'paymaster' | 'user'; confirmWallet?: string }) => Promise<WalletInfo>;
+  /**
+   * Connect the stored wallet, or find the passkey's own. `confirmWallet`: the
+   * vault (or wallet) address the user recognised after a
+   * `WalletNeedsConfirmationError`. `onConfirmWallet` overrides the
+   * provider's for this call.
+   */
+  connect: (options?: ConnectHookOptions) => Promise<WalletInfo>;
   disconnect: () => Promise<void>;
   signAndSendTransaction: (payload: SendTxPayload) => Promise<string>;
   signMessage: (message: string) => Promise<{ signature: string, signedPayload: string }>;
@@ -67,6 +74,12 @@ export interface WalletHookInterface {
   authorizeDeferred: (payload: SendTxPayload) => Promise<{ signature: string; deferredPayload: string }>;
   /** TX2 only — submit từ serialized deferredPayload. Không cần passkey. */
   executeDeferred: (payload: ExecuteDeferredHookPayload) => Promise<string>;
+}
+
+export interface ConnectHookOptions {
+  feeMode?: 'paymaster' | 'user';
+  confirmWallet?: string;
+  onConfirmWallet?: OnConfirmWallet;
 }
 
 /** Shared payload for every send-tx action on the hook. */
@@ -116,7 +129,7 @@ export const useWallet = (): WalletHookInterface => {
   } = useWalletStore();
 
   const handleConnect = useCallback(
-    (options?: { feeMode?: 'paymaster' | 'user'; confirmWallet?: string }) => connect(options),
+    (options?: ConnectHookOptions) => connect(options),
     [connect]
   );
 

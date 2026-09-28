@@ -15,17 +15,19 @@ import {
 } from '@solana/web3.js';
 import { sha256 } from 'js-sha256';
 
-import { handleAuthRedirect } from './core/auth/handleRedirect';
+import { handleAuthRedirect, readConnectAssertion } from './core/auth/handleRedirect';
 import { openBrowser } from './core/browser/open';
 import {
   buildPreviewTransactionBase64,
   createWalletActions,
   decodeWebAuthnResponse,
+  newOwnershipChallenge,
   paymasterFor,
   sendInstructionsViaPaymaster,
   signChallengeViaPortal,
   toBase64Url,
 } from './core/wallet/actions';
+import { forgetCandidates, hasChooserHost } from './core/wallet/confirmation';
 import { logger } from './core/logger';
 import { API_ENDPOINTS } from './config';
 import {
@@ -49,6 +51,7 @@ import {
   AuthorizeExecutePayload,
   AuthorizePayload,
   AuthorizeResult,
+  ConfirmWalletRequest,
   ConnectOptions,
   CreateSessionPayload,
   ExecuteDeferredPayload,
@@ -69,14 +72,25 @@ import { getFeePayer } from './core/paymaster';
 
 // ─── Internal helpers ──────────────────────────────────────────────
 
-/** Guards isSigning + resets state around an async op. */
+/**
+ * Guards isSigning + resets state around an async op. A second request while
+ * one is running rejects: resolving it with nothing left callers (and the
+ * hook's promises, which wait for onSuccess or onFail) waiting forever.
+ */
 async function withSigningState<T>(
   get: () => WalletStateClient,
   set: (state: Partial<WalletStateClient>) => void,
+  callbacks: { readonly onFail?: (error: Error) => void } | undefined,
   fn: () => Promise<T>,
-): Promise<T | undefined> {
+): Promise<T> {
   const { isSigning } = get();
-  if (isSigning) return undefined;
+  if (isSigning) {
+    // Refused before `fn`, which is what reports to onFail otherwise; a
+    // caller waiting on callbacks alone would never hear back.
+    const error = new SigningError('Another passkey request is still in progress');
+    callbacks?.onFail?.(error);
+    throw error;
+  }
   set({ isSigning: true, error: null });
   try {
     return await fn();
@@ -179,7 +193,29 @@ export const connectAction = async (
 
   try {
     const { redirectUrl } = options;
-    const connectUrl = `${config.portalUrl}/${API_ENDPOINTS.CONNECT}&redirect_url=${encodeURIComponent(redirectUrl)}`;
+    const { saveWallet, adoptRemembered } = createWalletActions(
+      get().connection,
+      (isLoading) => set({ isLoading }),
+      config,
+    );
+
+    // The user's pick after WalletNeedsConfirmationError: no second trip
+    // through the portal while the candidates are fresh.
+    const remembered = options.confirmWallet !== undefined && adoptRemembered(options.confirmWallet);
+    if (remembered) {
+      set({ wallet: remembered });
+      return remembered;
+    }
+    // Anything still remembered came from an earlier portal session, maybe
+    // another passkey's; this connect opens a new one.
+    forgetCandidates();
+
+    // A portal that signs it answers with an ownership proof, which saves the
+    // passkey a second prompt; one that does not ignores the parameter.
+    const challenge = newOwnershipChallenge();
+    const connectUrl =
+      `${config.portalUrl}/${API_ENDPOINTS.CONNECT}&redirect_url=${encodeURIComponent(redirectUrl)}` +
+      `&challenge=${encodeURIComponent(toBase64Url(challenge))}`;
 
     const resultUrl = await openBrowser(connectUrl, redirectUrl);
     const walletInfo = handleAuthRedirect(resultUrl);
@@ -188,13 +224,14 @@ export const connectAction = async (
       throw new WalletConnectionError('Invalid wallet info from redirect');
     }
 
-    const { saveWallet } = createWalletActions(
-      get().connection,
-      (isLoading) => set({ isLoading }),
-      config,
-    );
-
-    const savedWallet = await saveWallet(walletInfo, redirectUrl, options.confirmWallet);
+    const savedWallet = await saveWallet(walletInfo, {
+      redirectUrl,
+      proof: readConnectAssertion(resultUrl, challenge),
+      confirmWallet: options.confirmWallet,
+      onConfirmWallet: options.onConfirmWallet,
+      openChooser: (request) => openWalletChooser(get, set, request),
+    });
+    forgetCandidates();
     set({ wallet: savedWallet });
     return savedWallet;
   } catch (error: unknown) {
@@ -207,11 +244,45 @@ export const connectAction = async (
   }
 };
 
+/**
+ * Shows the built-in chooser (drawn by `LazorKitProvider`) and waits for the
+ * user's answer: a candidate's `wallet`, or `null` for none of these.
+ */
+function openWalletChooser(
+  get: () => WalletStateClient,
+  set: (state: Partial<WalletStateClient>) => void,
+  request: ConfirmWalletRequest,
+): Promise<{ wallet: string } | null> {
+  if (!hasChooserHost()) {
+    // Nothing would ever draw it, and connect would wait forever.
+    return Promise.reject(
+      new Error(
+        'The built-in wallet chooser is drawn by LazorKitProvider, which is not mounted. Mount it, ' +
+          "or pass onConfirmWallet (your own chooser, or 'throw').",
+      ),
+    );
+  }
+  return new Promise((resolve) => {
+    const pending = {
+      request,
+      resolve: (choice: { wallet: string } | null) => {
+        if (get().pendingWalletConfirmation === pending) set({ pendingWalletConfirmation: null });
+        resolve(choice);
+      },
+    };
+    set({ pendingWalletConfirmation: pending });
+  });
+}
+
 export const disconnectAction = async (
+  get: () => WalletStateClient,
   set: (state: Partial<WalletStateClient>) => void,
 ) => {
   set({ isLoading: true });
   try {
+    forgetCandidates();
+    // A chooser still open belongs to a connect that is now moot.
+    get().pendingWalletConfirmation?.resolve(null);
     set({ wallet: null });
   } catch (error: unknown) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -235,7 +306,7 @@ export const signAndExecuteTransaction = async (
   payload: SignAndSendTransactionPayload,
   options: SignOptions,
 ) => {
-  await withSigningState(get, set, async () => {
+  await withSigningState(get, set, options, async () => {
     try {
       const signature = await performPasskeyExecute(get, payload, options);
       options?.onSuccess?.(signature);
@@ -317,7 +388,7 @@ export const signMessageAction = async (
   message: string,
   options: SignOptions,
 ) => {
-  await withSigningState(get, set, async () => {
+  await withSigningState(get, set, options, async () => {
     try {
       const { wallet, config } = requireWalletAndConnection(get);
       const { redirectUrl } = options;
@@ -352,8 +423,8 @@ export const createSessionAction = async (
   set: (state: Partial<WalletStateClient>) => void,
   params: CreateSessionPayload,
   options: SignOptions,
-): Promise<{ signature: string; sessionPda: PublicKey } | undefined> => {
-  return withSigningState(get, set, async () => {
+): Promise<{ signature: string; sessionPda: PublicKey }> => {
+  return withSigningState(get, set, options, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
       const { client, version } = await buildClient(get);
@@ -414,8 +485,8 @@ export const revokeSessionAction = async (
   set: (state: Partial<WalletStateClient>) => void,
   params: RevokeSessionPayload,
   options: SignOptions,
-): Promise<string | undefined> => {
-  return withSigningState(get, set, async () => {
+): Promise<string> => {
+  return withSigningState(get, set, options, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
       const { client, version } = await buildClient(get);
@@ -466,8 +537,8 @@ export const signAndSendWithSessionAction = async (
   set: (state: Partial<WalletStateClient>) => void,
   payload: SessionSignPayload,
   options: { onSuccess?: (sig: string) => void; onFail?: (err: Error) => void },
-): Promise<string | undefined> => {
-  return withSigningState(get, set, async () => {
+): Promise<string> => {
+  return withSigningState(get, set, options, async () => {
     // The protocol this flow runs on, from its own account — for error reporting.
     let flowVersion: ProtocolVersion | undefined;
     try {
@@ -533,8 +604,8 @@ export const addAuthorityEd25519Action = async (
   set: (state: Partial<WalletStateClient>) => void,
   params: AddAuthorityPayload,
   options: SignOptions,
-): Promise<{ signature: string; newAuthorityPda: PublicKey } | undefined> => {
-  return withSigningState(get, set, async () => {
+): Promise<{ signature: string; newAuthorityPda: PublicKey }> => {
+  return withSigningState(get, set, options, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
       const { client, version } = await buildClient(get);
@@ -603,8 +674,8 @@ export const removeAuthorityAction = async (
   set: (state: Partial<WalletStateClient>) => void,
   params: RemoveAuthorityPayload,
   options: SignOptions,
-): Promise<string | undefined> => {
-  return withSigningState(get, set, async () => {
+): Promise<string> => {
+  return withSigningState(get, set, options, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
       const { client, version } = await buildClient(get);
@@ -658,8 +729,8 @@ export const authorizeAndExecuteAction = async (
   set: (state: Partial<WalletStateClient>) => void,
   payload: AuthorizeExecutePayload,
   options: SignOptions,
-): Promise<string | undefined> => {
-  return withSigningState(get, set, async () => {
+): Promise<string> => {
+  return withSigningState(get, set, options, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
       const { client, version } = await buildClient(get);
@@ -753,8 +824,8 @@ export const authorizeDeferredAction = async (
   set: (state: Partial<WalletStateClient>) => void,
   payload: AuthorizePayload,
   options: SignOptions,
-): Promise<AuthorizeResult | undefined> => {
-  return withSigningState(get, set, async () => {
+): Promise<AuthorizeResult> => {
+  return withSigningState(get, set, options, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
       const { client, version } = await buildClient(get);
@@ -824,8 +895,8 @@ export const executeDeferredAction = async (
   set: (state: Partial<WalletStateClient>) => void,
   payload: ExecuteDeferredPayload,
   options?: TxCallbacks,
-): Promise<string | undefined> => {
-  return withSigningState(get, set, async () => {
+): Promise<string> => {
+  return withSigningState(get, set, options, async () => {
     // The protocol this flow runs on, from its own account — for error reporting.
     let flowVersion: ProtocolVersion | undefined;
     try {
@@ -883,8 +954,8 @@ export const reclaimDeferredAction = async (
   set: (state: Partial<WalletStateClient>) => void,
   payload: ReclaimDeferredPayload,
   options?: TxCallbacks,
-): Promise<string | undefined> => {
-  return withSigningState(get, set, async () => {
+): Promise<string> => {
+  return withSigningState(get, set, options, async () => {
     // The protocol this flow runs on, from its own account — for error reporting.
     let flowVersion: ProtocolVersion | undefined;
     try {
