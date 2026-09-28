@@ -6,7 +6,7 @@ import { registerCluster, versionOf } from '../program';
 import { Connection, PublicKey } from '@solana/web3.js';
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useWalletStore } from './store';
-import { WalletChooser } from './WalletChooser';
+import { BuiltinWalletChooser } from './WalletChooser';
 import { logger } from '../core/logger';
 import { ConfirmWalletHandler, ConfirmWalletRequest, LazorKitProviderProps } from '../types';
 import 'react-native-get-random-values';
@@ -152,7 +152,7 @@ export const LazorKitProvider = ({
     return (
       <>
         {typeof children === 'string' ? <span>{children}</span> : children}
-        <WalletChooser />
+        <BuiltinWalletChooser />
       </>
     );
   } catch (error) {

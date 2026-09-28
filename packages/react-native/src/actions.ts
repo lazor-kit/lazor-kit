@@ -27,7 +27,7 @@ import {
   signChallengeViaPortal,
   toBase64Url,
 } from './core/wallet/actions';
-import { forgetCandidates, hasChooserHost } from './core/wallet/confirmation';
+import { connectAbandoned, forgetCandidates, hasChooserHost } from './core/wallet/confirmation';
 import { logger } from './core/logger';
 import { API_ENDPOINTS } from './config';
 import {
@@ -56,6 +56,7 @@ import {
   CreateSessionPayload,
   ExecuteDeferredPayload,
   ListAuthoritiesResult,
+  PendingWalletConfirmation,
   ReclaimDeferredPayload,
   RemoveAuthorityPayload,
   RevokeSessionPayload,
@@ -66,6 +67,7 @@ import {
   TransferSolPayload,
   TxCallbacks,
   WalletConnectionError,
+  WalletInfo,
   WalletStateClient,
 } from './types';
 import { getFeePayer } from './core/paymaster';
@@ -175,8 +177,17 @@ function buildSecp256r1Params(wallet: {
 // ─── Connect / Disconnect ──────────────────────────────────────────
 
 /**
- * Opens the portal, authenticates a passkey, and persists the resulting
- * LazorKit smart wallet (creating it on-chain if needed).
+ * The store's connect in flight, if any. `disconnect` aborts it: its chooser
+ * closes and it saves, remembers and returns nothing — so no wallet arrives
+ * after the user disconnected, or beside a connect started after that. (The
+ * store is one per app, as is this.)
+ */
+let connectInFlight: AbortController | null = null;
+
+/**
+ * Returns the connected wallet when there is one; otherwise opens the portal,
+ * proves which wallet is the passkey's (asking the user when the SDK cannot
+ * tell) and persists it — creating one on-chain when it has none.
  */
 export const connectAction = async (
   get: () => WalletStateClient,
@@ -189,18 +200,46 @@ export const connectAction = async (
     throw new WalletConnectionError('Already connecting');
   }
 
+  const attempt = new AbortController();
+  connectInFlight = attempt;
   set({ isConnecting: true, error: null });
 
   try {
     const { redirectUrl } = options;
+
+    let stored = get().wallet;
+    // A stored v1 wallet may have been migrated since — on the LazorKit
+    // migration page, say. Then it is closed and its address is dead; forget
+    // it and connect afresh, which finds the v2 wallet.
+    if (stored && versionOf(stored) === 1 && !(await get().connection.getAccountInfo(new PublicKey(stored.walletPda)))) {
+      if (attempt.signal.aborted) throw connectAbandoned();
+      set({ wallet: null });
+      stored = null;
+    }
+    if (stored) {
+      // A connected wallet is never swapped silently for another.
+      if (options.confirmWallet !== undefined && !namesWallet(stored, options.confirmWallet)) {
+        throw new Error(
+          `confirmWallet ${options.confirmWallet} is not the connected wallet (${stored.smartWallet}). ` +
+            'Disconnect first to connect another.',
+        );
+      }
+      if (attempt.signal.aborted) throw connectAbandoned();
+      return stored;
+    }
+
     const { saveWallet, adoptRemembered } = createWalletActions(
       get().connection,
-      (isLoading) => set({ isLoading }),
+      // An abandoned connect no longer owns the store's loading state.
+      (isLoading) => {
+        if (!attempt.signal.aborted) set({ isLoading });
+      },
       config,
     );
 
     // The user's pick after WalletNeedsConfirmationError: no second trip
-    // through the portal while the candidates are fresh.
+    // through the portal while the candidates are fresh. One that names none
+    // of them throws here, and they stay remembered.
     const remembered = options.confirmWallet !== undefined && adoptRemembered(options.confirmWallet);
     if (remembered) {
       set({ wallet: remembered });
@@ -218,6 +257,7 @@ export const connectAction = async (
       `&challenge=${encodeURIComponent(toBase64Url(challenge))}`;
 
     const resultUrl = await openBrowser(connectUrl, redirectUrl);
+    if (attempt.signal.aborted) throw connectAbandoned();
     const walletInfo = handleAuthRedirect(resultUrl);
     if (!walletInfo) {
       logger.error('Invalid wallet info from redirect', { resultUrl });
@@ -230,23 +270,44 @@ export const connectAction = async (
       confirmWallet: options.confirmWallet,
       onConfirmWallet: options.onConfirmWallet,
       openChooser: (request) => openWalletChooser(get, set, request),
+      signal: attempt.signal,
     });
+    // Disconnected since: a wallet created meanwhile is simply not connected
+    // (the next connect offers it, "Not used with this passkey yet").
+    if (attempt.signal.aborted) throw connectAbandoned();
     forgetCandidates();
     set({ wallet: savedWallet });
     return savedWallet;
   } catch (error: unknown) {
+    if (attempt.signal.aborted) {
+      // Abandoned by disconnect, which already reset the store: leave its
+      // `error` alone, but still fail this call — with whatever the closed
+      // chooser made of it (a decline) reported as the abandon.
+      throw connectAbandoned();
+    }
     const err = error instanceof Error ? error : new WalletConnectionError(String(error));
     logger.error('Connect action failed:', err, { redirectUrl: options.redirectUrl });
     set({ error: err });
     throw err;
   } finally {
-    set({ isConnecting: false });
+    // An abandoned connect no longer owns `isConnecting`: disconnect reset
+    // it, and a connect started since may have set it again.
+    if (connectInFlight === attempt) {
+      connectInFlight = null;
+      set({ isConnecting: false });
+    }
   }
 };
 
+/** `address` is this stored wallet's vault or wallet PDA. */
+function namesWallet(wallet: WalletInfo, address: string): boolean {
+  return address === wallet.smartWallet || address === wallet.walletPda;
+}
+
 /**
- * Shows the built-in chooser (drawn by `LazorKitProvider`) and waits for the
- * user's answer: a candidate's `wallet`, or `null` for none of these.
+ * Shows the built-in chooser (drawn by `LazorKitProvider`, or an app's
+ * `<WalletChooser />`) and waits for the user's answer: a candidate's
+ * `wallet`, or `null` for none of these.
  */
 function openWalletChooser(
   get: () => WalletStateClient,
@@ -262,12 +323,19 @@ function openWalletChooser(
       ),
     );
   }
-  return new Promise((resolve) => {
-    const pending = {
+  return new Promise((resolve, reject) => {
+    const close = () => {
+      if (get().pendingWalletConfirmation === pending) set({ pendingWalletConfirmation: null });
+    };
+    const pending: PendingWalletConfirmation = {
       request,
-      resolve: (choice: { wallet: string } | null) => {
-        if (get().pendingWalletConfirmation === pending) set({ pendingWalletConfirmation: null });
+      resolve: (choice) => {
+        close();
         resolve(choice);
+      },
+      reject: (error) => {
+        close();
+        reject(error);
       },
     };
     set({ pendingWalletConfirmation: pending });
@@ -280,10 +348,14 @@ export const disconnectAction = async (
 ) => {
   set({ isLoading: true });
   try {
+    // A connect still running is abandoned (see connectInFlight), so
+    // resetting `isConnecting` below cannot let two run side by side.
+    connectInFlight?.abort();
+    connectInFlight = null;
     forgetCandidates();
-    // A chooser still open belongs to a connect that is now moot.
+    // A chooser still open belongs to the connect just abandoned.
     get().pendingWalletConfirmation?.resolve(null);
-    set({ wallet: null });
+    set({ wallet: null, isConnecting: false, pendingWalletConfirmation: null });
   } catch (error: unknown) {
     const err = error instanceof Error ? error : new Error(String(error));
     logger.error('Disconnect action failed:', err);

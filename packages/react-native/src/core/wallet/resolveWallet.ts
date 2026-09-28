@@ -30,6 +30,7 @@ import {
   WalletNeedsConfirmationError,
 } from '../../types';
 import { toWalletChoice } from './walletChoice';
+import { connectAbandoned, notOffered } from './confirmation';
 
 export interface ResolveWalletParams {
   /** The v2 client for the cluster; it also scans the v1 deployment paired with it. */
@@ -59,6 +60,11 @@ export interface ResolveWalletParams {
    * (`false`). That wait has no time limit.
    */
   onAsking?: (asking: boolean) => void;
+  /**
+   * Aborted by `disconnect`: then nothing is remembered or asked any more,
+   * and this rejects with `PortalCancelledError`.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -77,21 +83,18 @@ export async function resolveWallet(params: ResolveWalletParams): Promise<Wallet
   // The hash is public; a candidate counts only if the passkey just signed
   // our challenge with the key stored on it.
   const proven = candidates.length ? verifyOwnershipProof(candidates, await params.prove(candidates), rpId) : [];
-  const facts = proven.length
-    ? await client.describeWalletCandidates(proven, {
-        trustedKeys: [...(params.trustedAuthorities ?? [])],
-        watchMints: [...(params.watchMints ?? [])],
-      })
-    : [];
+  // Always called, with no candidates too: it also rejects a malformed
+  // trustedAuthorities / watchMints entry, so a bad config fails every fresh
+  // connect instead of only a returning user's. A failed read throws — a
+  // connect error, never "no wallet".
+  const facts = await client.describeWalletCandidates(proven, {
+    trustedKeys: [...(params.trustedAuthorities ?? [])],
+    watchMints: [...(params.watchMints ?? [])],
+  });
 
   if (confirmWallet !== undefined) {
     const chosen = selectWalletByAddress(facts, confirmWallet);
-    if (!chosen) {
-      throw new Error(
-        `confirmWallet ${confirmWallet} is not a wallet this passkey was just proven to hold a key ` +
-          'of, so it was not connected. Pass the vault or wallet address of one of the candidates.',
-      );
-    }
+    if (!chosen) throw notOffered(confirmWallet, facts);
     return chosen;
   }
 
@@ -101,6 +104,9 @@ export async function resolveWallet(params: ResolveWalletParams): Promise<Wallet
   const { adopt, needsConfirmation } = pickOwnWallet(facts);
   if (adopt) return adopt;
 
+  // Disconnected while the chain was read: no candidates that outlive the
+  // disconnect, no chooser for a connect nobody waits for.
+  if (params.signal?.aborted) throw connectAbandoned();
   const request: ConfirmWalletRequest = {
     credentialId,
     candidates: needsConfirmation.map((f) => toWalletChoice(f)),
@@ -126,14 +132,13 @@ export async function resolveWallet(params: ResolveWalletParams): Promise<Wallet
   } finally {
     params.onAsking?.(false);
   }
+  // `disconnect` closes the chooser with no answer; that is not the user declining.
+  if (params.signal?.aborted) throw connectAbandoned();
   if (!answer) throw new WalletConfirmationDeclinedError();
-  const chosen =
-    typeof answer.wallet === 'string' ? selectWalletByAddress(needsConfirmation, answer.wallet) : null;
-  if (!chosen) {
-    throw new Error(
-      `The wallet chooser answered ${String(answer.wallet)}, which is not one of the candidates ` +
-        'it was offered; nothing was connected.',
-    );
+  if (typeof answer.wallet !== 'string') {
+    throw new Error('onConfirmWallet must resolve with { wallet: <vault or wallet address> } or null.');
   }
+  const chosen = selectWalletByAddress(needsConfirmation, answer.wallet);
+  if (!chosen) throw notOffered(answer.wallet, needsConfirmation);
   return chosen;
 }

@@ -10,6 +10,7 @@
 import 'react-native-get-random-values';
 
 export { LazorKitProvider } from './react/provider';
+export { WalletChooser } from './react/WalletChooser';
 export { useWallet, useWallet as useLazorWallet } from './react/hook';
 export { useWalletStore } from './react/store';
 export * from './types';

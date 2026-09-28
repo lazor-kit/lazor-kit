@@ -180,6 +180,8 @@ export interface PendingWalletConfirmation {
   readonly request: ConfirmWalletRequest;
   /** The user's answer: a candidate's `wallet`, or `null` for none of these. */
   readonly resolve: (choice: { wallet: string } | null) => void;
+  /** The chooser could not be shown: `connect` rejects with `error`. */
+  readonly reject: (error: Error) => void;
 }
 
 /**
@@ -568,6 +570,11 @@ export interface SaveWalletOptions {
   readonly onConfirmWallet?: OnConfirmWallet;
   /** Draws the built-in chooser. Without it, `'builtin'` throws. */
   readonly openChooser?: (request: ConfirmWalletRequest) => Promise<{ wallet: string } | null>;
+  /**
+   * Aborted by `disconnect`: from then on nothing is remembered, asked,
+   * created or returned, and the call rejects with `PortalCancelledError`.
+   */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -619,9 +626,28 @@ export class SigningError extends LazorKitError {
  * app — before it answered. Nothing was signed.
  */
 export class PortalCancelledError extends LazorKitError {
-  constructor() {
-    super('The LazorKit portal was closed before it answered; nothing was signed.', 'PORTAL_CANCELLED');
+  constructor(message = 'The LazorKit portal was closed before it answered; nothing was signed.') {
+    super(message, 'PORTAL_CANCELLED');
     this.name = 'PortalCancelledError';
+  }
+}
+
+/**
+ * The built-in wallet chooser was not on screen within a few seconds of
+ * `connect` asking for it (iOS). iOS shows one modal at a time from a given
+ * screen: while the app has a `<Modal>` or a modal screen open, the chooser
+ * that `LazorKitProvider` draws cannot appear over it. Close it before
+ * connecting, mount `<WalletChooser />` inside it, or pass `onConfirmWallet`.
+ */
+export class WalletChooserNotShownError extends LazorKitError {
+  constructor() {
+    super(
+      'The wallet chooser could not be shown, so no wallet was connected. On iOS it cannot appear ' +
+        'over another modal (a <Modal> or a modal screen) that is open: close that before connecting, ' +
+        'render <WalletChooser /> inside it, or pass onConfirmWallet.',
+      'WALLET_CHOOSER_NOT_SHOWN',
+    );
+    this.name = 'WalletChooserNotShownError';
   }
 }
 
