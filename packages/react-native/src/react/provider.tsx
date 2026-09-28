@@ -4,10 +4,11 @@
 
 import { registerCluster, versionOf } from '../program';
 import { Connection, PublicKey } from '@solana/web3.js';
-import React, { useEffect, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useWalletStore } from './store';
+import { WalletChooser } from './WalletChooser';
 import { logger } from '../core/logger';
-import { LazorKitProviderProps } from '../types';
+import { ConfirmWalletHandler, ConfirmWalletRequest, LazorKitProviderProps } from '../types';
 import 'react-native-get-random-values';
 import { Buffer } from 'buffer';
 import { DEFAULTS } from '../config';
@@ -37,6 +38,9 @@ export const LazorKitProvider = ({
   v1ConfigPaymaster,
   cluster,
   rpId = DEFAULTS.RP_ID,
+  onConfirmWallet = 'builtin',
+  trustedAuthorities,
+  watchMints,
   isDebug = false,
   children,
 }: LazorKitProviderProps): React.JSX.Element => {
@@ -56,6 +60,19 @@ export const LazorKitProvider = ({
   // still reaches the store (an object literal prop would not be compared).
   const v1PaymasterUrl = v1ConfigPaymaster?.paymasterUrl;
   const v1PaymasterApiKey = v1ConfigPaymaster?.apiKey;
+  // The same for the key lists, which apps tend to pass as inline arrays: a
+  // new array each render must not reset the config each render.
+  const trustedKeysKey = (trustedAuthorities ?? []).join(',');
+  const watchMintsKey = (watchMints ?? []).join(',');
+  // And for a handler passed inline: the config holds one stable function
+  // that calls whichever handler the app passed last.
+  const handlerRef = useRef<ConfirmWalletHandler | null>(null);
+  if (typeof onConfirmWallet === 'function') handlerRef.current = onConfirmWallet;
+  const confirmMode = typeof onConfirmWallet === 'function' ? 'handler' : onConfirmWallet;
+  const callHandler = useCallback(
+    (request: ConfirmWalletRequest) => (handlerRef.current as ConfirmWalletHandler)(request),
+    [],
+  );
 
   const connection = useMemo(() => {
     registerCluster(effectiveRpcUrl, cluster);
@@ -82,6 +99,9 @@ export const LazorKitProvider = ({
         rpcUrl: effectiveRpcUrl,
         cluster,
         rpId: effectiveRpId,
+        onConfirmWallet: confirmMode === 'handler' ? callHandler : confirmMode,
+        trustedAuthorities: trustedKeysKey ? trustedKeysKey.split(',') : [],
+        watchMints: watchMintsKey ? watchMintsKey.split(',') : [],
       });
     } catch (error) {
       logger.error('Failed to initialize wallet store:', error, {
@@ -102,6 +122,10 @@ export const LazorKitProvider = ({
     cluster,
     effectiveRpcUrl,
     effectiveRpId,
+    confirmMode,
+    callHandler,
+    trustedKeysKey,
+    watchMintsKey,
     isDebug,
     setConnection,
     setConfig,
@@ -125,7 +149,12 @@ export const LazorKitProvider = ({
   }, [connection, wallet]);
 
   try {
-    return <>{typeof children === 'string' ? <span>{children}</span> : children}</>;
+    return (
+      <>
+        {typeof children === 'string' ? <span>{children}</span> : children}
+        <WalletChooser />
+      </>
+    );
   } catch (error) {
     logger.error('LazorKitProvider render error:', error);
     return <span>LazorKit Provider Error</span>;

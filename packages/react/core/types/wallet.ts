@@ -4,6 +4,7 @@ import {
     AddressLookupTableAccount,
 } from '@solana/web3.js';
 import { WalletInfo, WalletConfig } from '../storage';
+import type { OnConfirmWallet } from '../wallet/confirmation';
 
 export interface WalletState {
     // Data
@@ -122,11 +123,17 @@ export interface AddAuthorityPayload {
 
 export interface ConnectOptions {
     /**
-     * Adopt this wallet (its address) although other keys can also spend from
-     * it — after `connect` threw `WalletNeedsConfirmationError` and the user
-     * recognised it. See `WalletNeedsConfirmationError.candidates`.
+     * The wallet the user recognised — its vault address (or wallet PDA) —
+     * among those a connect offered for confirmation. Only used when no wallet
+     * is stored yet. Within 2 minutes of a connect that threw
+     * `WalletNeedsConfirmationError`, it is adopted without a second passkey
+     * prompt; otherwise the portal is opened and it must name a wallet the
+     * passkey is proven to hold. A `confirmWallet` that names none of them
+     * throws — it is never ignored.
      */
     readonly confirmWallet?: string;
+    /** Overrides the provider's `onConfirmWallet` for this call. */
+    readonly onConfirmWallet?: OnConfirmWallet;
     readonly onSuccess?: (wallet: WalletInfo) => void;
     readonly onFail?: (error: Error) => void;
 }

@@ -17,9 +17,25 @@ import {
 } from '@wallet-standard/wallet';
 import { PublicKey, VersionedTransaction } from '@solana/web3.js';
 import bs58 from 'bs58';
-import { LazorkitWalletAdapter, LazorkitWalletName, DEFAULT_CONFIG } from './adapter';
+import { LazorkitWalletAdapter, LazorkitWalletName, type LazorkitAdapterConfig } from './adapter';
+import type { ConfirmWalletHandler } from '../wallet/confirmation';
 
-export function registerLazorkitWallet(config?: Partial<typeof DEFAULT_CONFIG>) {
+/**
+ * The adapter's config, less `onConfirmWallet: 'throw'`: finishing that takes
+ * a second connect with `confirmWallet`, and `standard:connect` has no way to
+ * carry one — the dApp only ever sees the error.
+ */
+type LazorkitStandardConfig = Partial<Omit<LazorkitAdapterConfig, 'onConfirmWallet'>> & {
+    onConfirmWallet?: 'builtin' | ConfirmWalletHandler;
+};
+
+export function registerLazorkitWallet(config?: LazorkitStandardConfig) {
+    if ((config?.onConfirmWallet as unknown) === 'throw') {
+        throw new Error(
+            "registerLazorkitWallet: onConfirmWallet 'throw' cannot work through the Wallet Standard, " +
+                "which gives no way to connect again with confirmWallet. Use 'builtin' (the default) or a handler.",
+        );
+    }
     registerWallet(new LazorkitWalletStandard(config));
 }
 
@@ -32,7 +48,7 @@ class LazorkitWalletStandard implements Wallet {
     private _account: WalletAccount | null = null;
     private _listeners: Record<string, Function[]> = {};
 
-    constructor(config?: Partial<typeof DEFAULT_CONFIG>) {
+    constructor(config?: LazorkitStandardConfig) {
         this._adapter = new LazorkitWalletAdapter(config);
         this._adapter.on('connect', (publicKey: PublicKey) => {
             this._account = {

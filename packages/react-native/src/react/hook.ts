@@ -123,81 +123,63 @@ export function useWallet(): LazorWalletHook {
     payload: CreateSessionPayload,
     signOptions: SignOptions,
   ): Promise<{ signature: string; sessionPda: PublicKey }> => {
-    const result = await createSession(payload, signOptions);
-    if (!result) throw new Error('createSession returned no result');
-    return result;
+    return createSession(payload, signOptions);
   };
 
   const handleRevokeSession = async (
     payload: RevokeSessionPayload,
     signOptions: SignOptions,
   ): Promise<string> => {
-    const sig = await revokeSession(payload, signOptions);
-    if (!sig) throw new Error('revokeSession returned no signature');
-    return sig;
+    return revokeSession(payload, signOptions);
   };
 
   const handleSignAndSendWithSession = async (
     payload: SessionSignPayload,
     options?: { onSuccess?: (sig: string) => void; onFail?: (err: Error) => void },
   ): Promise<string> => {
-    const sig = await signAndSendWithSession(payload, options ?? {});
-    if (!sig) throw new Error('signAndSendWithSession returned no signature');
-    return sig;
+    return signAndSendWithSession(payload, options ?? {});
   };
 
   const handleAddAuthorityEd25519 = async (
     payload: AddAuthorityPayload,
     signOptions: SignOptions,
   ): Promise<{ signature: string; newAuthorityPda: PublicKey }> => {
-    const result = await addAuthorityEd25519(payload, signOptions);
-    if (!result) throw new Error('addAuthorityEd25519 returned no result');
-    return result;
+    return addAuthorityEd25519(payload, signOptions);
   };
 
   const handleRemoveAuthority = async (
     payload: RemoveAuthorityPayload,
     signOptions: SignOptions,
   ): Promise<string> => {
-    const sig = await removeAuthority(payload, signOptions);
-    if (!sig) throw new Error('removeAuthority returned no signature');
-    return sig;
+    return removeAuthority(payload, signOptions);
   };
 
   const handleAuthorizeAndExecute = async (
     payload: AuthorizeExecutePayload,
     signOptions: SignOptions,
   ): Promise<string> => {
-    const sig = await authorizeAndExecute(payload, signOptions);
-    if (!sig) throw new Error('authorizeAndExecute returned no signature');
-    return sig;
+    return authorizeAndExecute(payload, signOptions);
   };
 
   const handleAuthorizeDeferred = async (
     payload: AuthorizePayload,
     signOptions: SignOptions,
   ): Promise<AuthorizeResult> => {
-    const result = await authorizeDeferred(payload, signOptions);
-    if (!result) throw new Error('authorizeDeferred returned no result');
-    return result;
+    return authorizeDeferred(payload, signOptions);
   };
 
   const handleExecuteDeferred = async (
     payload: ExecuteDeferredPayload,
     options?: TxCallbacks,
   ): Promise<string> => {
-    const sig = await executeDeferred(payload, options);
-    if (!sig) throw new Error('executeDeferred returned no signature');
-    return sig;
+    return executeDeferred(payload, options);
   };
 
   const handleReclaimDeferred = async (
     payload: ReclaimDeferredPayload,
     options?: TxCallbacks,
   ): Promise<string> => {
-    const sig = await reclaimDeferred(payload, options);
-    if (!sig) throw new Error('reclaimDeferred returned no signature');
-    return sig;
+    return reclaimDeferred(payload, options);
   };
 
   const handleListAuthorities = async (): Promise<ListAuthoritiesResult> => {

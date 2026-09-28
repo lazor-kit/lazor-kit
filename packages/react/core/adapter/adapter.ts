@@ -2,6 +2,7 @@ import {
     BaseWalletAdapter,
     WalletName,
     WalletReadyState,
+    WalletConnectionError,
     WalletDisconnectedError,
     WalletSignTransactionError,
     WalletWindowClosedError,
@@ -19,7 +20,7 @@ import {
 } from '@solana/web3.js';
 import { sha256 } from 'js-sha256';
 
-import { DialogManager, DialogResult, SignResult } from '../portal';
+import { DialogManager, SignResult } from '../portal';
 import { StorageManager, WalletInfo } from '../storage';
 import { Paymaster } from '../paymaster/paymaster';
 import {
@@ -33,8 +34,9 @@ import {
     registerCluster,
     V1WalletMigratedError,
 } from '../program';
-import { getCredentialHash, getPasskeyPublicKey } from '../wallet/utils';
-import { chooseOwnWallet, findOwnedCandidates, provenCandidates, type OwnershipProof } from '../wallet/ownership';
+import { getCredentialHash } from '../wallet/utils';
+import { clearPendingConfirmation, connectAbandoned, connectFreshWallet } from '../wallet/resolveWallet';
+import type { OnConfirmWallet } from '../wallet/confirmation';
 import { Buffer } from 'buffer';
 import { DEFAULTS } from '../../config';
 
@@ -43,12 +45,6 @@ import { DEFAULTS } from '../../config';
 // ============================================================================
 
 export const LazorkitWalletName = 'Lazorkit Wallet' as WalletName<'Lazorkit Wallet'>;
-
-/**
- * WebAuthn RP ID (effective domain — hostname only, no protocol or port).
- * Derived from a portal URL so self-hosted portals work out of the box.
- */
-const getRpId = (portalUrl: string): string => new URL(portalUrl).hostname;
 
 export interface LazorkitAdapterConfig {
     rpcUrl: string;
@@ -69,6 +65,18 @@ export interface LazorkitAdapterConfig {
     clusterSimulation?: 'devnet' | 'mainnet';
     /** Which cluster `rpcUrl` serves, if its URL does not say. Otherwise read from the URL, else mainnet. */
     cluster?: 'mainnet' | 'devnet';
+    /**
+     * How `connect` asks the user to confirm a wallet it will not adopt on its
+     * own — see `OnConfirmWallet`. Default `'builtin'`: the SDK's chooser.
+     */
+    onConfirmWallet?: OnConfirmWallet;
+    /**
+     * Your own Ed25519 keys (base58): an authority, session or token approval
+     * held by one of them does not stop a wallet from being adopted.
+     */
+    trustedAuthorities?: string[];
+    /** SPL Token mints your app receives (base58), checked on top of wSOL, USDC, USDT and devnet USDC. */
+    watchMints?: string[];
 }
 
 export const DEFAULT_CONFIG: LazorkitAdapterConfig = {
@@ -81,6 +89,19 @@ export const DEFAULT_CONFIG: LazorkitAdapterConfig = {
 
 export interface LazorkitSendTransactionOptions extends SendTransactionOptions {
     extraInstructions?: TransactionInstruction[];
+}
+
+/**
+ * A connected wallet is never swapped silently for another: `confirmWallet`,
+ * when given, must name this one (its vault or wallet PDA).
+ */
+function assertConnectedWallet(wallet: WalletInfo, confirmWallet: string | undefined): void {
+    if (confirmWallet && confirmWallet !== wallet.vaultPda && confirmWallet !== wallet.smartWallet) {
+        throw new Error(
+            `confirmWallet ${confirmWallet} is not the connected wallet ` +
+                `(${wallet.vaultPda ?? wallet.smartWallet}). Disconnect first to connect another.`,
+        );
+    }
 }
 
 function randomBytes(size: number): Uint8Array {
@@ -112,12 +133,15 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
             ? WalletReadyState.Unsupported
             : WalletReadyState.Installed;
     private _connecting: boolean = false;
+    /** The connect in flight: later calls wait for it, `disconnect` aborts it. */
+    private _connectAttempt: { done: Promise<void>; abort: AbortController } | null = null;
     private _wallet: WalletInfo | null = null;
     private _config: LazorkitAdapterConfig = DEFAULT_CONFIG;
     /**
-     * Set to a wallet address to adopt it on the next connect although other
-     * keys can also spend from it — after connect threw
-     * `WalletNeedsConfirmationError` and the user recognised the wallet.
+     * The wallet (vault or wallet address) the next connect should adopt —
+     * after connect threw `WalletNeedsConfirmationError` and the user
+     * recognised it. Same as `connect({ confirmWallet })`; cleared once a
+     * wallet is connected, and on disconnect.
      */
     confirmWallet?: string;
 
@@ -141,18 +165,60 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         return this._readyState;
     }
 
-    async connect(): Promise<void> {
+    /**
+     * Connect the stored wallet, or find the passkey's own (see
+     * core/wallet/resolveWallet). `options` override the adapter config for
+     * this call; wallet-adapter UIs call it without any.
+     *
+     * One connect at a time: a call made while one runs (Connect clicked
+     * again, a dApp repeating `standard:connect`) waits for it and shares its
+     * outcome, instead of opening a second portal whose wallet would replace
+     * the first's.
+     */
+    async connect(options?: { confirmWallet?: string; onConfirmWallet?: OnConfirmWallet }): Promise<void> {
+        const running = this._connectAttempt;
+        if (running) {
+            if (options?.confirmWallet || options?.onConfirmWallet) {
+                // Its outcome is not this call's to choose, and these are never ignored.
+                const error = new WalletConnectionError('A connect is already in progress; wait for it before connecting with other options.');
+                this.emit('error', error);
+                throw error;
+            }
+            return running.done;
+        }
+        const attempt = { abort: new AbortController(), done: Promise.resolve() };
+        this._connectAttempt = attempt;
+        this._connecting = true;
+        // Started a microtask later, so `done` is in place before anything the
+        // connect emits can reach a listener that calls connect again.
+        attempt.done = Promise.resolve().then(() => this._connect(options, attempt.abort.signal)).finally(() => {
+            // An aborted attempt no longer owns the state: disconnect reset it.
+            if (this._connectAttempt === attempt) {
+                this._connectAttempt = null;
+                this._connecting = false;
+            }
+        });
+        return attempt.done;
+    }
+
+    private async _connect(
+        options: { confirmWallet?: string; onConfirmWallet?: OnConfirmWallet } | undefined,
+        signal: AbortSignal,
+    ): Promise<void> {
         try {
-            if (this.connected || this.connecting) return;
+            const confirmWallet = options?.confirmWallet ?? this.confirmWallet;
+            if (this._wallet) {
+                assertConnectedWallet(this._wallet, confirmWallet);
+                return;
+            }
             if (this._readyState !== WalletReadyState.Installed) throw new WalletWindowClosedError();
 
-            this._connecting = true;
             this.emit('readyStateChange', this._readyState);
 
+            const connection = new Connection(this._config.rpcUrl);
             let existingWallet = await StorageManager.getWallet();
             if (existingWallet) {
                 const version = versionOf(existingWallet);
-                const connection = new Connection(this._config.rpcUrl);
                 // A stored v1 wallet may have been migrated since: then it is
                 // closed and its address dead — forget it and connect afresh.
                 if (version === 1 && !(await connection.getAccountInfo(new PublicKey(existingWallet.smartWallet)))) {
@@ -165,28 +231,52 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
                 }
             }
             if (existingWallet) {
+                assertConnectedWallet(existingWallet, confirmWallet);
+                if (signal.aborted) throw connectAbandoned();
+                this.confirmWallet = undefined;
                 this._updateWalletState(existingWallet);
                 return;
             }
 
-            const dialogManager = this._createDialogManager();
+            const walletInfo = await connectFreshWallet({
+                connection,
+                portalUrl: this._config.portalUrl,
+                trustedAuthorities: this._config.trustedAuthorities,
+                watchMints: this._config.watchMints,
+                onConfirmWallet: options?.onConfirmWallet ?? this._config.onConfirmWallet,
+                confirmWallet,
+                openPortal: () => this._createDialogManager(),
+                createWallet: async (owner) => {
+                    const { paymaster, client } = this._initializeClients(2);
+                    const feePayer = await paymaster.getPayer();
+                    const { instructions, walletPda } = await client.createWallet({
+                        payer: feePayer,
+                        userSeed: randomBytes(32),
+                        owner: { type: 'secp256r1', ...owner },
+                    });
+                    const tx = new Transaction();
+                    tx.add(...instructions);
+                    // Serializing for the paymaster needs both; without them
+                    // creation threw before anything was sent.
+                    tx.feePayer = feePayer;
+                    tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+                    await paymaster.signAndSend(tx);
+                    return walletPda;
+                },
+                signal,
+            });
 
-            try {
-                const dialogResult: DialogResult = await dialogManager.openConnect();
-                const walletInfo = await this._ensureWalletOnChain(dialogResult, dialogManager);
-
-                await StorageManager.saveWallet(walletInfo);
-                this._updateWalletState(walletInfo);
-
-            } finally {
-                dialogManager.destroy();
-            }
+            if (signal.aborted) throw connectAbandoned();
+            await StorageManager.saveWallet(walletInfo);
+            this.confirmWallet = undefined;
+            this._updateWalletState(walletInfo);
 
         } catch (error: any) {
+            // Abandoned by disconnect: fail the call, but raise no 'error'
+            // for a connect the dApp itself walked away from.
+            if (signal.aborted) throw connectAbandoned();
             this.emit('error', error);
             throw error;
-        } finally {
-            this._connecting = false;
         }
     }
 
@@ -221,104 +311,15 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         return { connection, paymaster, client };
     }
 
-    private async _ensureWalletOnChain(
-        dialogResult: DialogResult,
-        dialogManager: DialogManager,
-    ): Promise<WalletInfo> {
-        const credentialHash = getCredentialHash(dialogResult.credentialId);
-        const rpId = getRpId(this._config.portalUrl);
-        const probe = new Connection(this._config.rpcUrl);
-
-        // The passkey's own wallet, proven rather than guessed from the public
-        // credential hash (see ../wallet/ownership). A v1 wallet made before
-        // LazorKit v2 keeps being used; only a passkey that owns neither gets a
-        // new, v2, wallet.
-        const reportedPubkey = dialogResult.publicKey ? getPasskeyPublicKey(dialogResult.publicKey) : undefined;
-        let proof: OwnershipProof | undefined;
-        const prove = async (): Promise<OwnershipProof> => {
-            if (proof) return proof;
-            proof = await proveOnce();
-            return proof;
-        };
-        const own = await chooseOwnWallet({
-            connection: probe,
-            confirmWallet: this.confirmWallet,
-            candidates: await findOwnedCandidates(probe, credentialHash, rpId),
-            reportedPubkey,
-            rpId,
-            prove,
-        });
-        async function proveOnce(): Promise<OwnershipProof> {
-            {
-                const challenge = randomBytes(32);
-                const r = await dialogManager.openSign(toBase64Url(challenge), '', dialogResult.credentialId);
-                const clientDataJson = new Uint8Array(Buffer.from(r.clientDataJsonBase64, 'base64'));
-                return {
-                    challenge,
-                    signature: new Uint8Array(Buffer.from(r.signature, 'base64')),
-                    authenticatorData: new Uint8Array(Buffer.from(r.authenticatorDataBase64, 'base64')),
-                    clientDataJson,
-                };
-            }
-        }
-        const version: ProtocolVersion = own?.version ?? 2;
-        const { paymaster, client } = this._initializeClients(version);
-
-        let smartWalletAddress: string;
-        let passkeyPubkey: Uint8Array;
-        const matches = own ? [own] : [];
-        if (own) passkeyPubkey = own.pubkey;
-        else if (reportedPubkey && reportedPubkey.length === 33) {
-            // The portal may report a key from its storage, even another
-            // passkey's; prove it before creating a wallet for it.
-            const created = { version: 2 as const, walletPda: PublicKey.default, authorityPda: PublicKey.default, pubkey: reportedPubkey };
-            if (!provenCandidates([created], await prove(), rpId).length) {
-                throw new Error('The portal reported a public key this passkey does not hold; no wallet was created.');
-            }
-            passkeyPubkey = reportedPubkey;
-        }
-        else {
-            throw new Error(
-                'This passkey has no wallet yet, and signing in with an existing passkey does not ' +
-                    'reveal its public key. Create the wallet with "Create new account".',
-            );
-        }
-        localStorage.setItem('PUBLIC_KEY', Buffer.from(passkeyPubkey).toString('base64'));
-
-        if (matches.length > 0) {
-            smartWalletAddress = matches[0].walletPda.toBase58();
-        } else {
-            const feePayer = await paymaster.getPayer();
-            const { instructions, walletPda } = await client.createWallet({
-                payer: feePayer,
-                userSeed: randomBytes(32),
-                owner: {
-                    type: 'secp256r1',
-                    credentialIdHash: credentialHash,
-                    compressedPubkey: passkeyPubkey,
-                    rpId,
-                },
-            });
-            const tx = new Transaction();
-            tx.add(...instructions);
-            await paymaster.signAndSend(tx);
-            smartWalletAddress = walletPda.toBase58();
-        }
-
-        const [vault] = client.findVault(new PublicKey(smartWalletAddress));
-        return {
-            credentialId: dialogResult.credentialId,
-            passkeyPubkey: Array.from(passkeyPubkey),
-            expo: 'web',
-            platform: navigator.platform,
-            smartWallet: smartWalletAddress,
-            vaultPda: vault.toBase58(),
-            walletDevice: '',
-            protocolVersion: version,
-        };
-    }
-
     async disconnect(): Promise<void> {
+        // A connect still running is abandoned: its portal or chooser closes,
+        // and it connects nothing (see connect).
+        const running = this._connectAttempt;
+        this._connectAttempt = null;
+        this._connecting = false;
+        running?.abort.abort();
+        clearPendingConfirmation();
+        this.confirmWallet = undefined;
         await StorageManager.clearWallet();
         this._wallet = null;
         this._publicKey = null;
@@ -428,8 +429,12 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
                     );
                 }
 
+                // A legacy transaction cannot be serialized for the paymaster
+                // without its fee payer and a blockhash.
                 const tx = new Transaction();
                 tx.add(...finalizedIxs);
+                tx.feePayer = feePayer;
+                tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
                 return await paymaster.signAndSend(tx);
             } finally {
                 dialogManager.destroy();
