@@ -24,17 +24,16 @@ import { StorageManager, WalletInfo } from '../storage';
 import { Paymaster } from '../paymaster/paymaster';
 import {
     LazorKitClient,
-    ROLE_OWNER,
     type ProtocolVersion,
     clientFor,
-    v1Client,
-    v2Client,
     versionOf,
     readPasskeyPubkey,
     isRetiredDeploymentError,
     V1WalletRetiredError,
+    registerCluster,
 } from '../program';
 import { getCredentialHash, getPasskeyPublicKey } from '../wallet/utils';
+import { chooseOwnWallet, findOwnedCandidates } from '../wallet/ownership';
 import { Buffer } from 'buffer';
 import { DEFAULTS } from '../../config';
 
@@ -67,6 +66,8 @@ export interface LazorkitAdapterConfig {
         apiKey?: string;
     };
     clusterSimulation?: 'devnet' | 'mainnet';
+    /** Which cluster `rpcUrl` serves, if its URL does not say. Otherwise read from the URL, else mainnet. */
+    cluster?: 'mainnet' | 'devnet';
 }
 
 export const DEFAULT_CONFIG: LazorkitAdapterConfig = {
@@ -118,6 +119,7 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         if (config) {
             this._config = { ...this._config, ...config };
         }
+        registerCluster(this._config.rpcUrl, this._config.cluster);
     }
 
     get publicKey(): PublicKey | null {
@@ -140,7 +142,21 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
             this._connecting = true;
             this.emit('readyStateChange', this._readyState);
 
-            const existingWallet = await StorageManager.getWallet();
+            let existingWallet = await StorageManager.getWallet();
+            if (existingWallet) {
+                const version = versionOf(existingWallet);
+                const connection = new Connection(this._config.rpcUrl);
+                // A stored v1 wallet may have been migrated since: then it is
+                // closed and its address dead — forget it and connect afresh.
+                if (version === 1 && !(await connection.getAccountInfo(new PublicKey(existingWallet.smartWallet)))) {
+                    await StorageManager.clearWallet();
+                    existingWallet = null;
+                } else if (!existingWallet.vaultPda) {
+                    const [vault] = clientFor(version, connection).findVault(new PublicKey(existingWallet.smartWallet));
+                    existingWallet = { ...existingWallet, vaultPda: vault.toBase58() };
+                    await StorageManager.saveWallet(existingWallet);
+                }
+            }
             if (existingWallet) {
                 this._updateWalletState(existingWallet);
                 return;
@@ -150,7 +166,7 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
 
             try {
                 const dialogResult: DialogResult = await dialogManager.openConnect();
-                const walletInfo = await this._ensureWalletOnChain(dialogResult);
+                const walletInfo = await this._ensureWalletOnChain(dialogResult, dialogManager);
 
                 await StorageManager.saveWallet(walletInfo);
                 this._updateWalletState(walletInfo);
@@ -167,9 +183,14 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         }
     }
 
+    /**
+     * The address dApps see is the vault — where funds live and the account
+     * that signs in the wallet's transactions. (Earlier releases advertised the
+     * wallet PDA, an internal account nothing can spend from.)
+     */
     private _updateWalletState(wallet: WalletInfo) {
         this._wallet = wallet;
-        this._publicKey = new PublicKey(wallet.smartWallet);
+        this._publicKey = new PublicKey(wallet.vaultPda ?? wallet.smartWallet);
         this.emit('connect', this._publicKey);
     }
 
@@ -193,39 +214,50 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         return { connection, paymaster, client };
     }
 
-    private async _ensureWalletOnChain(dialogResult: DialogResult): Promise<WalletInfo> {
+    private async _ensureWalletOnChain(
+        dialogResult: DialogResult,
+        dialogManager: DialogManager,
+    ): Promise<WalletInfo> {
         const credentialHash = getCredentialHash(dialogResult.credentialId);
-        const owned = async (c: LazorKitClient) =>
-            (await c.findWalletsByAuthority(credentialHash, 'secp256r1')).filter((w) => w.role === ROLE_OWNER);
-
-        // A v2 wallet wins; a v1 wallet made before LazorKit v2 is used as it is
-        // (a fresh v2 wallet would show that user an empty account); only a
-        // passkey with neither gets a new, v2, wallet. Owner rank only: a lower
-        // rank can be granted to anyone's passkey without its consent.
+        const rpId = getRpId(this._config.portalUrl);
         const probe = new Connection(this._config.rpcUrl);
-        let version: ProtocolVersion = 2;
-        let matches = await owned(v2Client(probe));
-        if (matches.length === 0) {
-            const legacy = await owned(v1Client(probe));
-            if (legacy.length > 0) {
-                version = 1;
-                matches = legacy;
-            }
-        }
-        const { connection, paymaster, client } = this._initializeClients(version);
+
+        // The passkey's own wallet, proven rather than guessed from the public
+        // credential hash (see ../wallet/ownership). A v1 wallet made before
+        // LazorKit v2 keeps being used; only a passkey that owns neither gets a
+        // new, v2, wallet.
+        const reportedPubkey = dialogResult.publicKey ? getPasskeyPublicKey(dialogResult.publicKey) : undefined;
+        const own = await chooseOwnWallet({
+            candidates: await findOwnedCandidates(probe, credentialHash, rpId),
+            reportedPubkey,
+            rpId,
+            prove: async () => {
+                const challenge = randomBytes(32);
+                const r = await dialogManager.openSign(toBase64Url(challenge), '', dialogResult.credentialId);
+                const clientDataJson = new Uint8Array(Buffer.from(r.clientDataJsonBase64, 'base64'));
+                return {
+                    challenge,
+                    signature: new Uint8Array(Buffer.from(r.signature, 'base64')),
+                    authenticatorData: new Uint8Array(Buffer.from(r.authenticatorDataBase64, 'base64')),
+                    clientDataJson,
+                };
+            },
+        });
+        const version: ProtocolVersion = own?.version ?? 2;
+        const { paymaster, client } = this._initializeClients(version);
 
         let smartWalletAddress: string;
-        let passkeyPubkey: string;
-
-        if (!dialogResult.publicKey && matches.length > 0) {
-            // Cross-device: the assertion carries no public key; read it off the
-            // authority account.
-            const pubkey = await readPasskeyPubkey(version, connection, matches[0].authorityPda);
-            passkeyPubkey = Buffer.from(pubkey).toString('base64');
-            localStorage.setItem('PUBLIC_KEY', passkeyPubkey);
-        } else {
-            passkeyPubkey = dialogResult.publicKey;
+        let passkeyPubkey: Uint8Array;
+        const matches = own ? [own] : [];
+        if (own) passkeyPubkey = own.pubkey;
+        else if (reportedPubkey && reportedPubkey.length === 33) passkeyPubkey = reportedPubkey;
+        else {
+            throw new Error(
+                'This passkey has no wallet yet, and signing in with an existing passkey does not ' +
+                    'reveal its public key. Create the wallet with "Create new account".',
+            );
         }
+        localStorage.setItem('PUBLIC_KEY', Buffer.from(passkeyPubkey).toString('base64'));
 
         if (matches.length > 0) {
             smartWalletAddress = matches[0].walletPda.toBase58();
@@ -237,8 +269,8 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
                 owner: {
                     type: 'secp256r1',
                     credentialIdHash: credentialHash,
-                    compressedPubkey: getPasskeyPublicKey(passkeyPubkey),
-                    rpId: getRpId(this._config.portalUrl),
+                    compressedPubkey: passkeyPubkey,
+                    rpId,
                 },
             });
             const tx = new Transaction();
@@ -250,7 +282,7 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         const [vault] = client.findVault(new PublicKey(smartWalletAddress));
         return {
             credentialId: dialogResult.credentialId,
-            passkeyPubkey: Array.from(getPasskeyPublicKey(passkeyPubkey)),
+            passkeyPubkey: Array.from(passkeyPubkey),
             expo: 'web',
             platform: navigator.platform,
             smartWallet: smartWalletAddress,
@@ -372,7 +404,9 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
             }
 
         } catch (error: any) {
-            const err = isRetiredDeploymentError(error) ? new V1WalletRetiredError(error) : error;
+            const err = isRetiredDeploymentError(error, this._wallet ? versionOf(this._wallet) : undefined)
+                ? new V1WalletRetiredError(error)
+                : error;
             this.emit('error', err);
             throw err;
         }

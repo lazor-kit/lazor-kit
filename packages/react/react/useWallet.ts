@@ -11,7 +11,10 @@ import type { SpendingLimits } from '../core/types';
 
 export interface WalletHookInterface {
   // State
+  /** The wallet PDA — an internal account. Do not send funds here. */
   smartWalletPubkey: PublicKey | null;
+  /** The vault: the address the user's funds live at, and the one to show. */
+  vaultPubkey: PublicKey | null;
   isConnected: boolean;
   isLoading: boolean;
   isConnecting: boolean;
@@ -54,7 +57,7 @@ export interface WalletHookInterface {
   signAndSendWithSession: (payload: SendTxPayload) => Promise<string>;
 
   // Ed25519 authority actions
-  addAuthority: (payload?: { role?: number; policy?: Uint8Array }) => Promise<{ authorityPda: string; authorityPublicKey: string }>;
+  addAuthority: (payload?: { role?: number; policy?: Uint8Array; unrestricted?: boolean }) => Promise<{ authorityPda: string; authorityPublicKey: string }>;
   removeAuthority: (targetAuthorityPda: string) => Promise<void>;
   signAndSendWithAuthority: (payload: SendTxPayload) => Promise<string>;
 
@@ -157,6 +160,7 @@ export const useWallet = (): WalletHookInterface => {
   return {
     // State
     smartWalletPubkey,
+    vaultPubkey: wallet?.vaultPda ? new PublicKey(wallet.vaultPda) : null,
     isConnected: !!wallet,
     isLoading: isLoading || isConnecting || isSigning,
     isConnecting,
@@ -193,7 +197,7 @@ export const useWallet = (): WalletHookInterface => {
 
     // Ed25519 authority actions
     addAuthority: useCallback(
-      (payload?: { role?: number; policy?: Uint8Array }) => addAuthority(payload),
+      (payload?: { role?: number; policy?: Uint8Array; unrestricted?: boolean }) => addAuthority(payload),
       [addAuthority]
     ),
     removeAuthority: useCallback(

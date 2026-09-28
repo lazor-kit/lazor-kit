@@ -73,6 +73,13 @@ export {
   PROGRAM_ID_DEVNET_V1,
 } from './core/program';
 export type { ProtocolVersion } from './core/program';
+export {
+  V1WalletMigratedError,
+  registerCluster,
+} from './core/program';
+// Prove which wallet is a passkey's own (the credential hash alone is public).
+export { findOwnedCandidates, provenCandidates, chooseOwnWallet } from './core/wallet/ownership';
+export type { OwnedCandidate, OwnershipProof } from './core/wallet/ownership';
 // Runtime error decoding helpers.
 export { errorFromCode, extractErrorCode, ERROR_NAMES } from './core/program';
 export type { DeferredPayload, SessionAction } from './core/program';

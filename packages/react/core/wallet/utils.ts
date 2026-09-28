@@ -1,5 +1,11 @@
 import { sha256 } from 'js-sha256';
-import { V1WalletRetiredError, isRetiredDeploymentError } from '../program/protocol';
+import {
+    V1WalletMigratedError,
+    V1WalletRetiredError,
+    isRetiredDeploymentError,
+    type ProtocolVersion,
+} from '../program/protocol';
+import { StorageManager } from '../storage';
 import { DialogManager } from '../portal';
 import { WalletConfig } from '../storage';
 import { WalletState } from '../types';
@@ -40,15 +46,22 @@ export const getCredentialHash = (credentialIdBase64: string): Uint8Array => {
 export const handleActionError = (
     error: unknown,
     set: (state: Partial<WalletState>) => void,
-    onFail?: (error: Error) => void
+    onFail?: (error: Error) => void,
+    /** The protocol of the wallet the action ran for, when there was one. */
+    version?: ProtocolVersion,
 ): never => {
     // A v1 wallet after LazorKit v1 was retired: say what happened and what to
     // do, rather than surface a bare `custom program error: 0xfb2`.
-    const err = isRetiredDeploymentError(error)
+    const err = isRetiredDeploymentError(error, version)
         ? new V1WalletRetiredError(error)
         : error instanceof Error
           ? error
           : new Error(String(error));
+    if (err instanceof V1WalletMigratedError) {
+        // The stored wallet is gone from the chain; stop showing its address.
+        void StorageManager.clearWallet();
+        set({ wallet: null });
+    }
     set({ error: err });
     onFail?.(err);
     throw err;

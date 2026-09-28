@@ -70,8 +70,9 @@ the connected wallet, so there is nothing to branch on in your app — but
 `useWallet().protocolVersion` tells you which one a user is on (1 or 2), e.g.
 to offer the move to v2.
 
-If your app already ran a paymaster before v2, keep it for v1 users and add
-the v2 one:
+Your app's v1 users need a relayer that still sponsors LazorKit v1 — the one
+the app used before v2. LazorKit's v2 relayer does not, so if `paymasterConfig`
+points at a v2 relayer, `v1PaymasterConfig` is required:
 
 ```tsx
 <LazorkitProvider
@@ -79,6 +80,12 @@ the v2 one:
   v1PaymasterConfig={{ paymasterUrl: EXISTING_PAYMASTER_URL }}
 >
 ```
+
+`connect` adopts a wallet only when the passkey is shown to hold its key —
+the credential-id hash alone is public, and anyone can list it on a wallet of
+their own. Signing in with an existing passkey on a new device therefore costs
+one extra passkey prompt. Show users the vault (`WalletInfo.vaultPda`); the
+exported PDA helpers derive v2 addresses and are wrong for a v1 wallet.
 
 Once LazorKit retires v1, a v1 wallet's transactions fail with
 `V1WalletRetiredError`. Its funds are safe; move it with

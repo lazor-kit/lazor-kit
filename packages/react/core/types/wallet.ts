@@ -107,10 +107,15 @@ export interface AddAuthorityPayload {
     /**
      * Spending policy, required when the role is ROLE_SPENDER (Delegate) on a
      * v2 wallet. Build it with `serializeActions([...])`. v2 rejects a Delegate
-     * without one (3033) and a policy on any other rank (3035); v1 wallets have
-     * no policies and ignore it.
+     * without one (3033) and a policy on any other rank (3035). v1 wallets have
+     * no policies: passing one for a v1 wallet throws.
      */
     readonly policy?: Uint8Array;
+    /**
+     * Required to add a key to a v1 wallet, where any added key can spend the
+     * whole vault (v1 never checked rank at Execute). Ignored for v2.
+     */
+    readonly unrestricted?: boolean;
     readonly onSuccess?: (authorityPda: string, authorityPublicKey: string) => void;
     readonly onFail?: (error: Error) => void;
 }

@@ -23,6 +23,8 @@ export interface LazorkitProviderProps {
    * this app used before v2. Defaults to `paymasterConfig`.
    */
   v1PaymasterConfig?: PaymasterConfig;
+  /** Which cluster `rpcUrl` serves, if its URL does not say. See WalletConfig. */
+  cluster?: 'mainnet' | 'devnet';
 }
 
 export const LazorkitProvider = (props: LazorkitProviderProps) => {
@@ -32,6 +34,7 @@ export const LazorkitProvider = (props: LazorkitProviderProps) => {
     portalUrl = DEFAULTS.PORTAL_URL,
     paymasterConfig = { paymasterUrl: DEFAULTS.PAYMASTER_URL },
     v1PaymasterConfig,
+    cluster,
   } = props;
 
   const { setConfig } = useWalletStore();
@@ -43,8 +46,9 @@ export const LazorkitProvider = (props: LazorkitProviderProps) => {
       paymasterConfig,
       v1PaymasterConfig,
       rpcUrl,
+      cluster,
     });
-  }, [rpcUrl, portalUrl, paymasterConfig, v1PaymasterConfig, setConfig]);
+  }, [rpcUrl, portalUrl, paymasterConfig, v1PaymasterConfig, cluster, setConfig]);
 
   return <>{children}</>;
 };

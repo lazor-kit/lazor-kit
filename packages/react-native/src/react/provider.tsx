@@ -2,7 +2,8 @@
  * LazorKit Wallet Mobile Adapter - React Provider
  */
 
-import { Connection } from '@solana/web3.js';
+import { registerCluster, versionOf } from '../program';
+import { Connection, PublicKey } from '@solana/web3.js';
 import React, { useEffect, useMemo } from 'react';
 import { useWalletStore } from './store';
 import { logger } from '../core/logger';
@@ -34,11 +35,13 @@ export const LazorKitProvider = ({
     paymasterUrl: DEFAULTS.PAYMASTER_URL,
   },
   v1ConfigPaymaster,
+  cluster,
   rpId = DEFAULTS.RP_ID,
   isDebug = false,
   children,
 }: LazorKitProviderProps): React.JSX.Element => {
   const { setConnection, setConfig } = useWalletStore();
+  const wallet = useWalletStore((state) => state.wallet);
 
   useEffect(() => {
     logger.setDebugMode(isDebug);
@@ -49,14 +52,20 @@ export const LazorKitProvider = ({
   const effectivePaymasterUrl = configPaymaster.paymasterUrl || DEFAULTS.PAYMASTER_URL;
   const effectiveRpId = rpId || DEFAULTS.RP_ID;
 
+  // Primitive deps, so a v1 paymaster that arrives or changes after mount
+  // still reaches the store (an object literal prop would not be compared).
+  const v1PaymasterUrl = v1ConfigPaymaster?.paymasterUrl;
+  const v1PaymasterApiKey = v1ConfigPaymaster?.apiKey;
+
   const connection = useMemo(() => {
+    registerCluster(effectiveRpcUrl, cluster);
     try {
       return new Connection(effectiveRpcUrl, 'confirmed');
     } catch (error) {
       logger.error('Failed to create Solana connection:', error, { rpcUrl: effectiveRpcUrl });
       return new Connection(DEFAULTS.RPC_ENDPOINT, 'confirmed');
     }
-  }, [effectiveRpcUrl]);
+  }, [effectiveRpcUrl, cluster]);
 
   useEffect(() => {
     try {
@@ -67,8 +76,11 @@ export const LazorKitProvider = ({
           paymasterUrl: effectivePaymasterUrl,
           apiKey: configPaymaster.apiKey,
         },
-        v1ConfigPaymaster,
+        v1ConfigPaymaster: v1PaymasterUrl
+          ? { paymasterUrl: v1PaymasterUrl, apiKey: v1PaymasterApiKey }
+          : undefined,
         rpcUrl: effectiveRpcUrl,
+        cluster,
         rpId: effectiveRpId,
       });
     } catch (error) {
@@ -85,12 +97,32 @@ export const LazorKitProvider = ({
     effectivePortalUrl,
     effectivePaymasterUrl,
     configPaymaster.apiKey,
+    v1PaymasterUrl,
+    v1PaymasterApiKey,
+    cluster,
     effectiveRpcUrl,
     effectiveRpId,
     isDebug,
     setConnection,
     setConfig,
   ]);
+
+  // A persisted v1 wallet may have been migrated since the app last ran — on
+  // the LazorKit migration page, say. Then it is closed and its address dead:
+  // drop it, so the app does not keep showing it, and the user reconnects.
+  useEffect(() => {
+    if (!wallet || versionOf(wallet) !== 1) return;
+    let cancelled = false;
+    connection
+      .getAccountInfo(new PublicKey(wallet.walletPda))
+      .then((info) => {
+        if (!cancelled && !info) useWalletStore.setState({ wallet: null });
+      })
+      .catch((error) => logger.error('Could not check the persisted v1 wallet:', error));
+    return () => {
+      cancelled = true;
+    };
+  }, [connection, wallet]);
 
   try {
     return <>{typeof children === 'string' ? <span>{children}</span> : children}</>;

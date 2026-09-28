@@ -39,6 +39,13 @@ export interface WalletConfig {
    */
   readonly v1PaymasterConfig?: PaymasterConfig;
   readonly rpcUrl?: string;
+  /**
+   * Which cluster `rpcUrl` serves, when its URL does not say (an app's own
+   * RPC proxy, most keyed provider URLs). Without it the cluster is read from
+   * the URL — mainnet / devnet / localhost — and anything else is taken as
+   * mainnet, as every release before v2 did.
+   */
+  readonly cluster?: 'mainnet' | 'devnet';
 }
 
 /**
