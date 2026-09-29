@@ -4,6 +4,7 @@
  */
 
 import { useCallback } from 'react';
+import { Buffer } from 'buffer';
 import { PublicKey, TransactionInstruction, AddressLookupTableAccount } from '@solana/web3.js';
 import { useWalletStore } from './store';
 import { WalletInfo } from '../core/storage';

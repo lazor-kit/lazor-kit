@@ -1,4 +1,7 @@
 import { sha256 } from 'js-sha256';
+// The package, not the Node global: a browser app has no global `Buffer`
+// unless it polyfills one.
+import { Buffer } from 'buffer';
 import {
     V1WalletMigratedError,
     V1WalletRetiredError,
