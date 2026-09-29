@@ -88,13 +88,81 @@ function checkPackageJson() {
   });
 }
 
+/** The pnpm workspace root above this package, or null. */
+function findPnpmWorkspaceRoot() {
+  let dir = process.cwd();
+  while (true) {
+    if (fs.existsSync(path.join(dir, 'pnpm-lock.yaml'))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+const AUDIT_FAIL_LEVELS = new Set(['moderate', 'high', 'critical']);
+
+/**
+ * `pnpm audit` covers the whole workspace lockfile, so keep only the findings
+ * whose path starts at this package's importer. A finding in one of this
+ * package's own dependencies fails the check: raising our range fixes it. One
+ * deeper down — mostly Expo and React Native build tooling — is reported but
+ * does not fail it: the app's lockfile picks those versions, not ours, and
+ * none of it is bundled into dist.
+ */
+function pnpmAudit(workspaceRoot) {
+  const importer = path.relative(workspaceRoot, process.cwd()).split(path.sep).join('__');
+  let raw;
+  try {
+    raw = execSync('pnpm audit --prod --json', { cwd: workspaceRoot, stdio: 'pipe', maxBuffer: 64 * 1024 * 1024 });
+  } catch (err) {
+    // pnpm audit exits non-zero whenever it finds anything; the JSON is still on stdout.
+    raw = err.stdout;
+  }
+  let report;
+  try {
+    report = JSON.parse(String(raw));
+  } catch {
+    throw new Error('pnpm audit did not return a report (is the registry reachable?)');
+  }
+
+  const direct = new Map();
+  const transitive = new Map();
+  for (const advisory of Object.values(report.advisories || {})) {
+    for (const finding of advisory.findings || []) {
+      for (const p of finding.paths || []) {
+        const parts = p.split('>');
+        if (parts[0] !== importer) continue;
+        const bucket = parts.length === 2 ? direct : transitive;
+        bucket.set(`${advisory.module_name}:${advisory.id}`, advisory);
+      }
+    }
+  }
+
+  const describe = (advisories) =>
+    [...advisories.values()].map((a) => `${a.severity} ${a.module_name} (${a.url})`).join('\n    ');
+
+  if (transitive.size > 0) {
+    const bySeverity = {};
+    for (const a of transitive.values()) bySeverity[a.severity] = (bySeverity[a.severity] || 0) + 1;
+    log(`⚠️  ${transitive.size} advisories in transitive production dependencies ` +
+      `(${JSON.stringify(bySeverity)}); not ours to pin, not bundled into dist`, colors.yellow);
+  }
+  const blocking = [...direct.values()].filter((a) => AUDIT_FAIL_LEVELS.has(a.severity));
+  if (blocking.length > 0) {
+    throw new Error(`moderate+ advisories in direct dependencies:\n    ${describe(new Map(blocking.map((a) => [a.id, a])))}`);
+  }
+}
+
 function checkSecurity() {
-  // Project uses yarn (yarn.lock, no package-lock.json). `yarn audit` exits with
-  // a bitmask: 1=info, 2=low, 4=moderate, 8=high, 16=critical. Treat moderate+
-  // (>=4) as failure to match the original `npm audit --audit-level=moderate`.
-  const lockfile = fs.existsSync('yarn.lock') ? 'yarn' : 'npm';
+  // The package lives in a pnpm workspace; outside one, fall back to yarn or
+  // npm. `yarn audit` exits with a bitmask: 1=info, 2=low, 4=moderate, 8=high,
+  // 16=critical, so moderate+ is >=4, matching `npm audit --audit-level=moderate`.
+  const workspaceRoot = findPnpmWorkspaceRoot();
+  const lockfile = workspaceRoot ? 'pnpm' : fs.existsSync('yarn.lock') ? 'yarn' : 'npm';
   return check('Security audit (production deps only)', () => {
-    if (lockfile === 'yarn') {
+    if (lockfile === 'pnpm') {
+      pnpmAudit(workspaceRoot);
+    } else if (lockfile === 'yarn') {
       try {
         execSync('yarn audit --groups dependencies --level moderate', { stdio: 'pipe' });
       } catch (err) {
