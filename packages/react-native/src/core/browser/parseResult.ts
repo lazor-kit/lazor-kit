@@ -5,14 +5,37 @@
  * sign operation and extracts the WebAuthn signature pieces.
  */
 
-import { BrowserResult } from '../../types';
+import { BrowserResult, LazorKitError } from '../../types';
 import { logger } from '../logger';
+
+/** Longest portal error text passed on; the redirect is not a place for essays. */
+const MAX_PORTAL_ERROR_LENGTH = 500;
+
+/**
+ * The failure the portal reported on its redirect (`error=<text>`), as an
+ * error carrying that text — or `null` when it reported none. Checked before
+ * anything else, so the app sees why the portal failed rather than which
+ * field was missing.
+ */
+export const portalErrorOf = (url: string): LazorKitError | null => {
+  let text: string | null;
+  try {
+    text = new URL(url).searchParams.get('error');
+  } catch {
+    return null;
+  }
+  if (!text || !text.trim()) return null;
+  return new LazorKitError(text.trim().slice(0, MAX_PORTAL_ERROR_LENGTH), 'PORTAL_ERROR');
+};
 
 /**
  * Extracts signature and authenticator data from redirect URL.
  */
 export const handleBrowserResult = (url: string): BrowserResult => {
   try {
+    const portalError = portalErrorOf(url);
+    if (portalError) throw portalError;
+
     const parsed = new URL(url);
     if (parsed.searchParams.get('success') !== 'true') {
       logger.error('Browser result failed: success parameter is not true', { url });

@@ -8,7 +8,7 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
-import { findVaultPda } from '../program';
+import { registerCluster, v1Client } from '../program';
 import {
   WalletStateClient,
   WalletInfo,
@@ -101,6 +101,13 @@ const storage = {
   },
 };
 
+/** The config without what is only ever this run's (see `merge` below). */
+function persistableConfig(config: WalletConfig): WalletConfig {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { onConfirmWallet, trustedAuthorities, watchMints, ...rest } = config;
+  return rest;
+}
+
 export const useWalletStore = create<WalletStateClient>()(
   persist(
     (set, get) => ({
@@ -117,10 +124,11 @@ export const useWalletStore = create<WalletStateClient>()(
       isConnecting: false,
       isSigning: false,
       error: null,
+      pendingWalletConfirmation: null,
 
       setConfig: (config: WalletConfig) => {
         try {
-          // Info log removed
+          registerCluster(config.rpcUrl || DEFAULTS.RPC_ENDPOINT, config.cluster);
           const connection = new Connection(
             config.rpcUrl || DEFAULTS.RPC_ENDPOINT!,
             DEFAULT_COMMITMENT
@@ -169,7 +177,7 @@ export const useWalletStore = create<WalletStateClient>()(
       },
 
       connect: (options: ConnectOptions) => connectAction(get, set, options),
-      disconnect: () => disconnectAction(set),
+      disconnect: () => disconnectAction(get, set),
       signAndExecuteTransaction: (payload: SignAndSendTransactionPayload, options: SignOptions) =>
         signAndExecuteTransaction(get, set, payload, options),
       signMessage: (message: string, options: SignOptions) => signMessageAction(get, set, message, options),
@@ -201,8 +209,27 @@ export const useWalletStore = create<WalletStateClient>()(
       version: 1,
       partialize: (state: WalletStateClient) => ({
         wallet: state.wallet,
-        config: state.config,
+        config: persistableConfig(state.config),
       }),
+      /**
+       * Storage can answer after the provider has set this run's config, with
+       * last run's. The wallet-confirmation settings are this run's only: a
+       * stale `trustedAuthorities` would trust a key the app no longer does,
+       * and a handler function does not survive JSON anyway.
+       */
+      merge: (persisted, current) => {
+        const saved = (persisted ?? {}) as Partial<WalletStateClient>;
+        return {
+          ...current,
+          ...saved,
+          config: {
+            ...(saved.config ?? current.config),
+            onConfirmWallet: current.config.onConfirmWallet,
+            trustedAuthorities: current.config.trustedAuthorities,
+            watchMints: current.config.watchMints,
+          },
+        };
+      },
       /**
        * v0 → v1: `smartWallet` used to hold the wallet PDA; now it holds the
        * vault PDA. Derive the vault so persisted users keep working.
@@ -210,8 +237,11 @@ export const useWalletStore = create<WalletStateClient>()(
       migrate: (persisted: any, fromVersion: number) => {
         if (fromVersion < 1 && persisted?.wallet && !persisted.wallet.walletPda) {
           try {
+            // Wallets persisted this far back were made on LazorKit v1: derive
+            // the vault with v1 seeds, at the v1 program for this cluster.
             const oldWalletPda = new PublicKey(persisted.wallet.smartWallet);
-            const [vaultPda] = findVaultPda(oldWalletPda);
+            const rpcUrl = persisted?.config?.rpcUrl ?? DEFAULTS.RPC_ENDPOINT!;
+            const [vaultPda] = v1Client(new Connection(rpcUrl)).findVault(oldWalletPda);
             persisted.wallet = {
               ...persisted.wallet,
               smartWallet: vaultPda.toBase58(),

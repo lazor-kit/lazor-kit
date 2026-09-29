@@ -21,12 +21,24 @@ import { sha256 } from 'js-sha256';
 import {
   BrowserResult,
   ExecuteFinalize,
+  SaveWalletOptions,
   TransactionOptions,
   WalletActions,
   WalletConfig,
   WalletInfo,
 } from '../../types';
-import { LazorKitClient, readAuthorityPubkey, type WebAuthnResponse } from '../../program';
+import {
+  type OwnershipProof,
+  type ProtocolVersion,
+  type WalletFacts,
+  type WebAuthnResponse,
+  createOwnershipChallenge,
+  v2Client,
+  verifyOwnershipProof,
+  versionOf,
+} from '../../program';
+import { connectAbandoned, rememberCandidates, takeRememberedCandidate } from './confirmation';
+import { resolveWallet } from './resolveWallet';
 import { API_ENDPOINTS, DEFAULTS } from '../../config';
 import { openBrowser } from '../browser/open';
 import { handleBrowserResult } from '../browser/parseResult';
@@ -42,47 +54,89 @@ export const createWalletActions = (
   setLoading: (isLoading: boolean) => void,
   config: WalletConfig,
 ): WalletActions => {
-  const client = new LazorKitClient(connection);
   const rpId = config.rpId ?? DEFAULTS.RP_ID;
 
+  // What remembered candidates were read for: a wallet found on one cluster,
+  // program or relying party is nothing on another.
+  const scope = `${v2Client(connection).programId.toBase58()}|${connection.rpcEndpoint}|${rpId}`;
+
   /**
-   * Ensures the smart wallet exists on-chain, creating it if needed.
+   * The wallet the user picked after `connect` threw
+   * `WalletNeedsConfirmationError`, if it was one of that error's candidates
+   * and is picked within two minutes — without the portal: the candidates came
+   * from a proof verified in this app moments ago. `null` when none are
+   * remembered; throws when some are and `confirmWallet` names none of them.
    */
-  const saveWallet = async (data: WalletInfo): Promise<WalletInfo> => {
+  const adoptRemembered = (confirmWallet: string): WalletInfo | null => {
+    const remembered = takeRememberedCandidate(scope, confirmWallet);
+    return remembered && walletInfoOf(remembered.data, remembered.facts);
+  };
+
+  /**
+   * The passkey's own wallet: one it is proven to hold a key of, adopted by
+   * the SDK's rule or chosen by the user — or, when it has none, a new v2
+   * wallet created for it.
+   */
+  const saveWallet = async (data: WalletInfo, options: SaveWalletOptions = {}): Promise<WalletInfo> => {
+    const { redirectUrl, signal } = options;
+    /** Stop here once `disconnect` has abandoned this connect. */
+    const checkAbandoned = () => {
+      if (signal?.aborted) throw connectAbandoned();
+    };
     setLoading(true);
     try {
       const credentialIdHash = new Uint8Array(
         sha256.arrayBuffer(Buffer.from(data.credentialId, 'base64'))
       );
 
-      const existing = await client.findWalletsByAuthority(credentialIdHash, 'secp256r1');
-      if (existing.length > 0) {
-        const [found] = existing;
-        // Cross-device recovery: the passkey the portal reported may differ
-        // slightly from what was registered on first sign-up (e.g. when the
-        // user is authenticating on a secondary device with an iCloud-synced
-        // passkey). The on-chain Authority account is the source of truth —
-        // read the pubkey from there and persist it so later sign flows never
-        // rely on a stale client-side cache.
-        let passkeyPubkey = data.passkeyPubkey;
-        try {
-          const onchainPubkey = await readAuthorityPubkey(connection, found.authorityPda);
-          passkeyPubkey = Array.from(onchainPubkey);
-        } catch (err) {
-          logger.error(
-            'Failed to read on-chain passkey pubkey during recovery; falling back to portal-reported bytes',
-            err,
-            { authorityPda: found.authorityPda.toBase58() },
-          );
-        }
-        return {
-          ...data,
-          passkeyPubkey,
-          smartWallet: found.vaultPda.toBase58(),
-          walletPda: found.walletPda.toBase58(),
-          walletDevice: found.authorityPda.toBase58(),
-        };
-      }
+      // The key in a redirect is not proof: on Android any app can deliver a
+      // deep link into this scheme. So the passkey always signs a challenge
+      // chosen here — in the connect reply when the portal does that, else in
+      // one more portal trip — and a wallet counts only if that signature
+      // verifies against its key. One proof serves both the lookup and a
+      // wallet created after it.
+      //
+      // The reply's assertion is that proof only if it verifies against some
+      // key in play (a candidate's, or the reported one). One that proves
+      // nothing — a registration, a challenge encoded some other way — would
+      // otherwise fail every connect; it costs one portal sign instead, as on web.
+      const reported = { publicKey: new Uint8Array(data.passkeyPubkey) };
+      let proof: Promise<OwnershipProof> | undefined;
+      const prove = (candidates: readonly { publicKey: Uint8Array }[] = []) =>
+        (proof ??=
+          options.proof && verifyOwnershipProof([...candidates, reported], options.proof, rpId).length
+            ? Promise.resolve(options.proof)
+            : Promise.resolve().then(() => {
+                // No second portal trip for a connect nobody waits for.
+                checkAbandoned();
+                return proveViaPortal({ credentialId: data.credentialId, portalUrl: config.portalUrl, redirectUrl });
+              }));
+
+      // A v1 wallet made before LazorKit v2 keeps being used as it is: a fresh
+      // v2 wallet would show that user an empty account while their funds sit
+      // in the v1 one. Only a passkey that owns neither gets a new, v2, wallet.
+      const own = await resolveWallet({
+        client: v2Client(connection),
+        credentialId: data.credentialId,
+        credentialIdHash,
+        rpId,
+        prove,
+        trustedAuthorities: config.trustedAuthorities,
+        watchMints: config.watchMints,
+        onConfirmWallet: options.onConfirmWallet ?? config.onConfirmWallet ?? 'builtin',
+        confirmWallet: options.confirmWallet,
+        openChooser: options.openChooser,
+        remember: (facts) => rememberCandidates(scope, data, facts),
+        // Waiting for the user is not loading. An app that covers its UI
+        // while `isLoading` would cover the chooser too, and connect would
+        // wait for an answer that cannot be given.
+        onAsking: (asking) => setLoading(!asking),
+        signal,
+      });
+      if (own) return walletInfoOf(data, own);
+      checkAbandoned();
+
+      const client = v2Client(connection);
 
       const compressedPubkey = new Uint8Array(data.passkeyPubkey);
       if (compressedPubkey.length !== 33) {
@@ -90,12 +144,19 @@ export const createWalletActions = (
           `Unexpected passkey pubkey length: ${compressedPubkey.length}, expected 33 bytes (compressed secp256r1)`,
         );
       }
+      // A new wallet is owned by the reported key, so that key must be the
+      // passkey's own before anyone pays to create it.
+      if (!verifyOwnershipProof([{ publicKey: compressedPubkey }], await prove(), rpId).length) {
+        throw new Error("The portal's reply could not be verified against this passkey; nothing was created.");
+      }
 
       const feePayer = await getFeePayer(
         config.configPaymaster.paymasterUrl,
         config.configPaymaster.apiKey,
       );
 
+      // The last moment a disconnect can still stop the creation.
+      checkAbandoned();
       const userSeed = new Uint8Array(32);
       crypto.getRandomValues(userSeed);
 
@@ -129,11 +190,14 @@ export const createWalletActions = (
       }
       await connection.confirmTransaction(signature, 'confirmed');
 
+      // Saved as created, never looked up again: until its first transaction
+      // a lookup would offer it for confirmation like any wallet never signed for.
       return {
         ...data,
         smartWallet: vaultPda.toBase58(),
         walletPda: walletPda.toBase58(),
         walletDevice: authorityPda.toBase58(),
+        protocolVersion: 2,
       };
     } catch (error) {
       logger.error('SaveWallet action failed:', error, { walletData: data });
@@ -175,6 +239,7 @@ export const createWalletActions = (
         connection,
         feePayer,
         config,
+        version: versionOf(data),
         addressLookupTables: alts,
         feeToken: transactionOptions?.feeToken,
       });
@@ -191,8 +256,61 @@ export const createWalletActions = (
     }
   };
 
-  return { saveWallet, executeWallet };
+  return { saveWallet, adoptRemembered, executeWallet };
 };
+
+/** The wallet to save for the passkey of connect reply `data`, from its facts. */
+function walletInfoOf(data: WalletInfo, own: WalletFacts): WalletInfo {
+  return {
+    ...data,
+    // The key on chain, which the passkey has been shown to hold.
+    passkeyPubkey: Array.from(own.publicKey),
+    smartWallet: own.vaultPda.toBase58(),
+    walletPda: own.walletPda.toBase58(),
+    walletDevice: own.authorityPda.toBase58(),
+    protocolVersion: own.version,
+  };
+}
+
+/**
+ * A fresh challenge for an ownership proof. `createOwnershipChallenge` draws
+ * from the `crypto` @noble/hashes found when it loaded; in React Native that
+ * exists only if react-native-get-random-values ran first, which is up to the
+ * app's import order. The polyfilled global is there by now either way.
+ */
+export function newOwnershipChallenge(): Uint8Array {
+  try {
+    return createOwnershipChallenge();
+  } catch {
+    const challenge = new Uint8Array(32);
+    crypto.getRandomValues(challenge);
+    return challenge;
+  }
+}
+
+/** One portal sign over a fresh challenge, as an ownership proof. */
+async function proveViaPortal(params: {
+  credentialId: string;
+  portalUrl: string;
+  redirectUrl?: string;
+}): Promise<OwnershipProof> {
+  if (!params.redirectUrl) {
+    throw new Error("Proving which wallet is this passkey's needs a redirectUrl for the portal");
+  }
+  const challenge = newOwnershipChallenge();
+  const response = await signChallengeViaPortal({
+    challenge,
+    credentialId: params.credentialId,
+    portalUrl: params.portalUrl,
+    redirectUrl: params.redirectUrl,
+  });
+  return {
+    challenge,
+    signature: response.signature,
+    authenticatorData: response.authenticatorData,
+    clientDataJson: response.clientDataJson,
+  };
+}
 
 // ─── Public helpers (re-used by extended store actions) ────────────
 
@@ -258,11 +376,26 @@ export async function signChallengeViaPortal(params: {
  * Signs and sends a prebuilt list of instructions through the paymaster.
  * Used by every mutation path (passkey- or session-signed).
  */
+/**
+ * The paymaster for a wallet's protocol. v1 wallets keep the relayer the app
+ * used before v2 (`v1ConfigPaymaster`, defaulting to the main one).
+ */
+export function paymasterFor(
+  config: WalletConfig,
+  version: ProtocolVersion,
+): { paymasterUrl: string; apiKey?: string } {
+  return version === 1
+    ? (config.v1ConfigPaymaster ?? config.configPaymaster)
+    : config.configPaymaster;
+}
+
 export async function sendInstructionsViaPaymaster(params: {
   instructions: TransactionInstruction[];
   connection: Connection;
   feePayer: PublicKey;
   config: WalletConfig;
+  /** The protocol of the wallet paying through this transaction. Defaults to 2. */
+  version?: ProtocolVersion;
   addressLookupTables?: AddressLookupTableAccount[];
   feeToken?: string;
   /** Optional extra signers (e.g., session Keypair for Ed25519 auth). */
@@ -281,11 +414,12 @@ export async function sendInstructionsViaPaymaster(params: {
   }
 
   const serialized = Buffer.from(tx.serialize()).toString('base64');
+  const paymaster = paymasterFor(params.config, params.version ?? 2);
   return signAndExecuteTransaction(
     serialized,
-    params.config.configPaymaster.paymasterUrl,
+    paymaster.paymasterUrl,
     params.feePayer.toBase58(),
-    params.config.configPaymaster.apiKey,
+    paymaster.apiKey,
     params.feeToken,
   );
 }

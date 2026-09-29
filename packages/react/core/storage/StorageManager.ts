@@ -17,14 +17,53 @@ export interface WalletInfo {
   readonly vaultPda?: string;
   readonly walletDevice: string;
   readonly accountName?: string;
+  /**
+   * The protocol this wallet lives on: 1 for a wallet made before LazorKit v2,
+   * 2 since. Absent on wallets saved by earlier releases of this package, all
+   * of which are v1.
+   */
+  readonly protocolVersion?: 1 | 2;
 }
 
 import { PaymasterConfig } from '../paymaster/paymaster';
+import type { OnConfirmWallet } from '../wallet/confirmation';
 
 export interface WalletConfig {
   readonly portalUrl: string;
+  /** The paymaster for v2 wallets. */
   readonly paymasterConfig: PaymasterConfig;
+  /**
+   * The paymaster for wallets still on LazorKit v1 — the one the app used
+   * before v2. Defaults to `paymasterConfig`. Keep them apart where you can: a
+   * relayer that sponsors the full v1 program can have its fee payer pulled
+   * into any v1 transaction's inner calls, so the v2 relayer should not.
+   */
+  readonly v1PaymasterConfig?: PaymasterConfig;
   readonly rpcUrl?: string;
+  /**
+   * Which cluster `rpcUrl` serves, when its URL does not say (an app's own
+   * RPC proxy, most keyed provider URLs). Without it the cluster is read from
+   * the URL — mainnet / devnet / localhost — and anything else is taken as
+   * mainnet, as every release before v2 did.
+   */
+  readonly cluster?: 'mainnet' | 'devnet';
+  /**
+   * How `connect` asks the user to confirm a wallet it will not adopt on its
+   * own — see `OnConfirmWallet`. Default `'builtin'`: the SDK's chooser.
+   */
+  readonly onConfirmWallet?: OnConfirmWallet;
+  /**
+   * Your own Ed25519 keys (base58) — a backend admin, session keys you issue.
+   * An authority, session or token approval held by one of them does not stop
+   * a wallet from being adopted. Passkeys cannot be listed.
+   */
+  readonly trustedAuthorities?: string[];
+  /**
+   * SPL Token mints your app receives (base58). A wallet whose vault token
+   * account for one of them was handed to someone else is not adopted. wSOL,
+   * USDC, USDT and devnet USDC are always checked.
+   */
+  readonly watchMints?: string[];
 }
 
 /**

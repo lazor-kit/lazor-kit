@@ -4,6 +4,7 @@ import {
     AddressLookupTableAccount,
 } from '@solana/web3.js';
 import { WalletInfo, WalletConfig } from '../storage';
+import type { OnConfirmWallet } from '../wallet/confirmation';
 
 export interface WalletState {
     // Data
@@ -67,6 +68,13 @@ export interface CreateSessionPayload {
     readonly expiresInSlots?: bigint;
     readonly spendingLimits?: SpendingLimits;
     /**
+     * Create a session with no spending limits, which can spend the whole
+     * vault through any program until it expires. Required to be explicit:
+     * an actionless session is the most powerful thing this SDK can mint,
+     * and the key lives in the app rather than behind the user's passkey.
+     */
+    readonly unrestricted?: boolean;
+    /**
      * Optional external session key to register as the authority. When
      * omitted the SDK generates a fresh keypair client-side and persists
      * its secretKey to localStorage for later signing. When provided, the
@@ -97,11 +105,35 @@ export interface RevokeSessionPayload {
 
 export interface AddAuthorityPayload {
     readonly role?: number;
+    /**
+     * Spending policy, required when the role is ROLE_SPENDER (Delegate) on a
+     * v2 wallet. Build it with `serializeActions([...])`. v2 rejects a Delegate
+     * without one (3033) and a policy on any other rank (3035). v1 wallets have
+     * no policies: passing one for a v1 wallet throws.
+     */
+    readonly policy?: Uint8Array;
+    /**
+     * Required to add a key to a v1 wallet, where any added key can spend the
+     * whole vault (v1 never checked rank at Execute). Ignored for v2.
+     */
+    readonly unrestricted?: boolean;
     readonly onSuccess?: (authorityPda: string, authorityPublicKey: string) => void;
     readonly onFail?: (error: Error) => void;
 }
 
 export interface ConnectOptions {
+    /**
+     * The wallet the user recognised — its vault address (or wallet PDA) —
+     * among those a connect offered for confirmation. Only used when no wallet
+     * is stored yet. Within 2 minutes of a connect that threw
+     * `WalletNeedsConfirmationError`, it is adopted without a second passkey
+     * prompt; otherwise the portal is opened and it must name a wallet the
+     * passkey is proven to hold. A `confirmWallet` that names none of them
+     * throws — it is never ignored.
+     */
+    readonly confirmWallet?: string;
+    /** Overrides the provider's `onConfirmWallet` for this call. */
+    readonly onConfirmWallet?: OnConfirmWallet;
     readonly onSuccess?: (wallet: WalletInfo) => void;
     readonly onFail?: (error: Error) => void;
 }

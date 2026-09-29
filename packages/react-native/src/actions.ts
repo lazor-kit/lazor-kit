@@ -15,34 +15,48 @@ import {
 } from '@solana/web3.js';
 import { sha256 } from 'js-sha256';
 
-import { handleAuthRedirect } from './core/auth/handleRedirect';
+import { handleAuthRedirect, readConnectAssertion } from './core/auth/handleRedirect';
 import { openBrowser } from './core/browser/open';
 import {
   buildPreviewTransactionBase64,
   createWalletActions,
   decodeWebAuthnResponse,
+  newOwnershipChallenge,
+  paymasterFor,
   sendInstructionsViaPaymaster,
   signChallengeViaPortal,
   toBase64Url,
 } from './core/wallet/actions';
+import { connectAbandoned, forgetCandidates, hasChooserHost } from './core/wallet/confirmation';
 import { logger } from './core/logger';
 import { API_ENDPOINTS } from './config';
 import {
   LazorKitClient,
   type SessionAction,
   type Secp256r1Params,
+  type ProtocolVersion,
   ROLE_SPENDER,
+  ACCOUNT_DISCRIMINATOR,
   AUTH_TYPE_ED25519,
+  V1_DISC_AUTHORITY,
+  clientFor,
+  versionOf,
+  versionOfAccount,
+  isRetiredDeploymentError,
+  V1WalletRetiredError,
+  V1WalletMigratedError,
 } from './program';
 import {
   AddAuthorityPayload,
   AuthorizeExecutePayload,
   AuthorizePayload,
   AuthorizeResult,
+  ConfirmWalletRequest,
   ConnectOptions,
   CreateSessionPayload,
   ExecuteDeferredPayload,
   ListAuthoritiesResult,
+  PendingWalletConfirmation,
   ReclaimDeferredPayload,
   RemoveAuthorityPayload,
   RevokeSessionPayload,
@@ -53,30 +67,58 @@ import {
   TransferSolPayload,
   TxCallbacks,
   WalletConnectionError,
+  WalletInfo,
   WalletStateClient,
 } from './types';
 import { getFeePayer } from './core/paymaster';
 
 // ─── Internal helpers ──────────────────────────────────────────────
 
-/** Guards isSigning + resets state around an async op. */
+/**
+ * Guards isSigning + resets state around an async op. A second request while
+ * one is running rejects: resolving it with nothing left callers (and the
+ * hook's promises, which wait for onSuccess or onFail) waiting forever.
+ */
 async function withSigningState<T>(
   get: () => WalletStateClient,
   set: (state: Partial<WalletStateClient>) => void,
+  callbacks: { readonly onFail?: (error: Error) => void } | undefined,
   fn: () => Promise<T>,
-): Promise<T | undefined> {
+): Promise<T> {
   const { isSigning } = get();
-  if (isSigning) return undefined;
+  if (isSigning) {
+    // Refused before `fn`, which is what reports to onFail otherwise; a
+    // caller waiting on callbacks alone would never hear back.
+    const error = new SigningError('Another passkey request is still in progress');
+    callbacks?.onFail?.(error);
+    throw error;
+  }
   set({ isSigning: true, error: null });
   try {
     return await fn();
   } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
+    const err = toActionError(error, get);
+    // The stored wallet is gone from the chain; stop showing its address.
+    if (err instanceof V1WalletMigratedError) set({ wallet: null });
     set({ error: err });
     throw err;
   } finally {
     set({ isSigning: false });
   }
+}
+
+/**
+ * The error an action reports, to its onFail and to its caller alike. A v1
+ * wallet after LazorKit v1 was retired gets `V1WalletRetiredError`, which
+ * says what happened and what to do, rather than a bare `0xfb2`.
+ */
+function toActionError(error: unknown, get: () => WalletStateClient, flowVersion?: ProtocolVersion): Error {
+  if (error instanceof V1WalletRetiredError || error instanceof V1WalletMigratedError) return error;
+  const wallet = get().wallet;
+  if (isRetiredDeploymentError(error, flowVersion ?? (wallet ? versionOf(wallet) : undefined))) {
+    return new V1WalletRetiredError(error);
+  }
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 /** Common guard: connected wallet + connection. Throws SigningError if missing. */
@@ -87,9 +129,28 @@ function requireWalletAndConnection(get: () => WalletStateClient) {
   return state;
 }
 
-/** Build a LazorKitClient bound to the current connection. */
-function buildClient(get: () => WalletStateClient): LazorKitClient {
-  return new LazorKitClient(get().connection);
+/**
+ * The client for the connected wallet's protocol — v1 for a wallet made before
+ * LazorKit v2, v2 since. Sending one protocol's instruction to the other's
+ * program fails, so nothing here uses a single global program id.
+ */
+async function buildClient(
+  get: () => WalletStateClient,
+): Promise<{ client: LazorKitClient; version: ProtocolVersion }> {
+  const { wallet, connection } = get();
+  const version = wallet ? versionOf(wallet) : 2;
+  // A v1 wallet that no longer exists has been migrated: its funds are in the
+  // passkey's v2 wallet now, and the persisted address is dead.
+  if (wallet && version === 1 && !(await connection.getAccountInfo(new PublicKey(wallet.walletPda)))) {
+    throw new V1WalletMigratedError();
+  }
+  return { client: clientFor(version, connection), version };
+}
+
+/** The fee payer of the paymaster that serves this protocol. */
+function feePayerFor(config: WalletStateClient['config'], version: ProtocolVersion) {
+  const paymaster = paymasterFor(config, version);
+  return getFeePayer(paymaster.paymasterUrl, paymaster.apiKey);
 }
 
 /**
@@ -116,8 +177,17 @@ function buildSecp256r1Params(wallet: {
 // ─── Connect / Disconnect ──────────────────────────────────────────
 
 /**
- * Opens the portal, authenticates a passkey, and persists the resulting
- * LazorKit smart wallet (creating it on-chain if needed).
+ * The store's connect in flight, if any. `disconnect` aborts it: its chooser
+ * closes and it saves, remembers and returns nothing — so no wallet arrives
+ * after the user disconnected, or beside a connect started after that. (The
+ * store is one per app, as is this.)
+ */
+let connectInFlight: AbortController | null = null;
+
+/**
+ * Returns the connected wallet when there is one; otherwise opens the portal,
+ * proves which wallet is the passkey's (asking the user when the SDK cannot
+ * tell) and persists it — creating one on-chain when it has none.
  */
 export const connectAction = async (
   get: () => WalletStateClient,
@@ -130,44 +200,162 @@ export const connectAction = async (
     throw new WalletConnectionError('Already connecting');
   }
 
+  const attempt = new AbortController();
+  connectInFlight = attempt;
   set({ isConnecting: true, error: null });
 
   try {
     const { redirectUrl } = options;
-    const connectUrl = `${config.portalUrl}/${API_ENDPOINTS.CONNECT}&redirect_url=${encodeURIComponent(redirectUrl)}`;
+
+    let stored = get().wallet;
+    // A stored v1 wallet may have been migrated since — on the LazorKit
+    // migration page, say. Then it is closed and its address is dead; forget
+    // it and connect afresh, which finds the v2 wallet.
+    if (stored && versionOf(stored) === 1 && !(await get().connection.getAccountInfo(new PublicKey(stored.walletPda)))) {
+      if (attempt.signal.aborted) throw connectAbandoned();
+      set({ wallet: null });
+      stored = null;
+    }
+    if (stored) {
+      // A connected wallet is never swapped silently for another.
+      if (options.confirmWallet !== undefined && !namesWallet(stored, options.confirmWallet)) {
+        throw new Error(
+          `confirmWallet ${options.confirmWallet} is not the connected wallet (${stored.smartWallet}). ` +
+            'Disconnect first to connect another.',
+        );
+      }
+      if (attempt.signal.aborted) throw connectAbandoned();
+      return stored;
+    }
+
+    const { saveWallet, adoptRemembered } = createWalletActions(
+      get().connection,
+      // An abandoned connect no longer owns the store's loading state.
+      (isLoading) => {
+        if (!attempt.signal.aborted) set({ isLoading });
+      },
+      config,
+    );
+
+    // The user's pick after WalletNeedsConfirmationError: no second trip
+    // through the portal while the candidates are fresh. One that names none
+    // of them throws here, and they stay remembered.
+    const remembered = options.confirmWallet !== undefined && adoptRemembered(options.confirmWallet);
+    if (remembered) {
+      set({ wallet: remembered });
+      return remembered;
+    }
+    // Anything still remembered came from an earlier portal session, maybe
+    // another passkey's; this connect opens a new one.
+    forgetCandidates();
+
+    // A portal that signs it answers with an ownership proof, which saves the
+    // passkey a second prompt; one that does not ignores the parameter.
+    const challenge = newOwnershipChallenge();
+    const connectUrl =
+      `${config.portalUrl}/${API_ENDPOINTS.CONNECT}&redirect_url=${encodeURIComponent(redirectUrl)}` +
+      `&challenge=${encodeURIComponent(toBase64Url(challenge))}`;
 
     const resultUrl = await openBrowser(connectUrl, redirectUrl);
+    if (attempt.signal.aborted) throw connectAbandoned();
     const walletInfo = handleAuthRedirect(resultUrl);
     if (!walletInfo) {
       logger.error('Invalid wallet info from redirect', { resultUrl });
       throw new WalletConnectionError('Invalid wallet info from redirect');
     }
 
-    const { saveWallet } = createWalletActions(
-      get().connection,
-      (isLoading) => set({ isLoading }),
-      config,
-    );
-
-    const savedWallet = await saveWallet(walletInfo);
+    const savedWallet = await saveWallet(walletInfo, {
+      redirectUrl,
+      proof: readConnectAssertion(resultUrl, challenge),
+      confirmWallet: options.confirmWallet,
+      onConfirmWallet: options.onConfirmWallet,
+      openChooser: (request) => openWalletChooser(get, set, request),
+      signal: attempt.signal,
+    });
+    // Disconnected since: a wallet created meanwhile is simply not connected
+    // (the next connect offers it, "Not used with this passkey yet").
+    if (attempt.signal.aborted) throw connectAbandoned();
+    forgetCandidates();
     set({ wallet: savedWallet });
     return savedWallet;
   } catch (error: unknown) {
+    if (attempt.signal.aborted) {
+      // Abandoned by disconnect, which already reset the store: leave its
+      // `error` alone, but still fail this call — with whatever the closed
+      // chooser made of it (a decline) reported as the abandon.
+      throw connectAbandoned();
+    }
     const err = error instanceof Error ? error : new WalletConnectionError(String(error));
     logger.error('Connect action failed:', err, { redirectUrl: options.redirectUrl });
     set({ error: err });
     throw err;
   } finally {
-    set({ isConnecting: false });
+    // An abandoned connect no longer owns `isConnecting`: disconnect reset
+    // it, and a connect started since may have set it again.
+    if (connectInFlight === attempt) {
+      connectInFlight = null;
+      set({ isConnecting: false });
+    }
   }
 };
 
+/** `address` is this stored wallet's vault or wallet PDA. */
+function namesWallet(wallet: WalletInfo, address: string): boolean {
+  return address === wallet.smartWallet || address === wallet.walletPda;
+}
+
+/**
+ * Shows the built-in chooser (drawn by `LazorKitProvider`, or an app's
+ * `<WalletChooser />`) and waits for the user's answer: a candidate's
+ * `wallet`, or `null` for none of these.
+ */
+function openWalletChooser(
+  get: () => WalletStateClient,
+  set: (state: Partial<WalletStateClient>) => void,
+  request: ConfirmWalletRequest,
+): Promise<{ wallet: string } | null> {
+  if (!hasChooserHost()) {
+    // Nothing would ever draw it, and connect would wait forever.
+    return Promise.reject(
+      new Error(
+        'The built-in wallet chooser is drawn by LazorKitProvider, which is not mounted. Mount it, ' +
+          "or pass onConfirmWallet (your own chooser, or 'throw').",
+      ),
+    );
+  }
+  return new Promise((resolve, reject) => {
+    const close = () => {
+      if (get().pendingWalletConfirmation === pending) set({ pendingWalletConfirmation: null });
+    };
+    const pending: PendingWalletConfirmation = {
+      request,
+      resolve: (choice) => {
+        close();
+        resolve(choice);
+      },
+      reject: (error) => {
+        close();
+        reject(error);
+      },
+    };
+    set({ pendingWalletConfirmation: pending });
+  });
+}
+
 export const disconnectAction = async (
+  get: () => WalletStateClient,
   set: (state: Partial<WalletStateClient>) => void,
 ) => {
   set({ isLoading: true });
   try {
-    set({ wallet: null });
+    // A connect still running is abandoned (see connectInFlight), so
+    // resetting `isConnecting` below cannot let two run side by side.
+    connectInFlight?.abort();
+    connectInFlight = null;
+    forgetCandidates();
+    // A chooser still open belongs to the connect just abandoned.
+    get().pendingWalletConfirmation?.resolve(null);
+    set({ wallet: null, isConnecting: false, pendingWalletConfirmation: null });
   } catch (error: unknown) {
     const err = error instanceof Error ? error : new Error(String(error));
     logger.error('Disconnect action failed:', err);
@@ -190,7 +378,7 @@ export const signAndExecuteTransaction = async (
   payload: SignAndSendTransactionPayload,
   options: SignOptions,
 ) => {
-  await withSigningState(get, set, async () => {
+  await withSigningState(get, set, options, async () => {
     try {
       const signature = await performPasskeyExecute(get, payload, options);
       options?.onSuccess?.(signature);
@@ -200,8 +388,9 @@ export const signAndExecuteTransaction = async (
         smartWallet: get().wallet?.smartWallet,
         redirectUrl: options.redirectUrl,
       });
-      options?.onFail?.(err instanceof Error ? err : new Error(String(err)));
-      throw err;
+      const error = toActionError(err, get);
+      options?.onFail?.(error);
+      throw error;
     }
   });
 };
@@ -212,11 +401,8 @@ async function performPasskeyExecute(
   options: SignOptions,
 ): Promise<string> {
   const { connection, wallet, config } = requireWalletAndConnection(get);
-  const client = buildClient(get);
-  const feePayer = await getFeePayer(
-    config.configPaymaster.paymasterUrl,
-    config.configPaymaster.apiKey,
-  );
+  const { client, version } = await buildClient(get);
+  const feePayer = await feePayerFor(config, version);
 
   const walletPda = new PublicKey(wallet!.walletPda);
 
@@ -258,6 +444,7 @@ async function performPasskeyExecute(
     connection,
     feePayer,
     config,
+    version,
     addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
     feeToken: payload.transactionOptions?.feeToken,
   });
@@ -273,7 +460,7 @@ export const signMessageAction = async (
   message: string,
   options: SignOptions,
 ) => {
-  await withSigningState(get, set, async () => {
+  await withSigningState(get, set, options, async () => {
     try {
       const { wallet, config } = requireWalletAndConnection(get);
       const { redirectUrl } = options;
@@ -288,7 +475,7 @@ export const signMessageAction = async (
       options?.onSuccess?.(result);
       return result;
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toActionError(err, get);
       logger.error('signMessageAction failed:', error);
       options?.onFail?.(error);
       throw error;
@@ -308,16 +495,22 @@ export const createSessionAction = async (
   set: (state: Partial<WalletStateClient>) => void,
   params: CreateSessionPayload,
   options: SignOptions,
-): Promise<{ signature: string; sessionPda: PublicKey } | undefined> => {
-  return withSigningState(get, set, async () => {
+): Promise<{ signature: string; sessionPda: PublicKey }> => {
+  return withSigningState(get, set, options, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
-      const client = buildClient(get);
-      const feePayer = await getFeePayer(
-        config.configPaymaster.paymasterUrl,
-        config.configPaymaster.apiKey,
-      );
+      const { client, version } = await buildClient(get);
+      const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
+
+      if (!params.actions?.length && !params.unrestricted) {
+        throw new Error(
+          'createSession needs actions. A session with no limits can spend the whole vault ' +
+            'through any program until it expires, and its key lives in the app rather than ' +
+            'behind the passkey. Pass actions built with serializeActions/Actions, or ' +
+            'unrestricted: true to mint one anyway.',
+        );
+      }
 
       const prepared = await client.prepareCreateSession({
         payer: feePayer,
@@ -325,7 +518,9 @@ export const createSessionAction = async (
         secp256r1: buildSecp256r1Params(wallet!),
         sessionKey: params.sessionKey,
         expiresAt: params.expiresAtSlot,
-        actions: params.actions,
+        ...(params.actions?.length
+          ? { actions: params.actions }
+          : { unrestricted: true as const }),
       });
 
       const response = await signChallengeViaPortal({
@@ -341,13 +536,14 @@ export const createSessionAction = async (
         connection,
         feePayer,
         config,
+        version,
       });
       await connection.confirmTransaction(signature, 'confirmed');
       const sessionPda = prepared.sessionPda;
       options?.onSuccess?.({ signature, sessionPda });
       return { signature, sessionPda };
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toActionError(err, get);
       logger.error('createSessionAction failed:', error);
       options?.onFail?.(error);
       throw error;
@@ -361,15 +557,12 @@ export const revokeSessionAction = async (
   set: (state: Partial<WalletStateClient>) => void,
   params: RevokeSessionPayload,
   options: SignOptions,
-): Promise<string | undefined> => {
-  return withSigningState(get, set, async () => {
+): Promise<string> => {
+  return withSigningState(get, set, options, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
-      const client = buildClient(get);
-      const feePayer = await getFeePayer(
-        config.configPaymaster.paymasterUrl,
-        config.configPaymaster.apiKey,
-      );
+      const { client, version } = await buildClient(get);
+      const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
 
       const prepared = await client.prepareRevokeSession({
@@ -393,12 +586,13 @@ export const revokeSessionAction = async (
         connection,
         feePayer,
         config,
+        version,
       });
       await connection.confirmTransaction(signature, 'confirmed');
       options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toActionError(err, get);
       logger.error('revokeSessionAction failed:', error);
       options?.onFail?.(error);
       throw error;
@@ -415,15 +609,17 @@ export const signAndSendWithSessionAction = async (
   set: (state: Partial<WalletStateClient>) => void,
   payload: SessionSignPayload,
   options: { onSuccess?: (sig: string) => void; onFail?: (err: Error) => void },
-): Promise<string | undefined> => {
-  return withSigningState(get, set, async () => {
+): Promise<string> => {
+  return withSigningState(get, set, options, async () => {
+    // The protocol this flow runs on, from its own account — for error reporting.
+    let flowVersion: ProtocolVersion | undefined;
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
-      const client = buildClient(get);
-      const feePayer = await getFeePayer(
-        config.configPaymaster.paymasterUrl,
-        config.configPaymaster.apiKey,
-      );
+      // The session account's owner says which program it belongs to.
+      const version = await versionOfAccount(connection, payload.sessionPda);
+      flowVersion = version;
+      const client = clientFor(version, connection);
+      const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
 
       const { instructions } = await client.execute({
@@ -452,6 +648,7 @@ export const signAndSendWithSessionAction = async (
         connection,
         feePayer,
         config,
+        version,
         addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
         feeToken: payload.transactionOptions?.feeToken,
         extraSigners: [payload.sessionKeypair],
@@ -460,7 +657,7 @@ export const signAndSendWithSessionAction = async (
       options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toActionError(err, get, flowVersion);
       logger.error('signAndSendWithSessionAction failed:', error);
       options?.onFail?.(error);
       throw error;
@@ -479,16 +676,29 @@ export const addAuthorityEd25519Action = async (
   set: (state: Partial<WalletStateClient>) => void,
   params: AddAuthorityPayload,
   options: SignOptions,
-): Promise<{ signature: string; newAuthorityPda: PublicKey } | undefined> => {
-  return withSigningState(get, set, async () => {
+): Promise<{ signature: string; newAuthorityPda: PublicKey }> => {
+  return withSigningState(get, set, options, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
-      const client = buildClient(get);
-      const feePayer = await getFeePayer(
-        config.configPaymaster.paymasterUrl,
-        config.configPaymaster.apiKey,
-      );
+      const { client, version } = await buildClient(get);
+      const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
+
+      // v1 has no spending policies, and its Execute never checked rank: any
+      // key added to a v1 wallet can move the whole vault. Refuse to pretend
+      // otherwise — a policy would be dropped without a word.
+      if (version === 1 && params.policy) {
+        throw new Error(
+          'This wallet is on LazorKit v1, which cannot limit what an added key may spend. ' +
+            'Move the wallet to v2 first, or add the key without a policy and unrestricted: true.',
+        );
+      }
+      if (version === 1 && !params.unrestricted) {
+        throw new Error(
+          'On a LazorKit v1 wallet any added key can spend the whole vault. Pass ' +
+            'unrestricted: true to add one anyway, or move the wallet to v2 for bounded keys.',
+        );
+      }
 
       const prepared = await client.prepareAddAuthority({
         payer: feePayer,
@@ -499,6 +709,7 @@ export const addAuthorityEd25519Action = async (
           publicKey: params.newEd25519Pubkey,
         },
         role: params.role ?? ROLE_SPENDER,
+        policy: params.policy,
       });
 
       const response = await signChallengeViaPortal({
@@ -514,13 +725,14 @@ export const addAuthorityEd25519Action = async (
         connection,
         feePayer,
         config,
+        version,
       });
       await connection.confirmTransaction(signature, 'confirmed');
       const newAuthorityPda = prepared.newAuthorityPda;
       options?.onSuccess?.({ signature, newAuthorityPda });
       return { signature, newAuthorityPda };
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toActionError(err, get);
       logger.error('addAuthorityEd25519Action failed:', error);
       options?.onFail?.(error);
       throw error;
@@ -534,15 +746,12 @@ export const removeAuthorityAction = async (
   set: (state: Partial<WalletStateClient>) => void,
   params: RemoveAuthorityPayload,
   options: SignOptions,
-): Promise<string | undefined> => {
-  return withSigningState(get, set, async () => {
+): Promise<string> => {
+  return withSigningState(get, set, options, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
-      const client = buildClient(get);
-      const feePayer = await getFeePayer(
-        config.configPaymaster.paymasterUrl,
-        config.configPaymaster.apiKey,
-      );
+      const { client, version } = await buildClient(get);
+      const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
 
       const prepared = await client.prepareRemoveAuthority({
@@ -566,12 +775,13 @@ export const removeAuthorityAction = async (
         connection,
         feePayer,
         config,
+        version,
       });
       await connection.confirmTransaction(signature, 'confirmed');
       options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toActionError(err, get);
       logger.error('removeAuthorityAction failed:', error);
       options?.onFail?.(error);
       throw error;
@@ -591,15 +801,12 @@ export const authorizeAndExecuteAction = async (
   set: (state: Partial<WalletStateClient>) => void,
   payload: AuthorizeExecutePayload,
   options: SignOptions,
-): Promise<string | undefined> => {
-  return withSigningState(get, set, async () => {
+): Promise<string> => {
+  return withSigningState(get, set, options, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
-      const client = buildClient(get);
-      const feePayer = await getFeePayer(
-        config.configPaymaster.paymasterUrl,
-        config.configPaymaster.apiKey,
-      );
+      const { client, version } = await buildClient(get);
+      const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
 
       const prepared = await client.prepareAuthorize({
@@ -635,6 +842,7 @@ export const authorizeAndExecuteAction = async (
         connection,
         feePayer,
         config,
+        version,
       });
       await connection.confirmTransaction(authorizeSig, 'confirmed');
 
@@ -659,6 +867,7 @@ export const authorizeAndExecuteAction = async (
         connection,
         feePayer,
         config,
+        version,
         addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
         feeToken: payload.transactionOptions?.feeToken,
       });
@@ -666,7 +875,7 @@ export const authorizeAndExecuteAction = async (
       options?.onSuccess?.(executeSig);
       return executeSig;
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toActionError(err, get);
       logger.error('authorizeAndExecuteAction failed:', error);
       options?.onFail?.(error);
       throw error;
@@ -687,15 +896,12 @@ export const authorizeDeferredAction = async (
   set: (state: Partial<WalletStateClient>) => void,
   payload: AuthorizePayload,
   options: SignOptions,
-): Promise<AuthorizeResult | undefined> => {
-  return withSigningState(get, set, async () => {
+): Promise<AuthorizeResult> => {
+  return withSigningState(get, set, options, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
-      const client = buildClient(get);
-      const feePayer = await getFeePayer(
-        config.configPaymaster.paymasterUrl,
-        config.configPaymaster.apiKey,
-      );
+      const { client, version } = await buildClient(get);
+      const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
       const secp256r1 = buildSecp256r1Params(wallet!);
 
@@ -734,6 +940,7 @@ export const authorizeDeferredAction = async (
         connection,
         feePayer,
         config,
+        version,
       });
       await connection.confirmTransaction(signature, 'confirmed');
 
@@ -741,7 +948,7 @@ export const authorizeDeferredAction = async (
       options?.onSuccess?.(result);
       return result;
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toActionError(err, get);
       logger.error('authorizeDeferredAction failed:', error);
       options?.onFail?.(error);
       throw error;
@@ -760,15 +967,18 @@ export const executeDeferredAction = async (
   set: (state: Partial<WalletStateClient>) => void,
   payload: ExecuteDeferredPayload,
   options?: TxCallbacks,
-): Promise<string | undefined> => {
-  return withSigningState(get, set, async () => {
+): Promise<string> => {
+  return withSigningState(get, set, options, async () => {
+    // The protocol this flow runs on, from its own account — for error reporting.
+    let flowVersion: ProtocolVersion | undefined;
     try {
       const { connection, config } = requireWalletAndConnection(get);
-      const client = buildClient(get);
-      const feePayer = await getFeePayer(
-        config.configPaymaster.paymasterUrl,
-        config.configPaymaster.apiKey,
-      );
+      // A payload may come from anywhere; its authorization account's owner
+      // says which program wrote it.
+      const version = await versionOfAccount(connection, payload.deferredPayload.deferredExecPda);
+      flowVersion = version;
+      const client = clientFor(version, connection);
+      const feePayer = await feePayerFor(config, version);
 
       const { instructions } = await client.executeDeferredFromPayload({
         payer: feePayer,
@@ -791,6 +1001,7 @@ export const executeDeferredAction = async (
         connection,
         feePayer,
         config,
+        version,
         addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
         feeToken: payload.transactionOptions?.feeToken,
       });
@@ -798,7 +1009,7 @@ export const executeDeferredAction = async (
       options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toActionError(err, get, flowVersion);
       logger.error('executeDeferredAction failed:', error);
       options?.onFail?.(error);
       throw error;
@@ -815,15 +1026,16 @@ export const reclaimDeferredAction = async (
   set: (state: Partial<WalletStateClient>) => void,
   payload: ReclaimDeferredPayload,
   options?: TxCallbacks,
-): Promise<string | undefined> => {
-  return withSigningState(get, set, async () => {
+): Promise<string> => {
+  return withSigningState(get, set, options, async () => {
+    // The protocol this flow runs on, from its own account — for error reporting.
+    let flowVersion: ProtocolVersion | undefined;
     try {
       const { connection, config } = requireWalletAndConnection(get);
-      const client = buildClient(get);
-      const feePayer = await getFeePayer(
-        config.configPaymaster.paymasterUrl,
-        config.configPaymaster.apiKey,
-      );
+      const version = await versionOfAccount(connection, payload.deferredExecPda);
+      flowVersion = version;
+      const client = clientFor(version, connection);
+      const feePayer = await feePayerFor(config, version);
 
       const { instructions } = client.reclaimDeferred({
         payer: feePayer,
@@ -836,12 +1048,13 @@ export const reclaimDeferredAction = async (
         connection,
         feePayer,
         config,
+        version,
       });
       await connection.confirmTransaction(signature, 'confirmed');
       options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toActionError(err, get, flowVersion);
       logger.error('reclaimDeferredAction failed:', error);
       options?.onFail?.(error);
       throw error;
@@ -865,12 +1078,22 @@ export const listAuthoritiesAction = async (
   const { connection, wallet } = requireWalletAndConnection(get);
   const walletPda = new PublicKey(wallet!.walletPda);
 
-  const programId = new LazorKitClient(connection).programId;
+  // The wallet's own program, and its authority discriminator: 0x22 in v2
+  // (the high nibble carries the protocol major), 2 in v1. The header layout —
+  // wallet at 16, credential at 48, passkey at 80 — is the same in both.
+  const version = versionOf(wallet!);
+  const programId = clientFor(version, connection).programId;
+  const authorityDisc = version === 1 ? V1_DISC_AUTHORITY : ACCOUNT_DISCRIMINATOR.AUTHORITY;
   const accounts = await connection.getProgramAccounts(programId, {
     encoding: 'base64',
     filters: [
-      // discriminator: 2 (Authority)
-      { memcmp: { offset: 0, bytes: Buffer.from([2]).toString('base64'), encoding: 'base64' } },
+      {
+        memcmp: {
+          offset: 0,
+          bytes: Buffer.from([authorityDisc]).toString('base64'),
+          encoding: 'base64',
+        },
+      },
       // wallet pubkey at offset 16 of the AuthorityAccountHeader
       { memcmp: { offset: 16, bytes: Buffer.from(walletPda.toBytes()).toString('base64'), encoding: 'base64' } },
     ],
