@@ -41,6 +41,7 @@ import type { WalletConfig } from '../storage';
 import { SpendingLimits } from '../types';
 import { DEFAULTS } from '../../config';
 import { type AuthorityTurn, confirmOrThrow, noteAuthorityLanded, withAuthority } from './sequence';
+import { buildPreviewTransactionBase64 } from './preview';
 
 export function randomBytes(size: number): Uint8Array {
     return globalThis.crypto.getRandomValues(new Uint8Array(size));
@@ -322,14 +323,15 @@ export const signAndSendTransactionAction = async (
             });
             const encodedChallenge = toBase64Url(prepared.challenge);
 
-            // Build a display-only v0 transaction so the portal can render the ixs.
+            // A display-only v0 transaction so the portal can render the ixs,
+            // compiled with the caller's lookup tables like the one sent.
             const latest = await connection.getLatestBlockhash();
-            const displayMessage = new TransactionMessage({
-                payerKey: feePayer,
+            const base64Tx = buildPreviewTransactionBase64({
+                feePayer,
                 recentBlockhash: latest.blockhash,
                 instructions: payload.instructions,
-            }).compileToV0Message();
-            const base64Tx = Buffer.from(new VersionedTransaction(displayMessage).serialize()).toString('base64');
+                addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+            });
 
             const dialogManager = createDialogManager(config);
             try {

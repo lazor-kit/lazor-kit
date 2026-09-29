@@ -436,6 +436,7 @@ async function performPasskeyExecute(
       connection,
       feePayer,
       instructions: payload.instructions,
+      addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
     });
 
     const webAuthnResponse = await signChallengeViaPortal({
@@ -845,10 +846,14 @@ export const authorizeAndExecuteAction = async (
           expiryOffset: payload.expiryOffset,
         });
 
+        // What the user approves: the inner instructions, compiled with the
+        // lookup tables TX2 is sent with (the payloads this flow exists for
+        // are over the packet limit without them).
         const previewBase64Tx = await buildPreviewTransactionBase64({
           connection,
           feePayer,
           instructions: payload.instructions,
+          addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
         });
 
         const response = await signChallengeViaPortal({
@@ -948,6 +953,7 @@ export const authorizeDeferredAction = async (
           connection,
           feePayer,
           instructions: payload.instructions,
+          addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
         });
 
         const response = await signChallengeViaPortal({

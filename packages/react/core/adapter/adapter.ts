@@ -36,6 +36,7 @@ import {
 } from '../program';
 import { getCredentialHash } from '../wallet/utils';
 import { confirmOrThrow, noteAuthorityLanded, withAuthority } from '../wallet/sequence';
+import { buildPreviewTransactionBase64 } from '../wallet/preview';
 import { clearPendingConfirmation, connectAbandoned, connectFreshWallet } from '../wallet/resolveWallet';
 import type { OnConfirmWallet } from '../wallet/confirmation';
 import { Buffer } from 'buffer';
@@ -356,9 +357,6 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         try {
             if (!this._wallet || !this._publicKey) throw new WalletDisconnectedError();
 
-            const instructions = this._prepareInstructions(transaction);
-            if (instructions.length === 0) throw new WalletSignTransactionError('No instructions to sign');
-
             const version = versionOf(this._wallet);
             const { connection, paymaster, client } = this._initializeClients(version);
 
@@ -376,6 +374,11 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
                     })
                 );
             }
+
+            // After the lookup tables: an instruction of a v0 transaction can
+            // name accounts that only they hold (a Jupiter route does).
+            const instructions = this._prepareInstructions(transaction, addressLookupTableAccounts);
+            if (instructions.length === 0) throw new WalletSignTransactionError('No instructions to sign');
 
             const feePayer = await paymaster.getPayer();
 
@@ -409,14 +412,15 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
 
                 const encodedChallenge = toBase64Url(prepared.challenge);
 
-                // Build a display-only v0 transaction for the portal preview.
+                // A display-only v0 transaction for the portal preview,
+                // compiled with the dApp's lookup tables like the one sent.
                 const latest = await connection.getLatestBlockhash();
-                const displayMessage = new TransactionMessage({
-                    payerKey: feePayer,
+                const base64Tx = buildPreviewTransactionBase64({
+                    feePayer,
                     recentBlockhash: latest.blockhash,
                     instructions,
-                }).compileToV0Message();
-                const base64Tx = Buffer.from(new VersionedTransaction(displayMessage).serialize()).toString('base64');
+                    addressLookupTables: addressLookupTableAccounts,
+                });
 
                 const dialogManager = this._createDialogManager();
                 try {
@@ -514,18 +518,34 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         }
     }
 
-    private _prepareInstructions(transaction: Transaction | VersionedTransaction): TransactionInstruction[] {
+    /**
+     * The dApp's instructions. For a v0 transaction the account indexes run
+     * over its static keys and then the addresses its lookup tables load, so
+     * they are resolved with `addressLookupTableAccounts` (before, an index
+     * into a lookup table resolved to no key at all).
+     */
+    private _prepareInstructions(
+        transaction: Transaction | VersionedTransaction,
+        addressLookupTableAccounts: AddressLookupTableAccount[] = [],
+    ): TransactionInstruction[] {
         if ('version' in transaction) {
-            return transaction.message.compiledInstructions.map((ix) => {
+            const message = transaction.message;
+            const accountKeys = message.getAccountKeys({ addressLookupTableAccounts });
+            const keyAt = (index: number) => {
+                const key = accountKeys.get(index);
+                if (!key) throw new WalletSignTransactionError(`Account index ${index} is not in the transaction or its lookup tables`);
+                return key;
+            };
+            return message.compiledInstructions.map((ix) => {
                 return new TransactionInstruction({
                     keys: ix.accountKeyIndexes.map((keyIndex) => {
                         return {
-                            pubkey: transaction.message.staticAccountKeys[keyIndex],
-                            isSigner: transaction.message.isAccountSigner(keyIndex),
-                            isWritable: transaction.message.isAccountWritable(keyIndex),
+                            pubkey: keyAt(keyIndex),
+                            isSigner: message.isAccountSigner(keyIndex),
+                            isWritable: message.isAccountWritable(keyIndex),
                         };
                     }),
-                    programId: new PublicKey(transaction.message.staticAccountKeys[ix.programIdIndex]),
+                    programId: keyAt(ix.programIdIndex),
                     data: Buffer.from(ix.data),
                 });
             });

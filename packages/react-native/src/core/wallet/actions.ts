@@ -44,6 +44,7 @@ import { handleBrowserResult } from '../browser/parseResult';
 import { getFeePayer, signAndExecuteTransaction } from '../paymaster';
 import { logger } from '../logger';
 import { type AuthorityTurn, confirmOrThrow, noteAuthorityLanded } from './sequence';
+import { buildPreviewTransactionBase64 as previewTransactionBase64 } from './preview';
 
 /**
  * Factory that returns high-level wallet operations bound to a given
@@ -338,20 +339,25 @@ export function toBase64Url(bytes: Uint8Array): string {
     .replace(/=+$/, '');
 }
 
-/** Serialize a set of user-facing instructions into a base64 v0 tx for portal preview. */
+/**
+ * Serialize a set of user-facing instructions into a base64 v0 tx for portal
+ * preview, compiled with the caller's lookup tables like the transaction that
+ * is sent. One still over the packet limit is serialized anyway, never thrown
+ * on: see ./preview.
+ */
 export async function buildPreviewTransactionBase64(params: {
   connection: Connection;
   feePayer: PublicKey;
   instructions: TransactionInstruction[];
+  addressLookupTables?: AddressLookupTableAccount[];
 }): Promise<string> {
   const { blockhash } = await params.connection.getLatestBlockhash();
-  const message = new TransactionMessage({
-    payerKey: params.feePayer,
+  return previewTransactionBase64({
+    feePayer: params.feePayer,
     recentBlockhash: blockhash,
     instructions: params.instructions,
-  }).compileToV0Message();
-  const tx = new VersionedTransaction(message);
-  return Buffer.from(tx.serialize()).toString('base64');
+    addressLookupTables: params.addressLookupTables,
+  });
 }
 
 /**
