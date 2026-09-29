@@ -43,6 +43,7 @@ import { openBrowser } from '../browser/open';
 import { handleBrowserResult } from '../browser/parseResult';
 import { getFeePayer, signAndExecuteTransaction } from '../paymaster';
 import { logger } from '../logger';
+import { type AuthorityTurn, confirmOrThrow, noteAuthorityLanded } from './sequence';
 
 /**
  * Factory that returns high-level wallet operations bound to a given
@@ -183,11 +184,14 @@ export const createWalletActions = (
         },
       });
 
+      // Resolves once confirmed; the first signature for the new passkey
+      // authority is then read at or past its creation.
       const signature = await sendInstructionsViaPaymaster({
         instructions,
         connection,
         feePayer,
         config,
+        createsAuthority: authorityPda,
       });
       if (!signature) {
         logger.error('Create wallet relayer error:', {
@@ -195,7 +199,6 @@ export const createWalletActions = (
         });
         throw new Error('Create wallet relayer error');
       }
-      await connection.confirmTransaction(signature, 'confirmed');
 
       // Saved as created, never looked up again: until its first transaction
       // a lookup would offer it for confirmation like any wallet never signed for.
@@ -244,7 +247,7 @@ export const createWalletActions = (
       allInstructions.push(...instructions);
 
       const alts = transactionOptions?.addressLookupTableAccounts ?? [];
-      const signature = await sendInstructionsViaPaymaster({
+      return await sendInstructionsViaPaymaster({
         instructions: allInstructions,
         connection,
         feePayer,
@@ -253,9 +256,6 @@ export const createWalletActions = (
         addressLookupTables: alts,
         feeToken: transactionOptions?.feeToken,
       });
-
-      await connection.confirmTransaction(signature, 'confirmed');
-      return signature;
     } catch (error) {
       logger.error('ExecuteWallet action failed:', error, {
         smartWallet: data.smartWallet,
@@ -394,10 +394,6 @@ async function openPortalSign(params: PortalSignParams): Promise<BrowserResult> 
 }
 
 /**
- * Signs and sends a prebuilt list of instructions through the paymaster.
- * Used by every mutation path (passkey- or session-signed).
- */
-/**
  * The paymaster for a wallet's protocol. v1 wallets keep the relayer the app
  * used before v2 (`v1ConfigPaymaster`, defaulting to the main one).
  */
@@ -410,6 +406,13 @@ export function paymasterFor(
     : config.configPaymaster;
 }
 
+/**
+ * Signs and sends a prebuilt list of instructions through the paymaster, and
+ * resolves once the transaction is confirmed (see ./sequence). It rejects when
+ * the transaction failed on chain or expired without landing: the paymaster's
+ * answer only says the RPC accepted it. Used by every mutation path (passkey-
+ * or session-signed).
+ */
 export async function sendInstructionsViaPaymaster(params: {
   instructions: TransactionInstruction[];
   connection: Connection;
@@ -421,8 +424,15 @@ export async function sendInstructionsViaPaymaster(params: {
   feeToken?: string;
   /** Optional extra signers (e.g., session Keypair for Ed25519 auth). */
   extraSigners?: Keypair[];
+  /**
+   * The lane of the passkey authority whose counter this transaction
+   * consumes: its next challenge is then read from state that includes it.
+   */
+  turn?: AuthorityTurn;
+  /** A passkey authority this transaction creates: its first challenge is read at or past the creation. */
+  createsAuthority?: PublicKey;
 }): Promise<string> {
-  const { blockhash } = await params.connection.getLatestBlockhash();
+  const { blockhash, lastValidBlockHeight } = await params.connection.getLatestBlockhash();
   const msg = new TransactionMessage({
     payerKey: params.feePayer,
     recentBlockhash: blockhash,
@@ -436,13 +446,18 @@ export async function sendInstructionsViaPaymaster(params: {
 
   const serialized = Buffer.from(tx.serialize()).toString('base64');
   const paymaster = paymasterFor(params.config, params.version ?? 2);
-  return signAndExecuteTransaction(
+  const signature = await signAndExecuteTransaction(
     serialized,
     paymaster.paymasterUrl,
     params.feePayer.toBase58(),
     paymaster.apiKey,
     params.feeToken,
   );
+  const sent = { signature, blockhash, lastValidBlockHeight };
+  if (params.turn) return params.turn.confirm(params.connection, sent);
+  const slot = await confirmOrThrow(params.connection, sent);
+  if (params.createsAuthority) noteAuthorityLanded(params.createsAuthority, slot);
+  return signature;
 }
 
 /** Decode the portal's base64 payload into the WebAuthn shape the client expects. */

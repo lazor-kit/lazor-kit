@@ -77,6 +77,18 @@ export {
   V1WalletMigratedError,
   registerCluster,
 } from './core/program';
+// A passkey signature over a counter already used (3006), and how a sent
+// transaction ended: every send resolves once it is confirmed.
+export {
+  SignatureReusedError,
+  isSignatureReusedError,
+  SIGNATURE_REUSED_CODE,
+} from './core/program';
+export {
+  TransactionFailedError,
+  TransactionExpiredError,
+  ConfirmationTimeoutError,
+} from './core/wallet/sequence';
 // Which wallet is a passkey's own (the credential hash alone is public): what
 // connect asks the user when it will not adopt one on its own.
 export {

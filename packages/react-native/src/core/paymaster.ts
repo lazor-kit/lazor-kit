@@ -5,6 +5,7 @@
   wallet transactions.
 */
 import { PublicKey } from '@solana/web3.js';
+import { SignatureReusedError, isSignatureReusedError } from '../program/protocol';
 
 interface JsonRpcResponse<T> {
   jsonrpc: '2.0';
@@ -82,7 +83,13 @@ export const getFeePayer = async (paymasterUrl: string, apiKey?: string): Promis
 };
 
 /**
- * Signs and immediately broadcasts a transaction via the paymaster.
+ * Signs and immediately broadcasts a transaction via the paymaster. Resolves
+ * when the paymaster answers, which may be before the transaction has
+ * executed: callers confirm it themselves.
+ *
+ * A rejection with LazorKit's SignatureReused (3006) throws
+ * `SignatureReusedError`: the passkey signature in it is bound to a counter
+ * already used, so these bytes can never succeed and are not sent again.
  */
 export const signAndExecuteTransaction = async (
   base64EncodedTransaction: string,
@@ -96,16 +103,21 @@ export const signAndExecuteTransaction = async (
     signed_transaction: string;
     signer_pubkey: string;
   }
-  const result = await rpcRequest<SignAndSendResult>(
-    'signAndSendTransaction',
-    {
-      transaction: base64EncodedTransaction,
-      signer_key: signerKey,
-      ...(feeToken && { fee_token: feeToken }),
-    },
-    paymasterUrl,
-    apiKey
-  );
+  let result: SignAndSendResult;
+  try {
+    result = await rpcRequest<SignAndSendResult>(
+      'signAndSendTransaction',
+      {
+        transaction: base64EncodedTransaction,
+        signer_key: signerKey,
+        ...(feeToken && { fee_token: feeToken }),
+      },
+      paymasterUrl,
+      apiKey
+    );
+  } catch (error) {
+    throw isSignatureReusedError(error) ? new SignatureReusedError(error) : error;
+  }
 
   if (!result.signature) {
     throw new Error('Failed to sign and execute transaction');

@@ -15,5 +15,11 @@ export { useWallet, useWallet as useLazorWallet } from './react/hook';
 export { useWalletStore } from './react/store';
 export * from './types';
 export { logger } from './core/logger';
+// How a sent transaction ended: every send resolves once it is confirmed.
+export {
+  TransactionFailedError,
+  TransactionExpiredError,
+  ConfirmationTimeoutError,
+} from './core/wallet/sequence';
 export * from './config';
 export * from './program';

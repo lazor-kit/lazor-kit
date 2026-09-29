@@ -8,6 +8,7 @@ import {
 } from '@solana/web3.js';
 import { Logger } from '../../utils/logger';
 import { Buffer } from 'buffer';
+import { SignatureReusedError, isSignatureReusedError } from '../program/protocol';
 export interface PaymasterConfig {
     paymasterUrl: string;
     apiKey?: string;
@@ -208,7 +209,13 @@ export class Paymaster {
     }
 
     /**
-     * Sign and send a transaction with retries
+     * Sign and send a transaction with retries. Resolves when the paymaster
+     * answers, which may be before the transaction has executed: callers that
+     * need its outcome confirm it themselves.
+     *
+     * A rejection with LazorKit's SignatureReused (3006) is not retried: the
+     * passkey signature in it is bound to a counter already used, so the same
+     * bytes can never succeed. It throws `SignatureReusedError` at once.
      * @param transaction Transaction to sign and send
      * @param maxRetries Maximum number of retry attempts (default: 3)
      * @param baseDelay Base delay between retries in ms (default: 1000)
@@ -219,6 +226,7 @@ export class Paymaster {
             try {
                 return await this.attemptSignAndSend(transaction, attempt);
             } catch (error) {
+                if (isSignatureReusedError(error)) throw new SignatureReusedError(error);
                 if (attempt === maxRetries) {
                     this.logger.error('All retry attempts failed', error);
                     throw error;
@@ -275,7 +283,9 @@ export class Paymaster {
     }
 
     /**
-     * Sign and send a transaction with retries
+     * Sign and send a transaction with retries. Resolves when the paymaster
+     * answers (see `signAndSend`); a SignatureReused (3006) rejection is not
+     * retried and throws `SignatureReusedError`.
      * @param transaction Transaction to sign and send
      * @param maxRetries Maximum number of retry attempts (default: 3)
      * @param baseDelay Base delay between retries in ms (default: 1000)
@@ -286,6 +296,7 @@ export class Paymaster {
             try {
                 return await this.attemptSignAndSendVersionedTransaction(transaction, attempt);
             } catch (error) {
+                if (isSignatureReusedError(error)) throw new SignatureReusedError(error);
                 if (attempt === maxRetries) {
                     this.logger.error('All retry attempts failed', error);
                     throw error;

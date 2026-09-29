@@ -35,6 +35,7 @@ import {
     V1WalletMigratedError,
 } from '../program';
 import { getCredentialHash } from '../wallet/utils';
+import { confirmOrThrow, noteAuthorityLanded, withAuthority } from '../wallet/sequence';
 import { clearPendingConfirmation, connectAbandoned, connectFreshWallet } from '../wallet/resolveWallet';
 import type { OnConfirmWallet } from '../wallet/confirmation';
 import { Buffer } from 'buffer';
@@ -249,7 +250,7 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
                 createWallet: async (owner) => {
                     const { paymaster, client } = this._initializeClients(2);
                     const feePayer = await paymaster.getPayer();
-                    const { instructions, walletPda } = await client.createWallet({
+                    const { instructions, walletPda, authorityPda } = await client.createWallet({
                         payer: feePayer,
                         userSeed: randomBytes(32),
                         owner: { type: 'secp256r1', ...owner },
@@ -259,8 +260,13 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
                     // Serializing for the paymaster needs both; without them
                     // creation threw before anything was sent.
                     tx.feePayer = feePayer;
-                    tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-                    await paymaster.signAndSend(tx);
+                    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+                    tx.recentBlockhash = blockhash;
+                    const signature = await paymaster.signAndSend(tx);
+                    // Created once confirmed, and the first signature for it
+                    // is read at or past that slot.
+                    const slot = await confirmOrThrow(connection, { signature, blockhash, lastValidBlockHeight });
+                    noteAuthorityLanded(authorityPda, slot);
                     return walletPda;
                 },
                 signal,
@@ -338,6 +344,12 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         this.emit('disconnect');
     }
 
+    /**
+     * Sign with the passkey and send through the paymaster. Resolves once the
+     * transaction is confirmed, and rejects if it failed on chain. Calls for
+     * the same passkey run one after another (see core/wallet/sequence), each
+     * signed over a counter that includes the one before.
+     */
     async sendTransaction(
         transaction: Transaction | VersionedTransaction,
     ): Promise<TransactionSignature> {
@@ -383,74 +395,81 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
             }
             const { walletPda, authorityPda } = match;
             const publicKeyBytes = await readPasskeyPubkey(version, connection, authorityPda);
+            const credentialId = this._wallet.credentialId;
 
-            // Step 2: prepare execute context (challenge + opaque internal state).
-            const prepared = await client.prepareExecute({
-                payer: feePayer,
-                walletPda,
-                secp256r1: { credentialIdHash, publicKeyBytes, authorityPda },
-                instructions,
-            });
-
-            const encodedChallenge = toBase64Url(prepared.challenge);
-
-            // Build a display-only v0 transaction for the portal preview.
-            const latest = await connection.getLatestBlockhash();
-            const displayMessage = new TransactionMessage({
-                payerKey: feePayer,
-                recentBlockhash: latest.blockhash,
-                instructions,
-            }).compileToV0Message();
-            const base64Tx = Buffer.from(new VersionedTransaction(displayMessage).serialize()).toString('base64');
-
-            const dialogManager = this._createDialogManager();
-            try {
-                // Step 3: obtain the signature via the portal.
-                const signResult: SignResult = await dialogManager.openSign(
-                    encodedChallenge,
-                    base64Tx,
-                    this._wallet.credentialId,
-                    this._config.clusterSimulation,
-                );
-
-                // Step 4: decode portal result.
-                const signature = new Uint8Array(Buffer.from(signResult.signature, 'base64'));
-                const authenticatorData = new Uint8Array(
-                    Buffer.from(signResult.authenticatorDataBase64, 'base64'),
-                );
-                const clientDataJsonRaw = Buffer.from(signResult.clientDataJsonBase64, 'base64');
-                const clientDataJsonHash = new Uint8Array(sha256.arrayBuffer(clientDataJsonRaw));
-
-                const { instructions: finalizedIxs } = client.finalizeExecute(prepared, {
-                    signature,
-                    authenticatorData,
-                    clientDataJsonHash,
-                    clientDataJson: new Uint8Array(clientDataJsonRaw),
+            return await withAuthority(authorityPda, async (turn) => {
+                // Step 2: prepare execute context (challenge + opaque internal
+                // state), from state that includes this passkey's last send.
+                const prepared = await client.prepareExecute({
+                    payer: feePayer,
+                    walletPda,
+                    secp256r1: { credentialIdHash, publicKeyBytes, authorityPda, ...(await turn.challengeReads(connection)) },
+                    instructions,
                 });
 
-                // Step 5: send via paymaster (versioned if LUTs supplied, legacy otherwise).
-                if (addressLookupTableAccounts.length > 0) {
-                    const { blockhash } = await connection.getLatestBlockhash();
-                    const v0Message = new TransactionMessage({
-                        payerKey: feePayer,
-                        recentBlockhash: blockhash,
-                        instructions: finalizedIxs,
-                    }).compileToV0Message(addressLookupTableAccounts);
-                    return await paymaster.signAndSendVersionedTransaction(
-                        new VersionedTransaction(v0Message),
-                    );
-                }
+                const encodedChallenge = toBase64Url(prepared.challenge);
 
-                // A legacy transaction cannot be serialized for the paymaster
-                // without its fee payer and a blockhash.
-                const tx = new Transaction();
-                tx.add(...finalizedIxs);
-                tx.feePayer = feePayer;
-                tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-                return await paymaster.signAndSend(tx);
-            } finally {
-                dialogManager.destroy();
-            }
+                // Build a display-only v0 transaction for the portal preview.
+                const latest = await connection.getLatestBlockhash();
+                const displayMessage = new TransactionMessage({
+                    payerKey: feePayer,
+                    recentBlockhash: latest.blockhash,
+                    instructions,
+                }).compileToV0Message();
+                const base64Tx = Buffer.from(new VersionedTransaction(displayMessage).serialize()).toString('base64');
+
+                const dialogManager = this._createDialogManager();
+                try {
+                    // Step 3: obtain the signature via the portal.
+                    const signResult: SignResult = await dialogManager.openSign(
+                        encodedChallenge,
+                        base64Tx,
+                        credentialId,
+                        this._config.clusterSimulation,
+                    );
+
+                    // Step 4: decode portal result.
+                    const signature = new Uint8Array(Buffer.from(signResult.signature, 'base64'));
+                    const authenticatorData = new Uint8Array(
+                        Buffer.from(signResult.authenticatorDataBase64, 'base64'),
+                    );
+                    const clientDataJsonRaw = Buffer.from(signResult.clientDataJsonBase64, 'base64');
+                    const clientDataJsonHash = new Uint8Array(sha256.arrayBuffer(clientDataJsonRaw));
+
+                    const { instructions: finalizedIxs } = client.finalizeExecute(prepared, {
+                        signature,
+                        authenticatorData,
+                        clientDataJsonHash,
+                        clientDataJson: new Uint8Array(clientDataJsonRaw),
+                    });
+
+                    // Step 5: send via paymaster (versioned if LUTs supplied,
+                    // legacy otherwise), then wait until it is confirmed.
+                    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+                    let txSignature: string;
+                    if (addressLookupTableAccounts.length > 0) {
+                        const v0Message = new TransactionMessage({
+                            payerKey: feePayer,
+                            recentBlockhash: blockhash,
+                            instructions: finalizedIxs,
+                        }).compileToV0Message(addressLookupTableAccounts);
+                        txSignature = await paymaster.signAndSendVersionedTransaction(
+                            new VersionedTransaction(v0Message),
+                        );
+                    } else {
+                        // A legacy transaction cannot be serialized for the
+                        // paymaster without its fee payer and a blockhash.
+                        const tx = new Transaction();
+                        tx.add(...finalizedIxs);
+                        tx.feePayer = feePayer;
+                        tx.recentBlockhash = blockhash;
+                        txSignature = await paymaster.signAndSend(tx);
+                    }
+                    return await turn.confirm(connection, { signature: txSignature, blockhash, lastValidBlockHeight });
+                } finally {
+                    dialogManager.destroy();
+                }
+            });
 
         } catch (error: any) {
             const err = isRetiredDeploymentError(error, this._wallet ? versionOf(this._wallet) : undefined)
