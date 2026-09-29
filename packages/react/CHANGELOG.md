@@ -1,5 +1,11 @@
 # @lazorkit/wallet
 
+## 3.0.1
+
+### Patch Changes
+
+- [#96](https://github.com/lazor-kit/lazor-kit/pull/96) [`b98f9e4`](https://github.com/lazor-kit/lazor-kit/commit/b98f9e4ddf0a9d2205fac8f28568f28ed18a27dd) Thanks [@onspeedhp](https://github.com/onspeedhp)! - Declare `@solana/web3.js` ^1.99.0 as the peer range, the floor the wallet's own peer set already needs: `@solana/wallet-adapter-base` ^0.9.27 now resolves to 0.9.28, which requires `@solana/web3.js` ^1.99.0. An app that pins `@solana/web3.js` 1.98.x gets `npm ERESOLVE` installing the wallet either way. Move it to 1.99 (a minor release of 1.x), or install `@solana/wallet-adapter-base` 0.9.27 explicitly. Apps on a `^1.98` range resolve to 1.99 and are unaffected.
+
 ## 3.0.0
 
 ### Major Changes
