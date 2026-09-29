@@ -38,7 +38,7 @@ import { getCredentialHash } from '../wallet/utils';
 import { clearPendingConfirmation, connectAbandoned, connectFreshWallet } from '../wallet/resolveWallet';
 import type { OnConfirmWallet } from '../wallet/confirmation';
 import { Buffer } from 'buffer';
-import { DEFAULTS } from '../../config';
+import { DEFAULTS, DEFAULT_COMMITMENT } from '../../config';
 
 // ============================================================================
 // Constants & Config
@@ -215,7 +215,7 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
 
             this.emit('readyStateChange', this._readyState);
 
-            const connection = new Connection(this._config.rpcUrl);
+            const connection = this._createConnection();
             let existingWallet = await StorageManager.getWallet();
             if (existingWallet) {
                 const version = versionOf(existingWallet);
@@ -299,9 +299,21 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         });
     }
 
+    /**
+     * A connection at the commitment the wallet store uses, `confirmed`.
+     * Without one, web3.js reads at the RPC default, `finalized`, some 13-15 s
+     * behind: a wallet just created is not found yet (so a reconnect creates a
+     * second one, and the first `sendTransaction` fails), and the passkey
+     * counter read for the next signature is one the last transaction already
+     * used (`SignatureReused` after the user approved).
+     */
+    private _createConnection(): Connection {
+        return new Connection(this._config.rpcUrl, DEFAULT_COMMITMENT);
+    }
+
     /** Connection, paymaster and client for one protocol (see core/program/protocol). */
     private _initializeClients(version: ProtocolVersion) {
-        const connection = new Connection(this._config.rpcUrl);
+        const connection = this._createConnection();
         const paymaster = new Paymaster(
             version === 1
                 ? (this._config.v1PaymasterConfig ?? this._config.paymasterConfig)
