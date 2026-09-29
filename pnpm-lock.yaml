@@ -48,8 +48,8 @@ importers:
   app/migrate:
     dependencies:
       '@lazorkit/sdk-legacy':
-        specifier: ^1.1.0
-        version: 1.1.0(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))
+        specifier: ^1.2.0
+        version: 1.2.0(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))
       '@lazorkit/wallet':
         specifier: workspace:*
         version: link:../../packages/react
@@ -80,7 +80,7 @@ importers:
         version: 4.7.0(vite@6.4.2(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.4))
       sdk-v1:
         specifier: npm:@lazorkit/sdk-legacy@0.3.2
-        version: '@lazorkit/sdk-legacy@0.3.2(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))'
+        version: '@lazorkit/sdk-legacy@0.3.2(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))'
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -191,8 +191,8 @@ importers:
   packages/react:
     dependencies:
       '@lazorkit/sdk-legacy':
-        specifier: ^1.1.0
-        version: 1.1.0(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))
+        specifier: ^1.2.0
+        version: 1.2.0(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))
       '@solana-program/token':
         specifier: ^0.9.0
         version: 0.9.0(@solana/kit@5.5.1(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))
@@ -217,6 +217,9 @@ importers:
       js-sha256:
         specifier: ^0.11.0
         version: 0.11.1
+      lazorkit-sdk-v1:
+        specifier: npm:@lazorkit/sdk-legacy@0.3.2
+        version: '@lazorkit/sdk-legacy@0.3.2(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))'
       react:
         specifier: ^18.3.1 || ^19.0.0
         version: 19.2.5
@@ -258,8 +261,8 @@ importers:
   packages/react-native:
     dependencies:
       '@lazorkit/sdk-legacy':
-        specifier: ^1.1.0
-        version: 1.1.0(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))
+        specifier: ^1.2.0
+        version: 1.2.0(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))
       '@react-native-async-storage/async-storage':
         specifier: ^2.2.0
         version: 2.2.0(react-native@0.85.2(@babel/core@7.29.0)(@types/react@19.2.14)(bufferutil@4.1.0)(react@19.2.5))
@@ -275,6 +278,9 @@ importers:
       js-sha256:
         specifier: ^0.11.1
         version: 0.11.1
+      lazorkit-sdk-v1:
+        specifier: npm:@lazorkit/sdk-legacy@0.3.2
+        version: '@lazorkit/sdk-legacy@0.3.2(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))'
       react:
         specifier: '>=18.0.0'
         version: 19.2.5
@@ -1391,8 +1397,8 @@ packages:
     peerDependencies:
       '@solana/web3.js': ^1.95.0
 
-  '@lazorkit/sdk-legacy@1.1.0':
-    resolution: {integrity: sha512-iNWio4A4F2cm6PwPaazjIPc9weigmDcGqjmZJaFN/N7yAkeHclfPO0I7b7Obek9w4+wa+aih6FlDAwE5jE5NYw==}
+  '@lazorkit/sdk-legacy@1.2.0':
+    resolution: {integrity: sha512-0LHkBj2UImkMn6sovtNN1GHOODt0+/FhnGzMJdk32qTDUKri/x0ixcIn0wHQ+VkcILQuxvtiPv16CVnw50l9ww==}
     engines: {node: '>=18'}
     peerDependencies:
       '@solana/web3.js': ^1.95.0
@@ -6356,14 +6362,15 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@lazorkit/sdk-legacy@0.3.2(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))':
+  '@lazorkit/sdk-legacy@0.3.2(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))':
     dependencies:
       '@noble/hashes': 1.8.0
       '@solana/web3.js': 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
       buffer: 6.0.3
 
-  '@lazorkit/sdk-legacy@1.1.0(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))':
+  '@lazorkit/sdk-legacy@1.2.0(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3))':
     dependencies:
+      '@noble/curves': 1.9.7
       '@noble/hashes': 1.8.0
       '@solana/web3.js': 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
       buffer: 6.0.3
@@ -8910,7 +8917,7 @@ snapshots:
 
   isexe@2.0.0: {}
 
-  isomorphic-ws@4.0.1(ws@7.5.10(bufferutil@4.1.0)):
+  isomorphic-ws@4.0.1(ws@7.5.10(bufferutil@4.1.0)(utf-8-validate@6.0.6)):
     dependencies:
       ws: 7.5.10(bufferutil@4.1.0)(utf-8-validate@6.0.6)
 
@@ -8932,7 +8939,7 @@ snapshots:
       delay: 5.0.0
       es6-promisify: 5.0.0
       eyes: 0.1.8
-      isomorphic-ws: 4.0.1(ws@7.5.10(bufferutil@4.1.0))
+      isomorphic-ws: 4.0.1(ws@7.5.10(bufferutil@4.1.0)(utf-8-validate@6.0.6))
       json-stringify-safe: 5.0.1
       stream-json: 1.9.1
       uuid: 8.3.2

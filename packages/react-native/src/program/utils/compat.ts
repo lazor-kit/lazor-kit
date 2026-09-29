@@ -85,12 +85,17 @@ export const findDeferredExecPda = (
   programId: PublicKey = PROGRAM_ID,
 ): [PublicKey, number] => sdkFindDeferredExecPda(walletPda, authorityPda, counter, programId);
 
+/**
+ * `wallet` is the wallet the signing authority belongs to: the program binds
+ * it into the passkey challenge, so a challenge without it never verifies.
+ */
 export const buildSecp256r1Challenge = (params: {
   discriminator: Uint8Array;
   authPayload: Uint8Array;
   signedPayload: Uint8Array;
   slot: bigint;
   payer: PublicKey;
+  wallet: PublicKey;
   counter: number;
   programId?: PublicKey;
 }): Uint8Array =>
