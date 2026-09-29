@@ -101,7 +101,8 @@ So `connect`:
 
 1. keeps only the wallets whose stored key the passkey is proven to hold — the
    key the portal reports, or a signature over a fresh challenge (at most one
-   extra passkey prompt per connect);
+   extra passkey prompt per connect, and one more only to create a wallet for
+   a passkey whose key the portal cannot report — below);
 2. uses one on its own only when it is **the one wallet this passkey has signed
    for, and nothing else can spend from it**: no other authority, live session,
    pending deferred transaction or token approval, and a vault still owned by
@@ -110,10 +111,42 @@ So `connect`:
    own wallet before its first transaction, a wallet made on the LazorKit
    migration page, and any time the passkey has signed for two wallets (a
    signature can be replayed onto a planted copy);
-4. creates a new (v2) wallet only when the passkey holds none. A wallet it just
-   created is saved as it is, never looked up again.
+4. creates a new (v2) wallet only when the passkey holds none, for the
+   passkey's own key (below). A wallet it just created is saved as it is,
+   never looked up again.
 
 A stored wallet is used as stored; none of this runs for it or for signing.
+
+### A passkey that has no wallet yet
+
+Every passkey starts without a v2 wallet, including one the user made long
+ago on another device or browser. Signing in with it never reveals its public
+key (WebAuthn's `get()` does not return one), so the portal reports the key it
+has stored for that passkey: none for a passkey made elsewhere, and possibly
+another passkey's. A wallet created for a key the passkey does not hold could
+never sign, and whatever reached its vault would be stuck. So the key a new
+wallet gets is always one a signature from this connect verifies against:
+
+- a passkey the portal registered just now: the key it reports (no extra
+  prompt);
+- otherwise the reported key, once the ownership proof of step 1 verifies
+  against it — as before: the connect reply's signature when the portal makes
+  one, else one portal sign;
+- otherwise the key **recovered from two of the passkey's signatures** over
+  fresh challenges. One ECDSA signature narrows its signer down to a couple of
+  candidate keys; a second over another challenge leaves one
+  (`resolvePasskeyPublicKey`, `@lazorkit/sdk-legacy` 1.3.0). The two are the
+  ownership proof and the connect reply's signature, or one more portal sign
+  when the reply has none: **one extra passkey prompt** over the case above,
+  a portal "sign" over a random challenge, with no transaction, for the same
+  passkey.
+
+So an existing passkey with no wallet now gets one, for its real key. Closing
+that extra prompt rejects `connect` with `PortalCancelledError`. If the
+signatures still do not settle on one key, `connect` throws an error that
+says so. In both cases nothing is created. The recovered key is whoever
+signed. Those signatures reach the SDK the way the reported key does: only
+from the portal's origin.
 
 ### Asking the user: `onConfirmWallet`
 
@@ -209,7 +242,9 @@ Finding wallets yourself with `@lazorkit/sdk-legacy`? Do not take the first
 wallet `findWalletsByAuthority(credentialIdHash)` returns — anyone can plant
 one there. Use `LazorKitClient.findOwnPasskeyWallet` with a proof over
 `createOwnershipChallenge()`; `pickOwnWallet`, `verifyOwnershipProof` and
-`selectWalletByAddress` are re-exported here.
+`selectWalletByAddress` are re-exported here. To create a wallet for a passkey
+whose key you do not have, see `resolvePasskeyPublicKey` in
+`@lazorkit/sdk-legacy`, and its notes on where the signatures must come from.
 
 ## API Reference
 

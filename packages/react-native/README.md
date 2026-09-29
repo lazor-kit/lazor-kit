@@ -100,8 +100,8 @@ their own, or hand it a wallet they have used first. So `connect` never takes
    that is still a plain system account.
 3. Anything else goes to the user — including their own wallet before its
    first transaction, and a user with two used wallets. A passkey proven on
-   no live wallet gets a new v2 wallet, saved as created (never looked up
-   again).
+   no live wallet gets a new v2 wallet, for its own key (below), saved as
+   created (never looked up again).
 
 This runs only on a fresh `connect`; a stored wallet and sign actions never
 come through it. While a wallet is connected, `connect` returns it without
@@ -109,6 +109,34 @@ opening the portal (a `confirmWallet` naming another wallet throws: disconnect
 first to connect another). It reads with `getProgramAccounts`, so `rpcUrl`
 must allow that; a failed read fails `connect` rather than counting as "no
 wallet".
+
+**A passkey that has no wallet yet.** Every passkey starts without a v2
+wallet, including one the user made on another device. Signing in never
+reveals a passkey's public key, so the portal's reply carries the key it has
+stored for it: none for a passkey made elsewhere, and possibly another
+passkey's. A wallet for a key the passkey does not hold could never sign, so
+the new wallet's key is always one a signature from this connect verifies
+against: the reported key, once the proof from step 1 verifies against it
+(as before); otherwise the key **recovered from two of the passkey's
+signatures** over fresh challenges (`resolvePasskeyPublicKey`,
+`@lazorkit/sdk-legacy` 1.3.0): the step 1 proof and the connect reply's
+signature, or one more portal sign when the reply has none. That is **one
+extra passkey prompt** over the case before it (a portal sign over a random
+challenge, no transaction). So an existing passkey with no wallet now gets
+one, for its real key. Closing that prompt rejects with
+`PortalCancelledError`. If the signatures still do not settle on one key,
+`connect` throws an error that says so. In both cases nothing is created.
+
+The recovered key is whoever signed. The signatures come back in redirects,
+like the reported key and the step 1 proof, over challenges the SDK chose and
+sent only in the portal URL it opens in the browser. So an app that merely
+fires a deep link into your redirect scheme cannot sign them. An app that can
+also *receive* your scheme's links (Android lets more than one app claim a
+custom scheme) sees the portal's redirects, and the challenges in them, and
+could answer in the portal's place with a key of its own. On iOS the auth
+session hands the redirect to your app alone; on Android prefer a redirect
+only your app can receive, such as a verified App Link. This is the trust the
+reported-key check has always placed in the redirect; recovery adds none.
 
 ```tsx
 <LazorKitProvider
