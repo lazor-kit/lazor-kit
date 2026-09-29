@@ -16,6 +16,8 @@
  */
 import {
   pickOwnWallet,
+  recoverPasskeyPublicKeys,
+  resolvePasskeyPublicKey,
   selectWalletByAddress,
   verifyOwnershipProof,
   type LazorKitClient,
@@ -141,4 +143,69 @@ export async function resolveWallet(params: ResolveWalletParams): Promise<Wallet
   const chosen = selectWalletByAddress(needsConfirmation, answer.wallet);
   if (!chosen) throw notOffered(answer.wallet, needsConfirmation);
   return chosen;
+}
+
+export interface KeyToCreateParams {
+  rpId: string;
+  /** The key the connect reply reported, if any (not evidence: any app can send that deep link on Android). */
+  reported?: Uint8Array;
+  /** The assertion the connect reply carried, over the connect URL's challenge, if any. */
+  connectProof?: OwnershipProof;
+  /** The connect's ownership proof — the same one the wallet lookup used, made now if it was not needed there. */
+  prove: () => Promise<OwnershipProof>;
+  /** One more portal sign over a fresh challenge, with the connect reply's credential. */
+  signFresh: () => Promise<OwnershipProof>;
+}
+
+/**
+ * The key to create a wallet for, once the passkey is proven to hold none.
+ * Never a key that no assertion from this connect verifies against: a wallet
+ * for a key the passkey does not hold can never sign, and whatever reaches
+ * its vault is stuck.
+ *
+ *   - The reported key, when the proof verifies against it: the same one
+ *     proof the lookup uses, so no prompt beyond what a connect costs today.
+ *   - Otherwise — no key reported (a sign-in on another device), or not this
+ *     passkey's (a portal that answers with a key from its own storage, even
+ *     another passkey's) — the key recovered from two of the passkey's
+ *     assertions over challenges chosen here (sdk-legacy's
+ *     `resolvePasskeyPublicKey`): the proof, and the connect reply's
+ *     assertion when it is over the connect challenge. With fewer than two,
+ *     or two that pin nothing, the portal signs exactly one more fresh
+ *     challenge; that sign is the one extra prompt this costs.
+ *
+ * Throws, creating nothing, when the key still cannot be pinned.
+ *
+ * Trust: a recovered key is whoever made these assertions. They come back in
+ * redirects, like the reported key and the proof, over challenges chosen here
+ * and sent only in the portal URL opened in the browser: an app that merely
+ * fires a deep link into the redirect scheme cannot sign them. One that can
+ * also receive the scheme's links (Android lets several apps claim a custom
+ * scheme) sees the portal's redirects and their challenges, and could answer
+ * in its place — the same trust the reported-key check has always placed in
+ * the redirect. Recovery adds none.
+ */
+export async function keyToCreate(params: KeyToCreateParams): Promise<Uint8Array> {
+  const { rpId, reported, connectProof } = params;
+  const proof = await params.prove();
+  if (reported?.length === 33 && verifyOwnershipProof([{ publicKey: reported }], proof, rpId).length) {
+    return reported;
+  }
+  const proofs: OwnershipProof[] = [];
+  if (connectProof && connectProof !== proof && recoverPasskeyPublicKeys(connectProof, rpId).length) {
+    proofs.push(connectProof);
+  }
+  proofs.push(proof);
+  let key = resolvePasskeyPublicKey(proofs, rpId);
+  if (!key) {
+    proofs.push(await params.signFresh());
+    key = resolvePasskeyPublicKey(proofs, rpId);
+  }
+  if (!key) {
+    throw new Error(
+      "This passkey has no wallet yet, and its public key could not be determined: the portal did not report " +
+        "this passkey's key, and its signatures did not pin one. Nothing was created.",
+    );
+  }
+  return key;
 }

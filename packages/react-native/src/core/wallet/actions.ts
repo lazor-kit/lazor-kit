@@ -38,7 +38,7 @@ import {
   versionOf,
 } from '../../program';
 import { connectAbandoned, rememberCandidates, takeRememberedCandidate } from './confirmation';
-import { resolveWallet } from './resolveWallet';
+import { keyToCreate, resolveWallet } from './resolveWallet';
 import { API_ENDPOINTS, DEFAULTS } from '../../config';
 import { openBrowser } from '../browser/open';
 import { handleBrowserResult } from '../browser/parseResult';
@@ -94,7 +94,9 @@ export const createWalletActions = (
       // chosen here — in the connect reply when the portal does that, else in
       // one more portal trip — and a wallet counts only if that signature
       // verifies against its key. One proof serves both the lookup and a
-      // wallet created after it.
+      // wallet created after it — unless the reply's key is missing or not
+      // this passkey's: then creating one takes a second assertion, to
+      // recover the key (keyToCreate).
       //
       // The reply's assertion is that proof only if it verifies against some
       // key in play (a candidate's, or the reported one). One that proves
@@ -138,17 +140,22 @@ export const createWalletActions = (
 
       const client = v2Client(connection);
 
-      const compressedPubkey = new Uint8Array(data.passkeyPubkey);
-      if (compressedPubkey.length !== 33) {
-        throw new Error(
-          `Unexpected passkey pubkey length: ${compressedPubkey.length}, expected 33 bytes (compressed secp256r1)`,
-        );
-      }
-      // A new wallet is owned by the reported key, so that key must be the
-      // passkey's own before anyone pays to create it.
-      if (!verifyOwnershipProof([{ publicKey: compressedPubkey }], await prove(), rpId).length) {
-        throw new Error("The portal's reply could not be verified against this passkey; nothing was created.");
-      }
+      // A new wallet is owned by this key, so it must be the passkey's own
+      // before anyone pays to create it: the reported key once the proof
+      // verifies against it, else the key recovered from the passkey's
+      // assertions (one more portal sign when needed).
+      const compressedPubkey = await keyToCreate({
+        rpId,
+        reported: new Uint8Array(data.passkeyPubkey),
+        connectProof: options.proof,
+        prove: () => prove(),
+        signFresh: () =>
+          Promise.resolve().then(() => {
+            // No further portal trip for a connect nobody waits for.
+            checkAbandoned();
+            return proveViaPortal({ credentialId: data.credentialId, portalUrl: config.portalUrl, redirectUrl });
+          }),
+      });
 
       const feePayer = await getFeePayer(
         config.configPaymaster.paymasterUrl,
@@ -194,6 +201,9 @@ export const createWalletActions = (
       // a lookup would offer it for confirmation like any wallet never signed for.
       return {
         ...data,
+        // The key the wallet was created for: the passkey's, which the
+        // reported one may not have been.
+        passkeyPubkey: Array.from(compressedPubkey),
         smartWallet: vaultPda.toBase58(),
         walletPda: walletPda.toBase58(),
         walletDevice: authorityPda.toBase58(),

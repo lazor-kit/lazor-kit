@@ -16,7 +16,11 @@
  *   3. adopts one only when sdk-legacy's `pickOwnWallet` does — the one
  *      wallet this passkey has signed for, with nothing untrusted able to
  *      spend from it — and otherwise asks the user (`onConfirmWallet`);
- *   4. creates a v2 wallet only when the passkey is proven to hold none.
+ *   4. creates a v2 wallet only when the passkey is proven to hold none, for
+ *      the passkey's own key: the one the portal reports for a passkey it
+ *      registered just now, or once an assertion verifies against it — else
+ *      the one recovered from two of the passkey's assertions (sdk-legacy's
+ *      `resolvePasskeyPublicKey`).
  *
  * One implementation for the store's `connect` and the wallet-adapter's, so
  * the two cannot drift.
@@ -26,6 +30,8 @@ import { Buffer } from 'buffer';
 import {
     createOwnershipChallenge,
     pickOwnWallet,
+    recoverPasskeyPublicKeys,
+    resolvePasskeyPublicKey,
     selectWalletByAddress,
     verifyOwnershipProof,
     v2Client,
@@ -128,7 +134,11 @@ export interface ResolveOwnWalletParams {
     kind?: 'created' | 'asserted';
     /** The assertion the connect reply carried, over the challenge the connect URL asked for. */
     connectProof?: OwnershipProof;
-    /** One portal sign over `challenge`. Called at most once per connect. */
+    /**
+     * One portal sign over `challenge`, with the connect reply's credential.
+     * Called at most once per connect for the ownership proof, and once more
+     * only to recover the key of a passkey that has no wallet yet.
+     */
     signChallenge: (challenge: Uint8Array) => Promise<Omit<OwnershipProof, 'challenge'>>;
     trustedAuthorities?: readonly string[];
     watchMints?: readonly string[];
@@ -160,18 +170,20 @@ export async function resolveOwnWallet(p: ResolveOwnWalletParams): Promise<OwnWa
 
     // At most one proof per connect, shared by the wallet choice and creation:
     // the connect reply's own assertion when it proves anything at all, else
-    // one portal sign over a fresh challenge.
+    // one portal sign over a fresh challenge. (Creating a wallet for a passkey
+    // whose key the portal cannot report takes one more: see keyToCreate.)
     const provable: { publicKey: Uint8Array }[] = [...candidates];
     if (reported) provable.push({ publicKey: reported });
     let proof =
         p.connectProof && verifyOwnershipProof(provable, p.connectProof, p.rpId).length
             ? p.connectProof
             : undefined;
+    const signFresh = async (): Promise<OwnershipProof> => {
+        const challenge = createOwnershipChallenge();
+        return { challenge, ...(await p.signChallenge(challenge)) };
+    };
     const prove = async (): Promise<OwnershipProof> => {
-        if (!proof) {
-            const challenge = createOwnershipChallenge();
-            proof = { challenge, ...(await p.signChallenge(challenge)) };
-        }
+        if (!proof) proof = await signFresh();
         return proof;
     };
 
@@ -203,7 +215,7 @@ export async function resolveOwnWallet(p: ResolveOwnWalletParams): Promise<OwnWa
     const { adopt, needsConfirmation } = pickOwnWallet(facts);
     if (adopt) return { adopt };
     if (needsConfirmation.length) return { adopt: await confirmWithUser(needsConfirmation, p) };
-    return { create: await keyToCreate(p, reported, prove) };
+    return { create: await keyToCreate(p, reported, prove, signFresh) };
 }
 
 /** Ask the user which of `offered` is theirs, the way `onConfirmWallet` says. */
@@ -245,30 +257,71 @@ async function confirmWithUser(offered: WalletFacts[], p: ResolveOwnWalletParams
     return chosen;
 }
 
-/** The key to create a wallet for: the reported one, once it is shown to be the passkey's. */
+/**
+ * The key to create a wallet for. Never one that no assertion from this
+ * connect has shown to be the signer's: a wallet for a key the passkey does
+ * not hold can never sign, and whatever reaches its vault is stuck.
+ *
+ *   - Registered just now (`kind: 'created'`): the reported key, as the
+ *     portal's own (origin-checked) reply gives it. No prompt beyond the connect.
+ *   - Otherwise the reported key, once the proof verifies against it. The
+ *     same one proof the wallet lookup uses, so no prompt beyond today's.
+ *   - Otherwise — no key reported, or not this passkey's (the portal reports
+ *     one from its own storage, and falls back to another passkey's) — the
+ *     key recovered from two of the passkey's assertions over challenges
+ *     chosen here: the proof, and the connect reply's assertion or one more
+ *     portal sign. That extra sign is the one prompt this costs.
+ */
 async function keyToCreate(
     p: ResolveOwnWalletParams,
     reported: Uint8Array | undefined,
     prove: () => Promise<OwnershipProof>,
+    signFresh: () => Promise<OwnershipProof>,
 ): Promise<Uint8Array> {
-    if (!reported) {
-        throw new Error(
-            'This passkey has no wallet yet, and signing in with an existing passkey does not reveal ' +
-                'its public key. Create the wallet with "Create new account".',
-        );
+    if (reported && p.kind === 'created') return reported;
+    const proof = await prove();
+    if (reported && verifyOwnershipProof([{ publicKey: reported }], proof, p.rpId).length) return reported;
+    return recoverOwnKey(p.rpId, p.connectProof, proof, signFresh);
+}
+
+/**
+ * The passkey's public key, from its assertions: each names its signer up to
+ * a few candidate keys, and two over different challenges pin it
+ * (`resolvePasskeyPublicKey`). `proof` is the one already made; the connect
+ * reply's assertion counts too when it is over the connect challenge. With
+ * fewer than two, or two that pin nothing, the portal signs exactly one more
+ * fresh challenge, with the connect reply's credential.
+ *
+ * Trust: the key is whoever made these assertions. Here they come from the
+ * portal, and a reply counts only from the portal's origin (DialogManager
+ * checks `event.origin`) — the channel the reported key has always come
+ * through, so this trusts the portal no more than before. Throws, creating
+ * nothing, when the key still cannot be pinned.
+ */
+async function recoverOwnKey(
+    rpId: string,
+    connectProof: OwnershipProof | undefined,
+    proof: OwnershipProof,
+    signFresh: () => Promise<OwnershipProof>,
+): Promise<Uint8Array> {
+    const proofs: OwnershipProof[] = [];
+    if (connectProof && connectProof !== proof && recoverPasskeyPublicKeys(connectProof, rpId).length) {
+        proofs.push(connectProof);
     }
-    // Registered just now, by the portal's own (origin-checked) account.
-    if (p.kind === 'created') return reported;
-    // Otherwise the portal may report a key from its storage, even another
-    // passkey's. A wallet created for a key the passkey does not hold can
-    // never sign — so prove it first.
-    if (!verifyOwnershipProof([{ publicKey: reported }], await prove(), p.rpId).length) {
+    proofs.push(proof);
+    let key = resolvePasskeyPublicKey(proofs, rpId);
+    if (!key) {
+        proofs.push(await signFresh());
+        key = resolvePasskeyPublicKey(proofs, rpId);
+    }
+    if (!key) {
         throw new Error(
-            'The portal reported a public key this passkey does not hold, so no wallet was created. ' +
+            "This passkey has no wallet yet, and its public key could not be determined: the portal did not " +
+                "report this passkey's key, and its signatures did not pin one. No wallet was created. " +
                 'Try again, or create a new passkey with "Create new account".',
         );
     }
-    return reported;
+    return key;
 }
 
 /** What `connectFreshWallet` needs of the portal dialog. */
