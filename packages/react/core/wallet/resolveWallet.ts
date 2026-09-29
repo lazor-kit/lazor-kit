@@ -135,11 +135,12 @@ export interface ResolveOwnWalletParams {
     /** The assertion the connect reply carried, over the challenge the connect URL asked for. */
     connectProof?: OwnershipProof;
     /**
-     * One portal sign over `challenge`, with the connect reply's credential.
+     * One portal sign over `challenge`, with the connect reply's credential —
+     * and the credential the portal says it signed with, when it says.
      * Called at most once per connect for the ownership proof, and once more
      * only to recover the key of a passkey that has no wallet yet.
      */
-    signChallenge: (challenge: Uint8Array) => Promise<Omit<OwnershipProof, 'challenge'>>;
+    signChallenge: (challenge: Uint8Array) => Promise<Omit<OwnershipProof, 'challenge'> & { credentialId?: string }>;
     trustedAuthorities?: readonly string[];
     watchMints?: readonly string[];
     onConfirmWallet?: OnConfirmWallet;
@@ -155,6 +156,9 @@ export interface ResolveOwnWalletParams {
 
 /** A proven wallet to use, or the key to create one for (the passkey is proven to hold no live wallet). */
 export type OwnWallet = { adopt: WalletFacts } | { create: Uint8Array };
+
+/** An ownership proof; from a portal sign, also the credential the portal said it signed with, if it said. */
+type PortalProof = OwnershipProof & { readonly signedWith?: string };
 
 /**
  * Steps 2–7 of a fresh connect, after the portal replied: find, prove,
@@ -174,15 +178,16 @@ export async function resolveOwnWallet(p: ResolveOwnWalletParams): Promise<OwnWa
     // whose key the portal cannot report takes one more: see keyToCreate.)
     const provable: { publicKey: Uint8Array }[] = [...candidates];
     if (reported) provable.push({ publicKey: reported });
-    let proof =
+    let proof: PortalProof | undefined =
         p.connectProof && verifyOwnershipProof(provable, p.connectProof, p.rpId).length
             ? p.connectProof
             : undefined;
-    const signFresh = async (): Promise<OwnershipProof> => {
+    const signFresh = async (): Promise<PortalProof> => {
         const challenge = createOwnershipChallenge();
-        return { challenge, ...(await p.signChallenge(challenge)) };
+        const { credentialId: signedWith, ...assertion } = await p.signChallenge(challenge);
+        return { challenge, ...assertion, signedWith };
     };
-    const prove = async (): Promise<OwnershipProof> => {
+    const prove = async (): Promise<PortalProof> => {
         if (!proof) proof = await signFresh();
         return proof;
     };
@@ -259,8 +264,9 @@ async function confirmWithUser(offered: WalletFacts[], p: ResolveOwnWalletParams
 
 /**
  * The key to create a wallet for. Never one that no assertion from this
- * connect has shown to be the signer's: a wallet for a key the passkey does
- * not hold can never sign, and whatever reaches its vault is stuck.
+ * connect has shown to be the signer's, and never another passkey's: the
+ * wallet is created under this credential, and a wallet whose key the passkey
+ * does not hold can never sign — whatever reaches its vault is stuck.
  *
  *   - Registered just now (`kind: 'created'`): the reported key, as the
  *     portal's own (origin-checked) reply gives it. No prompt beyond the connect.
@@ -271,17 +277,22 @@ async function confirmWithUser(offered: WalletFacts[], p: ResolveOwnWalletParams
  *     key recovered from two of the passkey's assertions over challenges
  *     chosen here: the proof, and the connect reply's assertion or one more
  *     portal sign. That extra sign is the one prompt this costs.
+ *
+ * A portal sign that names another credential than the connect's made its
+ * signature with another passkey, so it settles no key for this one: the
+ * connect fails, creating nothing.
  */
 async function keyToCreate(
     p: ResolveOwnWalletParams,
     reported: Uint8Array | undefined,
-    prove: () => Promise<OwnershipProof>,
-    signFresh: () => Promise<OwnershipProof>,
+    prove: () => Promise<PortalProof>,
+    signFresh: () => Promise<PortalProof>,
 ): Promise<Uint8Array> {
     if (reported && p.kind === 'created') return reported;
     const proof = await prove();
+    refuseOtherPasskey(proof, p.credentialId);
     if (reported && verifyOwnershipProof([{ publicKey: reported }], proof, p.rpId).length) return reported;
-    return recoverOwnKey(p.rpId, p.connectProof, proof, signFresh);
+    return recoverOwnKey(p, proof, signFresh);
 }
 
 /**
@@ -292,26 +303,47 @@ async function keyToCreate(
  * fewer than two, or two that pin nothing, the portal signs exactly one more
  * fresh challenge, with the connect reply's credential.
  *
+ * Which passkey: an assertion names its signer's key, never its credential,
+ * so what ties the key to the credential the wallet is created under is the
+ * portal's word — the connect reply's assertion (made by the sign-in that
+ * gave the credential), or a sign reply that names the credential it signed
+ * with (the portal signs with the one the sign URL names, as its only
+ * `allowCredentials` entry, and says so). All the assertions share the one
+ * key, so one of them tied is enough. With none tied, nothing is created: the
+ * key could be another passkey's, and this credential could never sign for it.
+ *
  * Trust: the key is whoever made these assertions. Here they come from the
  * portal, and a reply counts only from the portal's origin (DialogManager
- * checks `event.origin`) — the channel the reported key has always come
- * through, so this trusts the portal no more than before. Throws, creating
- * nothing, when the key still cannot be pinned.
+ * checks `event.origin`) — the channel the reported key and the credential
+ * have always come through, so this trusts the portal no more than before.
+ * Throws, creating nothing, when the key still cannot be pinned.
  */
 async function recoverOwnKey(
-    rpId: string,
-    connectProof: OwnershipProof | undefined,
-    proof: OwnershipProof,
-    signFresh: () => Promise<OwnershipProof>,
+    p: ResolveOwnWalletParams,
+    proof: PortalProof,
+    signFresh: () => Promise<PortalProof>,
 ): Promise<Uint8Array> {
-    const proofs: OwnershipProof[] = [];
+    const { rpId, connectProof, credentialId } = p;
+    const proofs: PortalProof[] = [];
     if (connectProof && connectProof !== proof && recoverPasskeyPublicKeys(connectProof, rpId).length) {
         proofs.push(connectProof);
     }
     proofs.push(proof);
+    const tied = (pr: PortalProof) =>
+        pr === connectProof || (pr.signedWith !== undefined && sameCredential(pr.signedWith, credentialId));
+    // Another sign would come from the same portal, and name no more.
+    if (!proofs.some(tied)) {
+        throw new Error(
+            "This passkey has no wallet yet, and its public key could not be determined: the portal did not " +
+                "report this passkey's key, and did not say which passkey made its signatures, so no key can be " +
+                'tied to this one. No wallet was created. Create a new passkey with "Create new account".',
+        );
+    }
     let key = resolvePasskeyPublicKey(proofs, rpId);
     if (!key) {
-        proofs.push(await signFresh());
+        const fresh = await signFresh();
+        refuseOtherPasskey(fresh, credentialId);
+        proofs.push(fresh);
         key = resolvePasskeyPublicKey(proofs, rpId);
     }
     if (!key) {
@@ -322,6 +354,21 @@ async function recoverOwnKey(
         );
     }
     return key;
+}
+
+/** Throws when a portal sign says it was made with another passkey than `credentialId`. */
+function refuseOtherPasskey(proof: PortalProof, credentialId: string): void {
+    if (proof.signedWith === undefined || sameCredential(proof.signedWith, credentialId)) return;
+    throw new Error(
+        'The portal signed with another passkey than the one that connected, so its signature says nothing ' +
+            "about this passkey's key. No wallet was created. Try again.",
+    );
+}
+
+/** Whether two base64 credential ids are the same credential. */
+function sameCredential(a: string, b: string): boolean {
+    const x = Buffer.from(a, 'base64');
+    return x.length > 0 && bytesEqual(x, Buffer.from(b, 'base64'));
 }
 
 /** What `connectFreshWallet` needs of the portal dialog. */
@@ -379,8 +426,10 @@ export async function connectFreshWallet(p: ConnectFreshWalletParams): Promise<W
             reportedPubkey: reply.publicKey ? getPasskeyPublicKey(reply.publicKey) : undefined,
             kind: reply.kind,
             connectProof: reply.assertion ? { challenge, ...decodeAssertion(reply.assertion) } : undefined,
-            signChallenge: async (c) =>
-                decodeAssertion(await dialog.openSign(toBase64Url(c), '', reply.credentialId)),
+            signChallenge: async (c) => {
+                const signed = await dialog.openSign(toBase64Url(c), '', reply.credentialId);
+                return { ...decodeAssertion(signed), credentialId: signed.credentialId };
+            },
             trustedAuthorities: p.trustedAuthorities,
             watchMints: p.watchMints,
             onConfirmWallet: p.onConfirmWallet,

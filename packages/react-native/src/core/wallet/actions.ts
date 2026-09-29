@@ -28,7 +28,6 @@ import {
   WalletInfo,
 } from '../../types';
 import {
-  type OwnershipProof,
   type ProtocolVersion,
   type WalletFacts,
   type WebAuthnResponse,
@@ -38,7 +37,7 @@ import {
   versionOf,
 } from '../../program';
 import { connectAbandoned, rememberCandidates, takeRememberedCandidate } from './confirmation';
-import { keyToCreate, resolveWallet } from './resolveWallet';
+import { keyToCreate, resolveWallet, type PortalProof } from './resolveWallet';
 import { API_ENDPOINTS, DEFAULTS } from '../../config';
 import { openBrowser } from '../browser/open';
 import { handleBrowserResult } from '../browser/parseResult';
@@ -103,7 +102,7 @@ export const createWalletActions = (
       // nothing — a registration, a challenge encoded some other way — would
       // otherwise fail every connect; it costs one portal sign instead, as on web.
       const reported = { publicKey: new Uint8Array(data.passkeyPubkey) };
-      let proof: Promise<OwnershipProof> | undefined;
+      let proof: Promise<PortalProof> | undefined;
       const prove = (candidates: readonly { publicKey: Uint8Array }[] = []) =>
         (proof ??=
           options.proof && verifyOwnershipProof([...candidates, reported], options.proof, rpId).length
@@ -146,6 +145,7 @@ export const createWalletActions = (
       // assertions (one more portal sign when needed).
       const compressedPubkey = await keyToCreate({
         rpId,
+        credentialId: data.credentialId,
         reported: new Uint8Array(data.passkeyPubkey),
         connectProof: options.proof,
         prove: () => prove(),
@@ -298,27 +298,32 @@ export function newOwnershipChallenge(): Uint8Array {
   }
 }
 
-/** One portal sign over a fresh challenge, as an ownership proof. */
+/**
+ * One portal sign over a fresh challenge, as an ownership proof — with the
+ * credential the portal says it signed with, when its redirect says.
+ */
 async function proveViaPortal(params: {
   credentialId: string;
   portalUrl: string;
   redirectUrl?: string;
-}): Promise<OwnershipProof> {
+}): Promise<PortalProof> {
   if (!params.redirectUrl) {
     throw new Error("Proving which wallet is this passkey's needs a redirectUrl for the portal");
   }
   const challenge = newOwnershipChallenge();
-  const response = await signChallengeViaPortal({
+  const result = await openPortalSign({
     challenge,
     credentialId: params.credentialId,
     portalUrl: params.portalUrl,
     redirectUrl: params.redirectUrl,
   });
+  const response = decodeWebAuthnResponse(result);
   return {
     challenge,
     signature: response.signature,
     authenticatorData: response.authenticatorData,
     clientDataJson: response.clientDataJson,
+    signedWith: result.credentialId,
   };
 }
 
@@ -355,14 +360,21 @@ export async function buildPreviewTransactionBase64(params: {
  *   - wait for deep-link redirect
  *   - parse + hash clientDataJSON → return WebAuthnResponse
  */
-export async function signChallengeViaPortal(params: {
+export async function signChallengeViaPortal(params: PortalSignParams): Promise<WebAuthnResponse> {
+  return decodeWebAuthnResponse(await openPortalSign(params));
+}
+
+type PortalSignParams = {
   challenge: Uint8Array;
   credentialId: string;
   portalUrl: string;
   redirectUrl: string;
   previewBase64Tx?: string;
   clusterSimulation?: 'devnet' | 'mainnet';
-}): Promise<WebAuthnResponse> {
+};
+
+/** One portal sign, as its redirect reports it. */
+async function openPortalSign(params: PortalSignParams): Promise<BrowserResult> {
   const encodedChallenge = toBase64Url(params.challenge);
   let signUrl = `${params.portalUrl}/${API_ENDPOINTS.SIGN}&message=${encodeURIComponent(
     encodedChallenge,
@@ -378,8 +390,7 @@ export async function signChallengeViaPortal(params: {
   }
 
   const resultUrl = await openBrowser(signUrl, params.redirectUrl);
-  const browserResult = handleBrowserResult(resultUrl);
-  return decodeWebAuthnResponse(browserResult);
+  return handleBrowserResult(resultUrl);
 }
 
 /**

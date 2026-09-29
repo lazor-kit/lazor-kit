@@ -14,6 +14,7 @@
  * Only for a fresh connect. A stored wallet, or a sign action, never comes
  * through here.
  */
+import { Buffer } from 'buffer';
 import {
   pickOwnWallet,
   recoverPasskeyPublicKeys,
@@ -145,23 +146,29 @@ export async function resolveWallet(params: ResolveWalletParams): Promise<Wallet
   return chosen;
 }
 
+/** An ownership proof; from a portal sign, also the credential the portal said it signed with, if it said. */
+export type PortalProof = OwnershipProof & { readonly signedWith?: string };
+
 export interface KeyToCreateParams {
   rpId: string;
+  /** The credential (base64) the connect reply named: the wallet is created under it. */
+  credentialId: string;
   /** The key the connect reply reported, if any (not evidence: any app can send that deep link on Android). */
   reported?: Uint8Array;
   /** The assertion the connect reply carried, over the connect URL's challenge, if any. */
   connectProof?: OwnershipProof;
   /** The connect's ownership proof — the same one the wallet lookup used, made now if it was not needed there. */
-  prove: () => Promise<OwnershipProof>;
+  prove: () => Promise<PortalProof>;
   /** One more portal sign over a fresh challenge, with the connect reply's credential. */
-  signFresh: () => Promise<OwnershipProof>;
+  signFresh: () => Promise<PortalProof>;
 }
 
 /**
  * The key to create a wallet for, once the passkey is proven to hold none.
- * Never a key that no assertion from this connect verifies against: a wallet
- * for a key the passkey does not hold can never sign, and whatever reaches
- * its vault is stuck.
+ * Never a key that no assertion from this connect verifies against, and never
+ * another passkey's: the wallet is created under this credential, and a
+ * wallet whose key the passkey does not hold can never sign — whatever
+ * reaches its vault is stuck.
  *
  *   - The reported key, when the proof verifies against it: the same one
  *     proof the lookup uses, so no prompt beyond what a connect costs today.
@@ -173,6 +180,15 @@ export interface KeyToCreateParams {
  *     assertion when it is over the connect challenge. With fewer than two,
  *     or two that pin nothing, the portal signs exactly one more fresh
  *     challenge; that sign is the one extra prompt this costs.
+ *
+ * Which passkey: an assertion names its signer's key, never its credential,
+ * so what ties a recovered key to `credentialId` is the portal's word — the
+ * connect reply's assertion (made by the sign-in that gave the credential),
+ * or a sign redirect that names the credential it signed with (the portal
+ * signs with the one the sign URL names, as its only `allowCredentials`
+ * entry, and says so). All the assertions share the one key, so one of them
+ * tied is enough. With none tied, nothing is created. A portal sign that
+ * names another credential fails the connect, before any key is used.
  *
  * Throws, creating nothing, when the key still cannot be pinned.
  *
@@ -186,19 +202,32 @@ export interface KeyToCreateParams {
  * the redirect. Recovery adds none.
  */
 export async function keyToCreate(params: KeyToCreateParams): Promise<Uint8Array> {
-  const { rpId, reported, connectProof } = params;
+  const { rpId, credentialId, reported, connectProof } = params;
   const proof = await params.prove();
+  refuseOtherPasskey(proof, credentialId);
   if (reported?.length === 33 && verifyOwnershipProof([{ publicKey: reported }], proof, rpId).length) {
     return reported;
   }
-  const proofs: OwnershipProof[] = [];
+  const proofs: PortalProof[] = [];
   if (connectProof && connectProof !== proof && recoverPasskeyPublicKeys(connectProof, rpId).length) {
     proofs.push(connectProof);
   }
   proofs.push(proof);
+  const tied = (p: PortalProof) =>
+    p === connectProof || (p.signedWith !== undefined && sameCredential(p.signedWith, credentialId));
+  // Another sign would come from the same portal, and name no more.
+  if (!proofs.some(tied)) {
+    throw new Error(
+      "This passkey has no wallet yet, and its public key could not be determined: the portal did not report " +
+        "this passkey's key, and did not say which passkey made its signatures, so no key can be tied to this " +
+        'one. Nothing was created.',
+    );
+  }
   let key = resolvePasskeyPublicKey(proofs, rpId);
   if (!key) {
-    proofs.push(await params.signFresh());
+    const fresh = await params.signFresh();
+    refuseOtherPasskey(fresh, credentialId);
+    proofs.push(fresh);
     key = resolvePasskeyPublicKey(proofs, rpId);
   }
   if (!key) {
@@ -208,4 +237,20 @@ export async function keyToCreate(params: KeyToCreateParams): Promise<Uint8Array
     );
   }
   return key;
+}
+
+/** Throws when a portal sign says it was made with another passkey than `credentialId`. */
+function refuseOtherPasskey(proof: PortalProof, credentialId: string): void {
+  if (proof.signedWith === undefined || sameCredential(proof.signedWith, credentialId)) return;
+  throw new Error(
+    "The portal signed with another passkey than the one that connected, so its signature says nothing about " +
+      "this passkey's key. Nothing was created.",
+  );
+}
+
+/** Whether two base64 credential ids are the same credential. */
+function sameCredential(a: string, b: string): boolean {
+  const x = Buffer.from(a, 'base64');
+  const y = Buffer.from(b, 'base64');
+  return x.length > 0 && x.length === y.length && x.every((v, i) => v === y[i]);
 }
