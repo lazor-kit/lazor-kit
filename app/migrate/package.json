@@ -14,7 +14,7 @@
     "@lazorkit/sdk-legacy": "^1.2.0",
     "@lazorkit/wallet": "workspace:*",
     "@noble/hashes": "^1.8.0",
-    "@solana/web3.js": "^1.98.0",
+    "@solana/web3.js": "^1.99.0",
     "buffer": "^6.0.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
