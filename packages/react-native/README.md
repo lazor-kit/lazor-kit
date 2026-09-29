@@ -127,16 +127,28 @@ one, for its real key. Closing that prompt rejects with
 `PortalCancelledError`. If the signatures still do not settle on one key,
 `connect` throws an error that says so. In both cases nothing is created.
 
-The recovered key is whoever signed. The signatures come back in redirects,
-like the reported key and the step 1 proof, over challenges the SDK chose and
-sent only in the portal URL it opens in the browser. So an app that merely
-fires a deep link into your redirect scheme cannot sign them. An app that can
-also *receive* your scheme's links (Android lets more than one app claim a
-custom scheme) sees the portal's redirects, and the challenges in them, and
-could answer in the portal's place with a key of its own. On iOS the auth
-session hands the redirect to your app alone; on Android prefer a redirect
-only your app can receive, such as a verified App Link. This is the trust the
-reported-key check has always placed in the redirect; recovery adds none.
+A signature names its signer's key, never its passkey, and the wallet is
+created under the passkey the connect reply names. So a recovered key is used
+only when something ties it to that passkey: the connect reply's own
+signature, or sign redirects that name the passkey they were made with (the
+portal signs with the passkey the SDK asks for, its only `allowCredentials`
+entry, and names it back). When a wallet is to be created, a sign redirect
+that names another passkey fails `connect`, whichever key the reply reported;
+so does recovery when nothing ties the key to the passkey. Nothing is created
+in either case, since that passkey could never sign for a wallet with
+another's key.
+
+Beyond that, the recovered key is whoever signed. The signatures come back in
+redirects, like the reported key and the step 1 proof, over challenges the
+SDK chose and sent only in the portal URL it opens in the browser. So an app
+that merely fires a deep link into your redirect scheme cannot sign them. An
+app that can also *receive* your scheme's links (Android lets more than one
+app claim a custom scheme) sees the portal's redirects, and the challenges in
+them, and could answer in the portal's place with a key of its own. On iOS
+the auth session hands the redirect to your app alone; on Android prefer a
+redirect only your app can receive, such as a verified App Link. This is the
+trust the reported-key check has always placed in the redirect; recovery adds
+none.
 
 ```tsx
 <LazorKitProvider

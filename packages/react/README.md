@@ -144,9 +144,20 @@ wallet gets is always one a signature from this connect verifies against:
 So an existing passkey with no wallet now gets one, for its real key. Closing
 that extra prompt rejects `connect` with `PortalCancelledError`. If the
 signatures still do not settle on one key, `connect` throws an error that
-says so. In both cases nothing is created. The recovered key is whoever
-signed. Those signatures reach the SDK the way the reported key does: only
-from the portal's origin.
+says so. In both cases nothing is created.
+
+A signature names its signer's key, never its passkey, and the wallet is
+created under the passkey the connect reply names. So a recovered key is used
+only when something ties it to that passkey: the connect reply's own
+signature, or portal signs that name the passkey they were made with (the
+portal signs with the passkey the SDK asks for, its only `allowCredentials`
+entry, and names it back). When a wallet is to be created, a portal sign that
+names another passkey fails `connect`, whichever key the portal reported; so
+does recovery when nothing ties the key to the passkey. Nothing is created in
+either case, since that passkey could never sign for a wallet with another's
+key. Beyond that, the recovered key is whoever signed: those signatures, like
+the reported key and the passkey's credential id, reach the SDK only from the
+portal's origin, so this trusts the portal no more than before.
 
 ### Asking the user: `onConfirmWallet`
 
