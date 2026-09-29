@@ -163,5 +163,7 @@ go.work.sum
 package-lock.json
 
 dist
+app/migrate/.certs/
+
 # Claude Code worktrees, at any depth
 **/.claude/worktrees/
