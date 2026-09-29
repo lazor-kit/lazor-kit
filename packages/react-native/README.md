@@ -28,7 +28,7 @@ export default function App() {
     <LazorKitProvider
       rpcUrl="https://api.devnet.solana.com"
       portalUrl="https://portal.lazor.sh"
-      configPaymaster={{ paymasterUrl: "https://lazorkit-paymaster.onrender.com" }}
+      configPaymaster={{ paymasterUrl: "https://kora.devnet.lazorkit.com" }}
     >
       <WalletScreen />
     </LazorKitProvider>
