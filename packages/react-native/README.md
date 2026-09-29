@@ -231,6 +231,32 @@ Errors:
 A second sign action while one is running rejects with `SigningError` (and
 calls its `onFail`).
 
+## Sending transactions
+
+Every send resolves once its transaction is **confirmed**, and rejects if it
+failed on chain: `signAndSendTransaction`, `transferSol`, `authorizeAndExecute`,
+`authorizeDeferred`, `executeDeferred`, `reclaimDeferred` and the session and
+authority sends. The paymaster's answer is not enough: a relayer that answers
+once the RPC accepted a transaction answers before it has run.
+
+So two sends in a row are safe. A passkey signature commits to the passkey's
+counter, which the program checks (`SignatureReused`, 3006): the adapter
+prepares each signature for a passkey only after that passkey's previous
+transaction is confirmed, and reads the counter at `confirmed` from an RPC
+node that has executed it (`minContextSlot`).
+
+| Error | When |
+|---|---|
+| `TransactionFailedError` | The transaction landed and failed: fees were paid, nothing else changed. `signature`, `transactionError`, `slot`. |
+| `TransactionExpiredError` | Its blockhash expired before it landed, so it never will. |
+| `ConfirmationTimeoutError` | No outcome within two minutes. It may still land: check `signature` before sending again. |
+| `SignatureReusedError` | LazorKit rejected the passkey signature (3006): its counter was already used. Left for the same passkey signing somewhere else at the same moment, or a paymaster reading older state than the adapter. That signature can never be valid, so it is not resent, and no new portal trip opens on its own: ask the user to sign again. |
+
+The portal's transaction preview is compiled with
+`transactionOptions.addressLookupTableAccounts`, and one over the 1232-byte
+packet limit no longer fails `signAndSendTransaction`, `authorizeAndExecute` or
+`authorizeDeferred` before the portal opens.
+
 ## API Reference
 
 ### `useWallet()`
@@ -278,10 +304,11 @@ Signs and sends transaction.
 | `payload.transactionOptions` | `object` | Config options |
 | `transactionOptions.feeToken` | `string` | Token address for gas fees (e.g. USDC). |
 | `transactionOptions.computeUnitLimit` | `number` | Max compute units. |
-| `transactionOptions.addressLookupTableAccounts` | `AddressLookupTableAccount[]` | Lookup tables for v0 txs. |
+| `transactionOptions.addressLookupTableAccounts` | `AddressLookupTableAccount[]` | Lookup tables for v0 txs (the portal preview uses them too). |
 | `transactionOptions.clusterSimulation` | `'devnet' \| 'mainnet'` | Network for simulation. |
 
 | `options.redirectUrl` | `string` | Deep link URL |
 
 **Returns**
-`Promise<string>` - Signature
+`Promise<string>` - Signature, once the transaction is confirmed (see
+[Sending transactions](#sending-transactions)).

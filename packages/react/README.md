@@ -257,6 +257,38 @@ one there. Use `LazorKitClient.findOwnPasskeyWallet` with a proof over
 whose key you do not have, see `resolvePasskeyPublicKey` in
 `@lazorkit/sdk-legacy`, and its notes on where the signatures must come from.
 
+## Sending transactions
+
+Every send resolves once its transaction is **confirmed**, and rejects if it
+failed on chain: `signAndSendTransaction`, `authorizeAndExecute`,
+`authorizeDeferred`, `executeDeferred`, the session and authority sends,
+`LazorkitWalletAdapter.sendTransaction` and the Wallet Standard
+`signAndSendTransaction`. The paymaster's answer is not enough: a relayer
+that answers once the RPC accepted a transaction answers before it has run.
+Kora confirms before it answers by default, so there the wait is one status
+read.
+
+So two sends in a row are safe (`await` one, then the other). A passkey
+signature commits to the passkey's counter, which the program checks
+(`SignatureReused`, 3006): the wallet prepares each signature for a passkey
+only after that passkey's previous transaction is confirmed, and reads the
+counter at `confirmed` from an RPC node that has executed it
+(`minContextSlot`). Calls for the same passkey made at the same time, through
+the store, the adapter or both, run one after another. The store still
+refuses a second call while one of its own is signing ("Already signing").
+
+| Error | When |
+|---|---|
+| `TransactionFailedError` | The transaction landed and failed: fees were paid, nothing else changed. `signature`, `transactionError`, `slot`. |
+| `TransactionExpiredError` | Its blockhash expired before it landed, so it never will. |
+| `ConfirmationTimeoutError` | No outcome within two minutes. It may still land: check `signature` before sending again. |
+| `SignatureReusedError` | LazorKit rejected the passkey signature (3006): its counter was already used. Left for the same passkey signing somewhere else at the same moment, or a paymaster reading older state than the wallet. That signature can never be valid, so it is not resent, and no new prompt opens on its own: ask the user to sign again. |
+
+The portal's transaction preview is compiled with the lookup tables the
+transaction is sent with (`transactionOptions.addressLookupTableAccounts`, or
+those of a dApp's v0 transaction), and a preview over the 1232-byte packet
+limit no longer fails the call before the prompt.
+
 ## API Reference
 
 ### `useWallet()`
@@ -308,8 +340,9 @@ Signs and sends transaction via Paymaster.
 | `payload.transactionOptions` | `object` | Optional config |
 | `transactionOptions.feeToken` | `string` | Token address for gas fees (e.g. USDC). |
 | `transactionOptions.computeUnitLimit` | `number` | Max compute units. |
-| `transactionOptions.addressLookupTableAccounts` | `AddressLookupTableAccount[]` | Signup tables for v0 txs. |
+| `transactionOptions.addressLookupTableAccounts` | `AddressLookupTableAccount[]` | Lookup tables for v0 txs (the portal preview uses them too). |
 | `transactionOptions.clusterSimulation` | `'devnet' \| 'mainnet'` | Network for simulation. |
 
 **Returns**
-`Promise<string>` - Transaction signature.
+`Promise<string>` - Transaction signature, once the transaction is confirmed
+(see [Sending transactions](#sending-transactions)).
