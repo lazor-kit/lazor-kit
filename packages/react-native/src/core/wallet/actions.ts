@@ -43,7 +43,7 @@ import { openBrowser } from '../browser/open';
 import { handleBrowserResult } from '../browser/parseResult';
 import { getFeePayer, signAndExecuteTransaction } from '../paymaster';
 import { logger } from '../logger';
-import { type AuthorityTurn, confirmOrThrow, noteAuthorityLanded } from './sequence';
+import { type AuthorityTurn, sendAndConfirm } from './sequence';
 import { buildPreviewTransactionBase64 as previewTransactionBase64 } from './preview';
 
 /**
@@ -415,7 +415,8 @@ export function paymasterFor(
 /**
  * Signs and sends a prebuilt list of instructions through the paymaster, and
  * resolves once the transaction is confirmed (see ./sequence). It rejects when
- * the transaction failed on chain or expired without landing: the paymaster's
+ * the transaction failed on chain or did not land, and with
+ * `TransactionOutcomeUnknownError` when that is not known: the paymaster's
  * answer only says the RPC accepted it. Used by every mutation path (passkey-
  * or session-signed).
  */
@@ -452,18 +453,23 @@ export async function sendInstructionsViaPaymaster(params: {
 
   const serialized = Buffer.from(tx.serialize()).toString('base64');
   const paymaster = paymasterFor(params.config, params.version ?? 2);
-  const signature = await signAndExecuteTransaction(
-    serialized,
-    paymaster.paymasterUrl,
-    params.feePayer.toBase58(),
-    paymaster.apiKey,
-    params.feeToken,
-  );
-  const sent = { signature, blockhash, lastValidBlockHeight };
-  if (params.turn) return params.turn.confirm(params.connection, sent);
-  const slot = await confirmOrThrow(params.connection, sent);
-  if (params.createsAuthority) noteAuthorityLanded(params.createsAuthority, slot);
-  return signature;
+  return sendAndConfirm({
+    connection: params.connection,
+    attempt: { blockhash, lastValidBlockHeight },
+    send: () =>
+      signAndExecuteTransaction(
+        serialized,
+        paymaster.paymasterUrl,
+        params.feePayer.toBase58(),
+        paymaster.apiKey,
+        params.feeToken,
+      ),
+    turn: params.turn,
+    createsAuthority: params.createsAuthority,
+    simulateLogs: async () =>
+      (await params.connection.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true })).value
+        .logs,
+  });
 }
 
 /** Decode the portal's base64 payload into the WebAuthn shape the client expects. */

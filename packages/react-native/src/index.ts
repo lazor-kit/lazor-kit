@@ -19,7 +19,10 @@ export { logger } from './core/logger';
 export {
   TransactionFailedError,
   TransactionExpiredError,
+  TransactionOutcomeUnknownError,
   ConfirmationTimeoutError,
+  PreviousTransactionPendingError,
 } from './core/wallet/sequence';
+export { PaymasterError } from './core/paymaster';
 export * from './config';
 export * from './program';

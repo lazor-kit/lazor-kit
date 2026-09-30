@@ -35,7 +35,7 @@ import {
     V1WalletMigratedError,
 } from '../program';
 import { getCredentialHash } from '../wallet/utils';
-import { confirmOrThrow, noteAuthorityLanded, withAuthority } from '../wallet/sequence';
+import { sendAndConfirm, withAuthority } from '../wallet/sequence';
 import { buildPreviewTransactionBase64 } from '../wallet/preview';
 import { clearPendingConfirmation, connectAbandoned, connectFreshWallet } from '../wallet/resolveWallet';
 import type { OnConfirmWallet } from '../wallet/confirmation';
@@ -263,11 +263,14 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
                     tx.feePayer = feePayer;
                     const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
                     tx.recentBlockhash = blockhash;
-                    const signature = await paymaster.signAndSend(tx);
                     // Created once confirmed, and the first signature for it
                     // is read at or past that slot.
-                    const slot = await confirmOrThrow(connection, { signature, blockhash, lastValidBlockHeight });
-                    noteAuthorityLanded(authorityPda, slot);
+                    await sendAndConfirm({
+                        connection,
+                        attempt: { blockhash, lastValidBlockHeight },
+                        send: () => paymaster.signAndSend(tx),
+                        createsAuthority: authorityPda,
+                    });
                     return walletPda;
                 },
                 signal,
@@ -450,16 +453,19 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
                     // Step 5: send via paymaster (versioned if LUTs supplied,
                     // legacy otherwise), then wait until it is confirmed.
                     const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
-                    let txSignature: string;
+                    let send: () => Promise<string>;
+                    let simulateLogs: () => Promise<readonly string[] | null | undefined>;
                     if (addressLookupTableAccounts.length > 0) {
-                        const v0Message = new TransactionMessage({
-                            payerKey: feePayer,
-                            recentBlockhash: blockhash,
-                            instructions: finalizedIxs,
-                        }).compileToV0Message(addressLookupTableAccounts);
-                        txSignature = await paymaster.signAndSendVersionedTransaction(
-                            new VersionedTransaction(v0Message),
+                        const v0 = new VersionedTransaction(
+                            new TransactionMessage({
+                                payerKey: feePayer,
+                                recentBlockhash: blockhash,
+                                instructions: finalizedIxs,
+                            }).compileToV0Message(addressLookupTableAccounts),
                         );
+                        send = () => paymaster.signAndSendVersionedTransaction(v0);
+                        simulateLogs = async () =>
+                            (await connection.simulateTransaction(v0, { sigVerify: false, replaceRecentBlockhash: true })).value.logs;
                     } else {
                         // A legacy transaction cannot be serialized for the
                         // paymaster without its fee payer and a blockhash.
@@ -467,9 +473,16 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
                         tx.add(...finalizedIxs);
                         tx.feePayer = feePayer;
                         tx.recentBlockhash = blockhash;
-                        txSignature = await paymaster.signAndSend(tx);
+                        send = () => paymaster.signAndSend(tx);
+                        simulateLogs = async () => (await connection.simulateTransaction(tx)).value.logs;
                     }
-                    return await turn.confirm(connection, { signature: txSignature, blockhash, lastValidBlockHeight });
+                    return await sendAndConfirm({
+                        connection,
+                        attempt: { blockhash, lastValidBlockHeight },
+                        send,
+                        turn,
+                        simulateLogs,
+                    });
                 } finally {
                     dialogManager.destroy();
                 }

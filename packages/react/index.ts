@@ -35,7 +35,7 @@ export {
   Keypair
 } from '@solana/web3.js';
 
-export { Paymaster } from './core/paymaster/paymaster';
+export { Paymaster, PaymasterError } from './core/paymaster/paymaster';
 export * from './core/adapter';
 export { LazorKitClient } from './core/program';
 // Program helpers: PDAs, actions, serialize/deserialize, constants, etc.
@@ -87,7 +87,9 @@ export {
 export {
   TransactionFailedError,
   TransactionExpiredError,
+  TransactionOutcomeUnknownError,
   ConfirmationTimeoutError,
+  PreviousTransactionPendingError,
 } from './core/wallet/sequence';
 // Which wallet is a passkey's own (the credential hash alone is public): what
 // connect asks the user when it will not adopt one on its own.

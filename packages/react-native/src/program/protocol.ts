@@ -113,25 +113,43 @@ function isLazorKitProgramId(id: string): boolean {
 }
 
 /**
- * True for LazorKit's `SignatureReused` (3006), in any of the shapes it
- * reaches the adapter in: web3.js text (`custom program error: 0xbbe`), a
- * TransactionError as JSON (`"Custom":3006`) or as Kora prints it
+ * Whose `SignatureReused` (3006) this error is, as far as the error itself
+ * says. It reaches the wallet as web3.js text (`custom program error: 0xbbe`),
+ * a TransactionError as JSON (`"Custom":3006`) or as Kora prints it
  * (`Custom(3006)`). An inner program may use 3006 too (Anchor's
  * `AccountNotMutable`), and the instruction that CPI'd it then fails with the
- * same code; when the logs name the program that failed first, that settles it.
+ * same code. Only logs tell them apart: the first program that failed.
+ *
+ * - `'lazorkit'`: a 3006, and the logs name LazorKit as the first program
+ *   to fail with it.
+ * - `'other'`: not a 3006, or the logs name another program.
+ * - `'unknown'`: a 3006 with no logs that name who failed with it (a
+ *   TransactionError read from chain, Kora's text): fetch the logs.
  */
-export function isSignatureReusedError(error: unknown): boolean {
+export function signatureReusedVerdict(error: unknown): 'lazorkit' | 'other' | 'unknown' {
   const text =
     error instanceof Error
-      ? `${error.message} ${JSON.stringify((error as { logs?: unknown }).logs ?? '')} ${String((error as { cause?: unknown }).cause ?? '')}`
+      ? `${error.message} ${JSON.stringify((error as { logs?: unknown }).logs ?? '')} ${JSON.stringify((error as { data?: unknown }).data ?? '')} ${String((error as { cause?: unknown }).cause ?? '')}`
       : typeof error === 'string'
         ? error
-        : (JSON.stringify(error) ?? String(error));
+        : JSON.stringify(error) ?? String(error);
   if (!/custom program error: 0xbbe\b/i.test(text) && !/"Custom":\s*3006\b/.test(text) && !/Custom\(\s*3006\s*\)/.test(text)) {
-    return false;
+    return 'other';
   }
   const firstFailure = /Program (\w{32,44}) failed: custom program error: 0xbbe\b/i.exec(text);
-  return firstFailure ? isLazorKitProgramId(firstFailure[1]) : true;
+  if (!firstFailure) return 'unknown';
+  return isLazorKitProgramId(firstFailure[1]) ? 'lazorkit' : 'other';
+}
+
+/**
+ * True for LazorKit's `SignatureReused` (3006), in any of the shapes it
+ * reaches the wallet in (see `signatureReusedVerdict`). A 3006 whose logs
+ * name another program as the first to fail is not LazorKit's; one with no
+ * logs at all counts as LazorKit's here. The wallet fetches the logs of such
+ * a failure before it reports `SignatureReusedError`.
+ */
+export function isSignatureReusedError(error: unknown): boolean {
+  return signatureReusedVerdict(error) !== 'other';
 }
 
 /**

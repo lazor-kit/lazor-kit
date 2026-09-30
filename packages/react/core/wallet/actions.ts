@@ -40,7 +40,7 @@ import {
 import type { WalletConfig } from '../storage';
 import { SpendingLimits } from '../types';
 import { DEFAULTS } from '../../config';
-import { type AuthorityTurn, confirmOrThrow, noteAuthorityLanded, withAuthority } from './sequence';
+import { type AuthorityTurn, sendAndConfirm, withAuthority } from './sequence';
 import { buildPreviewTransactionBase64 } from './preview';
 
 export function randomBytes(size: number): Uint8Array {
@@ -75,8 +75,9 @@ function paymasterFor(config: WalletConfig, version: ProtocolVersion): Paymaster
 /**
  * Builds a transaction in either legacy or v0 wire format, submits it through
  * the paymaster, and resolves once it is confirmed (see ./sequence). It
- * rejects when the transaction failed on chain or expired without landing:
- * a paymaster's answer only says the RPC accepted it. Default is v0 (matches
+ * rejects when the transaction failed on chain or did not land, and with
+ * `TransactionOutcomeUnknownError` when that is not known: a paymaster's
+ * answer only says the RPC accepted it. Default is v0 (matches
  * mobile-wallet-adapter).
  *
  * `turn`: the lane of the passkey authority whose counter this transaction
@@ -104,7 +105,8 @@ async function buildAndSendTx(params: {
     const txVersion = params.txVersion ?? 'v0';
     const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
 
-    let signature: string;
+    let send: () => Promise<string>;
+    let simulateLogs: () => Promise<readonly string[] | null | undefined>;
     if (txVersion === 'legacy') {
         if ((params.addressLookupTables?.length ?? 0) > 0) {
             throw new Error('Address lookup tables are only supported with txVersion="v0"');
@@ -114,7 +116,8 @@ async function buildAndSendTx(params: {
         tx.recentBlockhash = blockhash;
         tx.feePayer = feePayer;
         if (extraSigners.length > 0) tx.partialSign(...extraSigners);
-        signature = await paymaster.signAndSend(tx);
+        send = () => paymaster.signAndSend(tx);
+        simulateLogs = async () => (await connection.simulateTransaction(tx)).value.logs;
     } else {
         const v0Message = new TransactionMessage({
             payerKey: feePayer,
@@ -123,14 +126,19 @@ async function buildAndSendTx(params: {
         }).compileToV0Message(params.addressLookupTables ?? []);
         const tx = new VersionedTransaction(v0Message);
         if (extraSigners.length > 0) tx.sign(extraSigners);
-        signature = await paymaster.signAndSendVersionedTransaction(tx);
+        send = () => paymaster.signAndSendVersionedTransaction(tx);
+        simulateLogs = async () =>
+            (await connection.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true })).value.logs;
     }
 
-    const sent = { signature, blockhash, lastValidBlockHeight };
-    if (params.turn) return params.turn.confirm(connection, sent);
-    const slot = await confirmOrThrow(connection, sent);
-    if (params.createsAuthority) noteAuthorityLanded(params.createsAuthority, slot);
-    return signature;
+    return sendAndConfirm({
+        connection,
+        attempt: { blockhash, lastValidBlockHeight },
+        send,
+        turn: params.turn,
+        createsAuthority: params.createsAuthority,
+        simulateLogs,
+    });
 }
 
 
