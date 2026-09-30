@@ -1,5 +1,25 @@
 # @lazorkit/wallet-mobile-adapter
 
+## 2.2.0
+
+### Minor Changes
+
+- [#102](https://github.com/lazor-kit/lazor-kit/pull/102) [`8e33d7d`](https://github.com/lazor-kit/lazor-kit/commit/8e33d7df91b6f1e8774bc740742ec0ab473f21e1) Thanks [@onspeedhp](https://github.com/onspeedhp)! - A deferred execution's window now outlasts the adapter's own wait for TX1, and an expired one is reported as `DeferredExpiredError`
+
+  - `authorizeAndExecute` and `authorizeDeferred` authorized the SDK's default of 300 slots (documented as "~2 min"), while the adapter waits up to two minutes for TX1 before sending TX2. At devnet's 230 ms a slot, 300 slots is about 69 s: after a slow confirmation, TX1 used the passkey's counter, its DeferredExec account kept the paymaster's rent, and TX2 failed with a `PaymasterError` (3014). The default is now `DEFAULTS.DEFERRED_EXPIRY_SLOTS` (1500), and `expiryOffset` must be 10 to 9000 (otherwise a `RangeError` before the portal opens).
+  - Before TX2 is sent (`authorizeAndExecute`, `executeDeferred`), the authorization's `expires_at` is read. One that has expired is not sent. A 3014 from the paymaster or the chain is checked against the account and rejects with `DeferredExpiredError`: `authorizeSignature`, `deferredExecPda` (pass it to `reclaimDeferred`), `expiresAtSlot`.
+  - New exports: `DeferredExpiredError`, `isDeferredExpiredError`, `DEFERRED_EXPIRED_CODE`, `MIN_DEFERRED_EXPIRY_SLOTS`, `MAX_DEFERRED_EXPIRY_SLOTS`.
+
+### Patch Changes
+
+- [#102](https://github.com/lazor-kit/lazor-kit/pull/102) [`c5c2fb5`](https://github.com/lazor-kit/lazor-kit/commit/c5c2fb5d35154f522e4fa4caab564e70047bd0ac) Thanks [@onspeedhp](https://github.com/onspeedhp)! - Two sends in a row (`await send(a); await send(b)`) both run, and so does a send made from `onSuccess`
+
+  `signAndSendTransaction`, `signMessage` and `transferSol` resolved from inside `onSuccess`, before `isSigning` was cleared, so the call on the next line was refused with `SigningError` ("Another passkey request is still in progress") and nothing was sent. Every action ran its `onSuccess` or `onFail` before clearing the flag, so a call made from a callback was refused the same way.
+
+  - Every action's promise now settles, and its `onSuccess` or `onFail` runs, once `isSigning` is `false` again. A callback that throws is logged and does not change the outcome.
+  - The store's `signAndExecuteTransaction`, `signMessage` and `transferSol` now resolve with their result instead of `undefined`, and the hook returns those promises.
+  - A call made while another is still running is refused with `SigningError`, as before.
+
 ## 2.1.0
 
 ### Minor Changes
