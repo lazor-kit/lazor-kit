@@ -279,15 +279,27 @@ refuses a second call while one of its own is signing ("Already signing").
 
 | Error | When |
 |---|---|
-| `TransactionFailedError` | The transaction landed and failed: fees were paid, nothing else changed. `signature`, `transactionError`, `slot`. |
-| `TransactionExpiredError` | Its blockhash expired before it landed, so it never will. |
-| `ConfirmationTimeoutError` | No outcome within two minutes. It may still land: check `signature` before sending again. |
-| `SignatureReusedError` | LazorKit rejected the passkey signature (3006): its counter was already used. Left for the same passkey signing somewhere else at the same moment, or a paymaster reading older state than the wallet. That signature can never be valid, so it is not resent, and no new prompt opens on its own: ask the user to sign again. |
+| `TransactionFailedError` | The transaction landed and failed: fees were paid, nothing else changed. `signature`, `transactionError`, `slot`, and `logs` when they were read. |
+| `TransactionExpiredError` | It did not land before its blockhash expired, so it never will. Concluded only from an RPC node past that point, in its transaction history, never from a status cache that has forgotten a landed transaction. |
+| `TransactionOutcomeUnknownError` | Whether it landed is not known: check before sending it again. `signature` is `undefined` when the paymaster's answer was lost (a network error, a timeout, a gateway error, or a resend of the same bytes that found them already processed). |
+| `ConfirmationTimeoutError` | A `TransactionOutcomeUnknownError`: no outcome within two minutes, and it may still land. Check `signature` before sending again. |
+| `PreviousTransactionPendingError` | Nothing was signed or sent: the passkey's previous transaction (`pendingSignature`) still has no known outcome, and a new signature could be bound to the counter it may use. Try again later. |
+| `SignatureReusedError` | LazorKit rejected the passkey signature (3006): its counter was already used. Left for the same passkey signing somewhere else at the same moment, or a paymaster reading older state than the wallet. That signature can never be valid, so it is not resent, and no new prompt opens on its own: ask the user to sign again. An inner program's error with the same code (Anchor's `AccountNotMutable`) is told apart by the logs and reported as the failure it is. |
+| `PaymasterError` | The paymaster refused the transaction: `code` and `data` of its JSON-RPC error, or `httpStatus`. |
 
-The portal's transaction preview is compiled with the lookup tables the
+Every status read and paymaster request is bounded in time, so one that never
+answers cannot hold a passkey's queue. The slot the passkey's last transaction
+landed in, and a send whose outcome is not known yet, are also kept in
+localStorage (the slot for ten minutes): a reload or a second tab of the same
+app reads its first challenge from a node that has that transaction. Two tabs
+that sign for the same passkey at the same moment are still not serialized.
+
+The portal's transaction preview is compiled without lookup tables whenever it
+fits in a packet, so the portal sees every account the transaction touches.
+Only a payload over the 1232-byte limit is compiled with the lookup tables the
 transaction is sent with (`transactionOptions.addressLookupTableAccounts`, or
-those of a dApp's v0 transaction), and a preview over the 1232-byte packet
-limit no longer fails the call before the prompt.
+those of a dApp's v0 transaction), and a preview still over the limit no longer
+fails the call before the prompt.
 
 ## API Reference
 
