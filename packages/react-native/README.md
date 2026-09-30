@@ -229,7 +229,9 @@ Errors:
 | `LazorKitError` with `code: 'PORTAL_ERROR'` | The portal redirected with an `error`; its text is the message. |
 
 A second sign action while one is running rejects with `SigningError` (and
-calls its `onFail`).
+calls its `onFail`). Each action's promise settles, and its `onSuccess` or
+`onFail` runs, only once `isSigning` is `false` again, so the next call can be
+made on the line after `await`, or from `onSuccess`.
 
 ## Sending transactions
 
@@ -239,11 +241,12 @@ failed on chain: `signAndSendTransaction`, `transferSol`, `authorizeAndExecute`,
 authority sends. The paymaster's answer is not enough: a relayer that answers
 once the RPC accepted a transaction answers before it has run.
 
-So two sends in a row are safe. A passkey signature commits to the passkey's
-counter, which the program checks (`SignatureReused`, 3006): the adapter
-prepares each signature for a passkey only after that passkey's previous
-transaction is confirmed, and reads the counter at `confirmed` from an RPC
-node that has executed it (`minContextSlot`).
+So two sends in a row are safe (`await` one, then the other). A passkey
+signature commits to the passkey's counter, which the program checks
+(`SignatureReused`, 3006): the adapter prepares each signature for a passkey
+only after that passkey's previous transaction is confirmed, and reads the
+counter at `confirmed` from an RPC node that has executed it
+(`minContextSlot`).
 
 | Error | When |
 |---|---|

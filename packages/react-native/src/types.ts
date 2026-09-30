@@ -440,8 +440,8 @@ export interface WalletStateClient {
   // Actions
   connect: (options: ConnectOptions) => Promise<WalletInfo>;
   disconnect: () => Promise<void>;
-  signAndExecuteTransaction: (payload: SignAndSendTransactionPayload, options: SignOptions) => Promise<void>;
-  signMessage: (message: string, options: SignOptions) => Promise<void>;
+  signAndExecuteTransaction: (payload: SignAndSendTransactionPayload, options: SignOptions) => Promise<string>;
+  signMessage: (message: string, options: SignOptions) => Promise<{ signature: string; signedPayload: string }>;
   createSession: (
     payload: CreateSessionPayload,
     options: SignOptions,
@@ -479,7 +479,7 @@ export interface WalletStateClient {
     options?: TxCallbacks,
   ) => Promise<string>;
   listAuthorities: () => Promise<ListAuthoritiesResult>;
-  transferSol: (payload: TransferSolPayload, options: SignOptions) => Promise<void>;
+  transferSol: (payload: TransferSolPayload, options: SignOptions) => Promise<string>;
 }
 
 /**
