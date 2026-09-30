@@ -4,14 +4,20 @@
  * v0 transaction with empty signatures, base64. The portal reads that as it
  * always has.
  *
- * It is compiled with the caller's address lookup tables, as the transaction
- * that is sent will be. Without them, a payload that fits when sent (a
- * Jupiter route, say) can be several hundred bytes over the 1232-byte packet
- * limit as a preview. web3.js `serialize()` throws "encoding overruns
- * Uint8Array" on such a message, which failed the whole flow before the
- * passkey prompt. A preview that is still over the limit is now serialized
- * without that cap: it is only ever read back (the portal parses it fine; its
- * own simulation of it may fail, and it says so), never sent.
+ * It is compiled without lookup tables whenever that fits in a packet (1232
+ * bytes), as it always was: the portal reads the accounts from the message
+ * itself, so it shows the recipient of a transfer and watches the balances
+ * the transaction changes. It cannot resolve lookup-table entries, so a
+ * transaction compiled with them would hide those accounts from the review.
+ *
+ * Only a payload that does not fit that way (a Jupiter route, say, several
+ * hundred bytes over) is compiled with the caller's address lookup tables, as
+ * the transaction that is sent will be. web3.js `serialize()` throws
+ * "encoding overruns Uint8Array" on a message over the limit, which failed
+ * the whole flow before the passkey prompt. A preview that is still over the
+ * limit is serialized without that cap: it is only ever read back (the portal
+ * parses it fine; its own simulation of it may fail, and it says so), never
+ * sent.
  */
 import { Buffer } from 'buffer';
 import {
@@ -29,19 +35,30 @@ export function buildPreviewTransactionBase64(params: {
     instructions: TransactionInstruction[];
     addressLookupTables?: AddressLookupTableAccount[];
 }): string {
-    const message = new TransactionMessage({
-        payerKey: params.feePayer,
-        recentBlockhash: params.recentBlockhash,
-        instructions: params.instructions,
-    }).compileToV0Message(params.addressLookupTables ?? []);
-    let bytes: Uint8Array;
+    const compile = (tables: AddressLookupTableAccount[]) =>
+        new TransactionMessage({
+            payerKey: params.feePayer,
+            recentBlockhash: params.recentBlockhash,
+            instructions: params.instructions,
+        }).compileToV0Message(tables);
+    const tables = params.addressLookupTables ?? [];
+    let message = compile([]);
+    let bytes = serializeWithinPacket(message);
+    if (!bytes && tables.length > 0) {
+        message = compile(tables);
+        bytes = serializeWithinPacket(message);
+    }
+    return Buffer.from(bytes ?? serializeV0TransactionUnbounded(message)).toString('base64');
+}
+
+/** web3.js's serialization, or undefined when the message is over the packet limit. */
+function serializeWithinPacket(message: MessageV0): Uint8Array | undefined {
     try {
-        bytes = new VersionedTransaction(message).serialize();
+        return new VersionedTransaction(message).serialize();
     } catch (error) {
         if (!(error instanceof RangeError) && !/overruns/i.test(String((error as Error)?.message))) throw error;
-        bytes = serializeV0TransactionUnbounded(message);
+        return undefined;
     }
-    return Buffer.from(bytes).toString('base64');
 }
 
 function pushLength(out: number[], length: number): void {
