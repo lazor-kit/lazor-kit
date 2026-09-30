@@ -81,43 +81,17 @@ export function useWallet(): LazorWalletHook {
     }
   };
 
+  // Each action's promise settles, and its callbacks run, once `isSigning`
+  // is false again: `await send(a); await send(b)` runs both.
   const handleSignAndSend = (
     payload: SignAndSendTransactionPayload,
     signOptions: SignOptions,
-  ): Promise<string> => {
-    return new Promise<string>((resolve, reject) => {
-      signAndExecuteTransaction(payload, {
-        redirectUrl: signOptions.redirectUrl,
-        onSuccess: (signature: string) => {
-          signOptions?.onSuccess?.(signature);
-          resolve(signature);
-        },
-        onFail: (err) => {
-          signOptions?.onFail?.(err);
-          reject(err);
-        },
-      }).catch(reject);
-    });
-  };
+  ): Promise<string> => signAndExecuteTransaction(payload, signOptions);
 
   const handleSignMessage = (
     message: string,
     signOptions: SignOptions,
-  ): Promise<{ signature: string; signedPayload: string }> => {
-    return new Promise((resolve, reject) => {
-      signMessage(message, {
-        redirectUrl: signOptions.redirectUrl,
-        onSuccess: (result) => {
-          signOptions?.onSuccess?.(result);
-          resolve(result);
-        },
-        onFail: (err) => {
-          signOptions?.onFail?.(err);
-          reject(err);
-        },
-      }).catch(reject);
-    });
-  };
+  ): Promise<{ signature: string; signedPayload: string }> => signMessage(message, signOptions);
 
   const handleCreateSession = async (
     payload: CreateSessionPayload,
@@ -189,21 +163,7 @@ export function useWallet(): LazorWalletHook {
   const handleTransferSol = (
     payload: TransferSolPayload,
     signOptions: SignOptions,
-  ): Promise<string> => {
-    return new Promise<string>((resolve, reject) => {
-      transferSol(payload, {
-        redirectUrl: signOptions.redirectUrl,
-        onSuccess: (signature: string) => {
-          signOptions?.onSuccess?.(signature);
-          resolve(signature);
-        },
-        onFail: (err) => {
-          signOptions?.onFail?.(err);
-          reject(err);
-        },
-      }).catch(reject);
-    });
-  };
+  ): Promise<string> => transferSol(payload, signOptions);
 
   return {
     smartWalletPubkey,

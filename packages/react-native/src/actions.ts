@@ -29,6 +29,7 @@ import {
 } from './core/wallet/actions';
 import { connectAbandoned, forgetCandidates, hasChooserHost } from './core/wallet/confirmation';
 import { type AuthorityTurn, withAuthority } from './core/wallet/sequence';
+import { deferredExpiryOffset, executeBeforeExpiry } from './core/wallet/deferred';
 import { logger } from './core/logger';
 import { API_ENDPOINTS } from './config';
 import {
@@ -76,35 +77,57 @@ import { getFeePayer } from './core/paymaster';
 // ─── Internal helpers ──────────────────────────────────────────────
 
 /**
- * Guards isSigning + resets state around an async op. A second request while
- * one is running rejects: resolving it with nothing left callers (and the
- * hook's promises, which wait for onSuccess or onFail) waiting forever.
+ * Guards isSigning + resets state around an async op, then reports its
+ * outcome: to `callbacks`, and as the returned promise. Both come after
+ * `isSigning` is false again, so an app that sends again from `onSuccess`, or
+ * on the line after `await`, is not refused as still in progress.
+ *
+ * A second request while one is running rejects with `SigningError` (and
+ * calls its onFail): resolving it with nothing would leave its caller
+ * waiting forever.
  */
 async function withSigningState<T>(
   get: () => WalletStateClient,
   set: (state: Partial<WalletStateClient>) => void,
-  callbacks: { readonly onFail?: (error: Error) => void } | undefined,
+  callbacks:
+    | { readonly onSuccess?: (result: T) => void; readonly onFail?: (error: Error) => void }
+    | undefined,
   fn: () => Promise<T>,
 ): Promise<T> {
   const { isSigning } = get();
   if (isSigning) {
-    // Refused before `fn`, which is what reports to onFail otherwise; a
-    // caller waiting on callbacks alone would never hear back.
     const error = new SigningError('Another passkey request is still in progress');
-    callbacks?.onFail?.(error);
+    notify(callbacks?.onFail, error);
     throw error;
   }
   set({ isSigning: true, error: null });
+  let outcome: { ok: true; value: T } | { ok: false; error: Error };
   try {
-    return await fn();
+    outcome = { ok: true, value: await fn() };
   } catch (error) {
     const err = toActionError(error, get);
     // The stored wallet is gone from the chain; stop showing its address.
     if (err instanceof V1WalletMigratedError) set({ wallet: null });
     set({ error: err });
-    throw err;
+    outcome = { ok: false, error: err };
   } finally {
     set({ isSigning: false });
+  }
+  if (!outcome.ok) {
+    notify(callbacks?.onFail, outcome.error);
+    throw outcome.error;
+  }
+  notify(callbacks?.onSuccess, outcome.value);
+  return outcome.value;
+}
+
+/** Calls an app's callback. What it throws is logged, and does not change the action's outcome. */
+function notify<A>(callback: ((arg: A) => void) | undefined, arg: A): void {
+  if (!callback) return;
+  try {
+    callback(arg);
+  } catch (error) {
+    logger.error('A wallet action callback threw:', error);
   }
 }
 
@@ -395,11 +418,10 @@ export const signAndExecuteTransaction = async (
   set: (state: Partial<WalletStateClient>) => void,
   payload: SignAndSendTransactionPayload,
   options: SignOptions,
-) => {
-  await withSigningState(get, set, options, async () => {
+): Promise<string> => {
+  return withSigningState(get, set, options, async () => {
     try {
       const signature = await performPasskeyExecute(get, payload, options);
-      options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
       logger.error('signAndExecuteTransaction failed:', err, {
@@ -407,7 +429,6 @@ export const signAndExecuteTransaction = async (
         redirectUrl: options.redirectUrl,
       });
       const error = toActionError(err, get);
-      options?.onFail?.(error);
       throw error;
     }
   });
@@ -480,8 +501,8 @@ export const signMessageAction = async (
   set: (state: Partial<WalletStateClient>) => void,
   message: string,
   options: SignOptions,
-) => {
-  await withSigningState(get, set, options, async () => {
+): Promise<{ signature: string; signedPayload: string }> => {
+  return withSigningState(get, set, options, async () => {
     try {
       const { wallet, config } = requireWalletAndConnection(get);
       const { redirectUrl } = options;
@@ -493,12 +514,10 @@ export const signMessageAction = async (
       const { handleBrowserResult } = await import('./core/browser/parseResult');
       const authResult = handleBrowserResult(resultUrl);
       const result = { signature: authResult.signature, signedPayload: authResult.message };
-      options?.onSuccess?.(result);
       return result;
     } catch (err) {
       const error = toActionError(err, get);
       logger.error('signMessageAction failed:', error);
-      options?.onFail?.(error);
       throw error;
     }
   });
@@ -563,12 +582,10 @@ export const createSessionAction = async (
         });
         return { signature, sessionPda: prepared.sessionPda };
       });
-      options?.onSuccess?.({ signature, sessionPda });
       return { signature, sessionPda };
     } catch (err) {
       const error = toActionError(err, get);
       logger.error('createSessionAction failed:', error);
-      options?.onFail?.(error);
       throw error;
     }
   });
@@ -614,12 +631,10 @@ export const revokeSessionAction = async (
           turn,
         });
       });
-      options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
       const error = toActionError(err, get);
       logger.error('revokeSessionAction failed:', error);
-      options?.onFail?.(error);
       throw error;
     }
   });
@@ -678,12 +693,10 @@ export const signAndSendWithSessionAction = async (
         feeToken: payload.transactionOptions?.feeToken,
         extraSigners: [payload.sessionKeypair],
       });
-      options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
       const error = toActionError(err, get, flowVersion);
       logger.error('signAndSendWithSessionAction failed:', error);
-      options?.onFail?.(error);
       throw error;
     }
   });
@@ -755,12 +768,10 @@ export const addAuthorityEd25519Action = async (
         });
         return { signature, newAuthorityPda: prepared.newAuthorityPda };
       });
-      options?.onSuccess?.({ signature, newAuthorityPda });
       return { signature, newAuthorityPda };
     } catch (err) {
       const error = toActionError(err, get);
       logger.error('addAuthorityEd25519Action failed:', error);
-      options?.onFail?.(error);
       throw error;
     }
   });
@@ -806,12 +817,10 @@ export const removeAuthorityAction = async (
           turn,
         });
       });
-      options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
       const error = toActionError(err, get);
       logger.error('removeAuthorityAction failed:', error);
-      options?.onFail?.(error);
       throw error;
     }
   });
@@ -823,6 +832,11 @@ export const removeAuthorityAction = async (
  * Two-transaction deferred flow. TX1 signs hashes of the instruction set;
  * TX2 executes without needing another signature. Use for payloads too big
  * for a single transaction (Jupiter swaps, multi-CPI batches).
+ *
+ * The authorization is open for `expiryOffset` slots (default
+ * `DEFAULTS.DEFERRED_EXPIRY_SLOTS`), longer than the adapter can wait for TX1.
+ * When it has expired anyway, TX2 is not sent (or its 3014 is reported) as
+ * `DeferredExpiredError`, with TX1's signature and the account holding the rent.
  */
 export const authorizeAndExecuteAction = async (
   get: () => WalletStateClient,
@@ -832,6 +846,7 @@ export const authorizeAndExecuteAction = async (
 ): Promise<string> => {
   return withSigningState(get, set, options, async () => {
     try {
+      const expiryOffset = deferredExpiryOffset(payload.expiryOffset);
       const { connection, wallet, config } = requireWalletAndConnection(get);
       const { client, version } = await buildClient(get);
       const feePayer = await feePayerFor(config, version);
@@ -843,7 +858,7 @@ export const authorizeAndExecuteAction = async (
           walletPda,
           secp256r1,
           instructions: payload.instructions,
-          expiryOffset: payload.expiryOffset,
+          expiryOffset,
         });
 
         // What the user approves: the inner instructions, compiled with the
@@ -870,9 +885,10 @@ export const authorizeAndExecuteAction = async (
         // authorization TX1 writes.
         const {
           instructions: authorizeIxs,
+          deferredExecPda,
           deferredPayload,
         } = client.finalizeAuthorize(prepared, response);
-        await sendInstructionsViaPaymaster({
+        const authorizeSignature = await sendInstructionsViaPaymaster({
           instructions: authorizeIxs,
           connection,
           feePayer,
@@ -898,22 +914,26 @@ export const authorizeAndExecuteAction = async (
         }
         tx2Instructions.push(...executeIxs);
 
-        return sendInstructionsViaPaymaster({
-          instructions: tx2Instructions,
+        return executeBeforeExpiry({
           connection,
-          feePayer,
-          config,
-          version,
-          addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
-          feeToken: payload.transactionOptions?.feeToken,
+          deferredExecPda,
+          authorizeSignature,
+          send: () =>
+            sendInstructionsViaPaymaster({
+              instructions: tx2Instructions,
+              connection,
+              feePayer,
+              config,
+              version,
+              addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+              feeToken: payload.transactionOptions?.feeToken,
+            }),
         });
       });
-      options?.onSuccess?.(executeSig);
       return executeSig;
     } catch (err) {
       const error = toActionError(err, get);
       logger.error('authorizeAndExecuteAction failed:', error);
-      options?.onFail?.(error);
       throw error;
     }
   });
@@ -935,6 +955,7 @@ export const authorizeDeferredAction = async (
 ): Promise<AuthorizeResult> => {
   return withSigningState(get, set, options, async () => {
     try {
+      const expiryOffset = deferredExpiryOffset(payload.expiryOffset);
       const { connection, wallet, config } = requireWalletAndConnection(get);
       const { client, version } = await buildClient(get);
       const feePayer = await feePayerFor(config, version);
@@ -946,7 +967,7 @@ export const authorizeDeferredAction = async (
           walletPda,
           secp256r1,
           instructions: payload.instructions,
-          expiryOffset: payload.expiryOffset,
+          expiryOffset,
         });
 
         const previewBase64Tx = await buildPreviewTransactionBase64({
@@ -984,12 +1005,10 @@ export const authorizeDeferredAction = async (
         });
         return { signature, deferredPayload, deferredExecPda, counter };
       });
-      options?.onSuccess?.(result);
       return result;
     } catch (err) {
       const error = toActionError(err, get);
       logger.error('authorizeDeferredAction failed:', error);
-      options?.onFail?.(error);
       throw error;
     }
   });
@@ -1035,21 +1054,26 @@ export const executeDeferredAction = async (
       }
       allInstructions.push(...instructions);
 
-      const signature = await sendInstructionsViaPaymaster({
-        instructions: allInstructions,
+      // An expired authorization is refused before it is sent, or its 3014
+      // reported, as `DeferredExpiredError`.
+      const signature = await executeBeforeExpiry({
         connection,
-        feePayer,
-        config,
-        version,
-        addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
-        feeToken: payload.transactionOptions?.feeToken,
+        deferredExecPda: payload.deferredPayload.deferredExecPda,
+        send: () =>
+          sendInstructionsViaPaymaster({
+            instructions: allInstructions,
+            connection,
+            feePayer,
+            config,
+            version,
+            addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+            feeToken: payload.transactionOptions?.feeToken,
+          }),
       });
-      options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
       const error = toActionError(err, get, flowVersion);
       logger.error('executeDeferredAction failed:', error);
-      options?.onFail?.(error);
       throw error;
     }
   });
@@ -1088,12 +1112,10 @@ export const reclaimDeferredAction = async (
         config,
         version,
       });
-      options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
       const error = toActionError(err, get, flowVersion);
       logger.error('reclaimDeferredAction failed:', error);
-      options?.onFail?.(error);
       throw error;
     }
   });
@@ -1160,7 +1182,7 @@ export const transferSolAction = async (
   set: (state: Partial<WalletStateClient>) => void,
   payload: TransferSolPayload,
   options: SignOptions,
-) => {
+): Promise<string> => {
   const { wallet } = requireWalletAndConnection(get);
   // smartWallet now IS the vault address — funds live there.
   const vaultPda = new PublicKey(wallet!.smartWallet);
@@ -1173,7 +1195,7 @@ export const transferSolAction = async (
     toPubkey: payload.recipient,
     lamports,
   });
-  await signAndExecuteTransaction(
+  return signAndExecuteTransaction(
     get,
     set,
     {

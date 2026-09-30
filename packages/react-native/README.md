@@ -229,7 +229,9 @@ Errors:
 | `LazorKitError` with `code: 'PORTAL_ERROR'` | The portal redirected with an `error`; its text is the message. |
 
 A second sign action while one is running rejects with `SigningError` (and
-calls its `onFail`).
+calls its `onFail`). Each action's promise settles, and its `onSuccess` or
+`onFail` runs, only once `isSigning` is `false` again, so the next call can be
+made on the line after `await`, or from `onSuccess`.
 
 ## Sending transactions
 
@@ -239,11 +241,12 @@ failed on chain: `signAndSendTransaction`, `transferSol`, `authorizeAndExecute`,
 authority sends. The paymaster's answer is not enough: a relayer that answers
 once the RPC accepted a transaction answers before it has run.
 
-So two sends in a row are safe. A passkey signature commits to the passkey's
-counter, which the program checks (`SignatureReused`, 3006): the adapter
-prepares each signature for a passkey only after that passkey's previous
-transaction is confirmed, and reads the counter at `confirmed` from an RPC
-node that has executed it (`minContextSlot`).
+So two sends in a row are safe (`await` one, then the other). A passkey
+signature commits to the passkey's counter, which the program checks
+(`SignatureReused`, 3006): the adapter prepares each signature for a passkey
+only after that passkey's previous transaction is confirmed, and reads the
+counter at `confirmed` from an RPC node that has executed it
+(`minContextSlot`).
 
 | Error | When |
 |---|---|
@@ -254,12 +257,22 @@ node that has executed it (`minContextSlot`).
 | `PreviousTransactionPendingError` | Nothing was signed or sent: the passkey's previous transaction (`pendingSignature`) still has no known outcome, and a new signature could be bound to the counter it may use. Try again later. |
 | `SignatureReusedError` | LazorKit rejected the passkey signature (3006): its counter was already used. Left for the same passkey signing somewhere else at the same moment, or a paymaster reading older state than the adapter. That signature can never be valid, so it is not resent, and no new portal trip opens on its own: ask the user to sign again. An inner program's error with the same code (Anchor's `AccountNotMutable`) is told apart by the logs and reported as the failure it is. |
 | `PaymasterError` | The paymaster refused the transaction: `code` and `data` of its JSON-RPC error, or `httpStatus`. |
+| `DeferredExpiredError` | TX2 of a deferred execution (`authorizeAndExecute`, `executeDeferred`) came after its authorization expired (`DeferredAuthorizationExpired`, 3014), so nothing in it ran. `authorizeSignature` (TX1, when this call sent it), `deferredExecPda` (the account holding the paymaster's rent: `reclaimDeferred` it) and `expiresAtSlot`. The passkey approval is spent: ask the user to approve again. |
 
 Every status read and paymaster request is bounded in time, so one that never
 answers cannot hold a passkey's queue. The slot the passkey's last transaction
 landed in, and a send whose outcome is not known yet, are also kept in
 AsyncStorage (the slot for ten minutes): the app, restarted, reads its first
 challenge from a node that has that transaction.
+
+**Deferred execution.** `authorizeAndExecute` and `authorizeDeferred` take
+`expiryOffset`: how many slots after TX1 the program still accepts TX2 (10 to
+9000). The default, `DEFAULTS.DEFERRED_EXPIRY_SLOTS`, is 1500. The window is
+counted in slots, whose length depends on the cluster and its load, and it
+starts at TX1's slot, not when `authorizeDeferred` resolves. The adapter may
+wait up to two minutes for TX1 to be confirmed before it sends TX2, so do not
+pass a small value. An authorization that has already expired is not sent: the
+call rejects with `DeferredExpiredError`.
 
 The portal's transaction preview is compiled without lookup tables whenever it
 fits in a packet, so the portal sees every account the transaction touches.
