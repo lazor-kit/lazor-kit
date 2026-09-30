@@ -28,7 +28,6 @@ import {
   WalletInfo,
 } from '../../types';
 import {
-  type OwnershipProof,
   type ProtocolVersion,
   type WalletFacts,
   type WebAuthnResponse,
@@ -38,12 +37,14 @@ import {
   versionOf,
 } from '../../program';
 import { connectAbandoned, rememberCandidates, takeRememberedCandidate } from './confirmation';
-import { resolveWallet } from './resolveWallet';
+import { keyToCreate, resolveWallet, type PortalProof } from './resolveWallet';
 import { API_ENDPOINTS, DEFAULTS } from '../../config';
 import { openBrowser } from '../browser/open';
 import { handleBrowserResult } from '../browser/parseResult';
 import { getFeePayer, signAndExecuteTransaction } from '../paymaster';
 import { logger } from '../logger';
+import { type AuthorityTurn, sendAndConfirm } from './sequence';
+import { buildPreviewTransactionBase64 as previewTransactionBase64 } from './preview';
 
 /**
  * Factory that returns high-level wallet operations bound to a given
@@ -94,14 +95,16 @@ export const createWalletActions = (
       // chosen here — in the connect reply when the portal does that, else in
       // one more portal trip — and a wallet counts only if that signature
       // verifies against its key. One proof serves both the lookup and a
-      // wallet created after it.
+      // wallet created after it — unless the reply's key is missing or not
+      // this passkey's: then creating one takes a second assertion, to
+      // recover the key (keyToCreate).
       //
       // The reply's assertion is that proof only if it verifies against some
       // key in play (a candidate's, or the reported one). One that proves
       // nothing — a registration, a challenge encoded some other way — would
       // otherwise fail every connect; it costs one portal sign instead, as on web.
       const reported = { publicKey: new Uint8Array(data.passkeyPubkey) };
-      let proof: Promise<OwnershipProof> | undefined;
+      let proof: Promise<PortalProof> | undefined;
       const prove = (candidates: readonly { publicKey: Uint8Array }[] = []) =>
         (proof ??=
           options.proof && verifyOwnershipProof([...candidates, reported], options.proof, rpId).length
@@ -138,17 +141,23 @@ export const createWalletActions = (
 
       const client = v2Client(connection);
 
-      const compressedPubkey = new Uint8Array(data.passkeyPubkey);
-      if (compressedPubkey.length !== 33) {
-        throw new Error(
-          `Unexpected passkey pubkey length: ${compressedPubkey.length}, expected 33 bytes (compressed secp256r1)`,
-        );
-      }
-      // A new wallet is owned by the reported key, so that key must be the
-      // passkey's own before anyone pays to create it.
-      if (!verifyOwnershipProof([{ publicKey: compressedPubkey }], await prove(), rpId).length) {
-        throw new Error("The portal's reply could not be verified against this passkey; nothing was created.");
-      }
+      // A new wallet is owned by this key, so it must be the passkey's own
+      // before anyone pays to create it: the reported key once the proof
+      // verifies against it, else the key recovered from the passkey's
+      // assertions (one more portal sign when needed).
+      const compressedPubkey = await keyToCreate({
+        rpId,
+        credentialId: data.credentialId,
+        reported: new Uint8Array(data.passkeyPubkey),
+        connectProof: options.proof,
+        prove: () => prove(),
+        signFresh: () =>
+          Promise.resolve().then(() => {
+            // No further portal trip for a connect nobody waits for.
+            checkAbandoned();
+            return proveViaPortal({ credentialId: data.credentialId, portalUrl: config.portalUrl, redirectUrl });
+          }),
+      });
 
       const feePayer = await getFeePayer(
         config.configPaymaster.paymasterUrl,
@@ -176,11 +185,14 @@ export const createWalletActions = (
         },
       });
 
+      // Resolves once confirmed; the first signature for the new passkey
+      // authority is then read at or past its creation.
       const signature = await sendInstructionsViaPaymaster({
         instructions,
         connection,
         feePayer,
         config,
+        createsAuthority: authorityPda,
       });
       if (!signature) {
         logger.error('Create wallet relayer error:', {
@@ -188,12 +200,14 @@ export const createWalletActions = (
         });
         throw new Error('Create wallet relayer error');
       }
-      await connection.confirmTransaction(signature, 'confirmed');
 
       // Saved as created, never looked up again: until its first transaction
       // a lookup would offer it for confirmation like any wallet never signed for.
       return {
         ...data,
+        // The key the wallet was created for: the passkey's, which the
+        // reported one may not have been.
+        passkeyPubkey: Array.from(compressedPubkey),
         smartWallet: vaultPda.toBase58(),
         walletPda: walletPda.toBase58(),
         walletDevice: authorityPda.toBase58(),
@@ -234,7 +248,7 @@ export const createWalletActions = (
       allInstructions.push(...instructions);
 
       const alts = transactionOptions?.addressLookupTableAccounts ?? [];
-      const signature = await sendInstructionsViaPaymaster({
+      return await sendInstructionsViaPaymaster({
         instructions: allInstructions,
         connection,
         feePayer,
@@ -243,9 +257,6 @@ export const createWalletActions = (
         addressLookupTables: alts,
         feeToken: transactionOptions?.feeToken,
       });
-
-      await connection.confirmTransaction(signature, 'confirmed');
-      return signature;
     } catch (error) {
       logger.error('ExecuteWallet action failed:', error, {
         smartWallet: data.smartWallet,
@@ -288,27 +299,32 @@ export function newOwnershipChallenge(): Uint8Array {
   }
 }
 
-/** One portal sign over a fresh challenge, as an ownership proof. */
+/**
+ * One portal sign over a fresh challenge, as an ownership proof — with the
+ * credential the portal says it signed with, when its redirect says.
+ */
 async function proveViaPortal(params: {
   credentialId: string;
   portalUrl: string;
   redirectUrl?: string;
-}): Promise<OwnershipProof> {
+}): Promise<PortalProof> {
   if (!params.redirectUrl) {
     throw new Error("Proving which wallet is this passkey's needs a redirectUrl for the portal");
   }
   const challenge = newOwnershipChallenge();
-  const response = await signChallengeViaPortal({
+  const result = await openPortalSign({
     challenge,
     credentialId: params.credentialId,
     portalUrl: params.portalUrl,
     redirectUrl: params.redirectUrl,
   });
+  const response = decodeWebAuthnResponse(result);
   return {
     challenge,
     signature: response.signature,
     authenticatorData: response.authenticatorData,
     clientDataJson: response.clientDataJson,
+    signedWith: result.credentialId,
   };
 }
 
@@ -323,20 +339,25 @@ export function toBase64Url(bytes: Uint8Array): string {
     .replace(/=+$/, '');
 }
 
-/** Serialize a set of user-facing instructions into a base64 v0 tx for portal preview. */
+/**
+ * Serialize a set of user-facing instructions into a base64 v0 tx for portal
+ * preview, compiled with the caller's lookup tables like the transaction that
+ * is sent. One still over the packet limit is serialized anyway, never thrown
+ * on: see ./preview.
+ */
 export async function buildPreviewTransactionBase64(params: {
   connection: Connection;
   feePayer: PublicKey;
   instructions: TransactionInstruction[];
+  addressLookupTables?: AddressLookupTableAccount[];
 }): Promise<string> {
   const { blockhash } = await params.connection.getLatestBlockhash();
-  const message = new TransactionMessage({
-    payerKey: params.feePayer,
+  return previewTransactionBase64({
+    feePayer: params.feePayer,
     recentBlockhash: blockhash,
     instructions: params.instructions,
-  }).compileToV0Message();
-  const tx = new VersionedTransaction(message);
-  return Buffer.from(tx.serialize()).toString('base64');
+    addressLookupTables: params.addressLookupTables,
+  });
 }
 
 /**
@@ -345,14 +366,21 @@ export async function buildPreviewTransactionBase64(params: {
  *   - wait for deep-link redirect
  *   - parse + hash clientDataJSON → return WebAuthnResponse
  */
-export async function signChallengeViaPortal(params: {
+export async function signChallengeViaPortal(params: PortalSignParams): Promise<WebAuthnResponse> {
+  return decodeWebAuthnResponse(await openPortalSign(params));
+}
+
+type PortalSignParams = {
   challenge: Uint8Array;
   credentialId: string;
   portalUrl: string;
   redirectUrl: string;
   previewBase64Tx?: string;
   clusterSimulation?: 'devnet' | 'mainnet';
-}): Promise<WebAuthnResponse> {
+};
+
+/** One portal sign, as its redirect reports it. */
+async function openPortalSign(params: PortalSignParams): Promise<BrowserResult> {
   const encodedChallenge = toBase64Url(params.challenge);
   let signUrl = `${params.portalUrl}/${API_ENDPOINTS.SIGN}&message=${encodeURIComponent(
     encodedChallenge,
@@ -368,14 +396,9 @@ export async function signChallengeViaPortal(params: {
   }
 
   const resultUrl = await openBrowser(signUrl, params.redirectUrl);
-  const browserResult = handleBrowserResult(resultUrl);
-  return decodeWebAuthnResponse(browserResult);
+  return handleBrowserResult(resultUrl);
 }
 
-/**
- * Signs and sends a prebuilt list of instructions through the paymaster.
- * Used by every mutation path (passkey- or session-signed).
- */
 /**
  * The paymaster for a wallet's protocol. v1 wallets keep the relayer the app
  * used before v2 (`v1ConfigPaymaster`, defaulting to the main one).
@@ -389,6 +412,14 @@ export function paymasterFor(
     : config.configPaymaster;
 }
 
+/**
+ * Signs and sends a prebuilt list of instructions through the paymaster, and
+ * resolves once the transaction is confirmed (see ./sequence). It rejects when
+ * the transaction failed on chain or did not land, and with
+ * `TransactionOutcomeUnknownError` when that is not known: the paymaster's
+ * answer only says the RPC accepted it. Used by every mutation path (passkey-
+ * or session-signed).
+ */
 export async function sendInstructionsViaPaymaster(params: {
   instructions: TransactionInstruction[];
   connection: Connection;
@@ -400,8 +431,15 @@ export async function sendInstructionsViaPaymaster(params: {
   feeToken?: string;
   /** Optional extra signers (e.g., session Keypair for Ed25519 auth). */
   extraSigners?: Keypair[];
+  /**
+   * The lane of the passkey authority whose counter this transaction
+   * consumes: its next challenge is then read from state that includes it.
+   */
+  turn?: AuthorityTurn;
+  /** A passkey authority this transaction creates: its first challenge is read at or past the creation. */
+  createsAuthority?: PublicKey;
 }): Promise<string> {
-  const { blockhash } = await params.connection.getLatestBlockhash();
+  const { blockhash, lastValidBlockHeight } = await params.connection.getLatestBlockhash();
   const msg = new TransactionMessage({
     payerKey: params.feePayer,
     recentBlockhash: blockhash,
@@ -415,13 +453,23 @@ export async function sendInstructionsViaPaymaster(params: {
 
   const serialized = Buffer.from(tx.serialize()).toString('base64');
   const paymaster = paymasterFor(params.config, params.version ?? 2);
-  return signAndExecuteTransaction(
-    serialized,
-    paymaster.paymasterUrl,
-    params.feePayer.toBase58(),
-    paymaster.apiKey,
-    params.feeToken,
-  );
+  return sendAndConfirm({
+    connection: params.connection,
+    attempt: { blockhash, lastValidBlockHeight },
+    send: () =>
+      signAndExecuteTransaction(
+        serialized,
+        paymaster.paymasterUrl,
+        params.feePayer.toBase58(),
+        paymaster.apiKey,
+        params.feeToken,
+      ),
+    turn: params.turn,
+    createsAuthority: params.createsAuthority,
+    simulateLogs: async () =>
+      (await params.connection.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true })).value
+        .logs,
+  });
 }
 
 /** Decode the portal's base64 payload into the WebAuthn shape the client expects. */

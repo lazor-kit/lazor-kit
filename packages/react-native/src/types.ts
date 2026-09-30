@@ -227,6 +227,12 @@ export interface BrowserResult {
   readonly clientDataJsonBase64: string;
   readonly authenticatorDataBase64: string;
   readonly message: string;
+  /**
+   * The credential (base64) the portal says it signed with, when it says. The
+   * portal signs with the `credentialId` the sign URL names (as the only
+   * `allowCredentials` entry) and names it back in the redirect.
+   */
+  readonly credentialId?: string;
 }
 
 /**

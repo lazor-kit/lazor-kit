@@ -40,6 +40,8 @@ import {
 import type { WalletConfig } from '../storage';
 import { SpendingLimits } from '../types';
 import { DEFAULTS } from '../../config';
+import { type AuthorityTurn, sendAndConfirm, withAuthority } from './sequence';
+import { buildPreviewTransactionBase64 } from './preview';
 
 export function randomBytes(size: number): Uint8Array {
     return globalThis.crypto.getRandomValues(new Uint8Array(size));
@@ -71,8 +73,16 @@ function paymasterFor(config: WalletConfig, version: ProtocolVersion): Paymaster
 }
 
 /**
- * Builds a transaction in either legacy or v0 wire format and submits it
- * through the paymaster. Default is v0 (matches mobile-wallet-adapter).
+ * Builds a transaction in either legacy or v0 wire format, submits it through
+ * the paymaster, and resolves once it is confirmed (see ./sequence). It
+ * rejects when the transaction failed on chain or did not land, and with
+ * `TransactionOutcomeUnknownError` when that is not known: a paymaster's
+ * answer only says the RPC accepted it. Default is v0 (matches
+ * mobile-wallet-adapter).
+ *
+ * `turn`: the lane of the passkey authority whose counter this transaction
+ * consumes. The next challenge for that passkey is then read from state that
+ * includes it.
  *
  * For session/authority flows that need a client-side signer in addition to
  * the paymaster's feePayer, pass it in `extraSigners` — both v0 (`tx.sign`)
@@ -86,12 +96,17 @@ async function buildAndSendTx(params: {
     extraSigners?: Keypair[];
     addressLookupTables?: AddressLookupTableAccount[];
     txVersion?: 'legacy' | 'v0';
+    turn?: AuthorityTurn;
+    /** A passkey authority this transaction creates: its first challenge is read at or past the creation. */
+    createsAuthority?: PublicKey;
 }): Promise<string> {
     const { paymaster, connection, feePayer, instructions } = params;
     const extraSigners = params.extraSigners ?? [];
     const txVersion = params.txVersion ?? 'v0';
-    const { blockhash } = await connection.getLatestBlockhash();
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
 
+    let send: () => Promise<string>;
+    let simulateLogs: () => Promise<readonly string[] | null | undefined>;
     if (txVersion === 'legacy') {
         if ((params.addressLookupTables?.length ?? 0) > 0) {
             throw new Error('Address lookup tables are only supported with txVersion="v0"');
@@ -101,17 +116,29 @@ async function buildAndSendTx(params: {
         tx.recentBlockhash = blockhash;
         tx.feePayer = feePayer;
         if (extraSigners.length > 0) tx.partialSign(...extraSigners);
-        return paymaster.signAndSend(tx);
+        send = () => paymaster.signAndSend(tx);
+        simulateLogs = async () => (await connection.simulateTransaction(tx)).value.logs;
+    } else {
+        const v0Message = new TransactionMessage({
+            payerKey: feePayer,
+            recentBlockhash: blockhash,
+            instructions,
+        }).compileToV0Message(params.addressLookupTables ?? []);
+        const tx = new VersionedTransaction(v0Message);
+        if (extraSigners.length > 0) tx.sign(extraSigners);
+        send = () => paymaster.signAndSendVersionedTransaction(tx);
+        simulateLogs = async () =>
+            (await connection.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true })).value.logs;
     }
 
-    const v0Message = new TransactionMessage({
-        payerKey: feePayer,
-        recentBlockhash: blockhash,
-        instructions,
-    }).compileToV0Message(params.addressLookupTables ?? []);
-    const tx = new VersionedTransaction(v0Message);
-    if (extraSigners.length > 0) tx.sign(extraSigners);
-    return paymaster.signAndSendVersionedTransaction(tx);
+    return sendAndConfirm({
+        connection,
+        attempt: { blockhash, lastValidBlockHeight },
+        send,
+        turn: params.turn,
+        createsAuthority: params.createsAuthority,
+        simulateLogs,
+    });
 }
 
 
@@ -197,12 +224,12 @@ export const connectAction = async (
                 const client = clientFor(2, connection);
                 const paymaster = paymasterFor(config, 2);
                 const feePayer = await paymaster.getPayer();
-                const { instructions, walletPda } = await client.createWallet({
+                const { instructions, walletPda, authorityPda } = await client.createWallet({
                     payer: feePayer,
                     userSeed: randomBytes(32),
                     owner: { type: 'secp256r1', ...owner },
                 });
-                await buildAndSendTx({ paymaster, connection, feePayer, instructions });
+                await buildAndSendTx({ paymaster, connection, feePayer, instructions, createsAuthority: authorityPda });
                 return walletPda;
             },
             signal: attempt.signal,
@@ -266,6 +293,7 @@ export const disconnectAction = async (
  * Sign and send transaction action.
  * Resolves on-chain wallet/authority, builds a Secp256r1 (Mode 1) challenge,
  * obtains the WebAuthn signature via the portal dialog, and submits via paymaster.
+ * Resolves once the transaction is confirmed; rejects if it failed on chain.
  */
 export const signAndSendTransactionAction = async (
     get: () => WalletState,
@@ -294,48 +322,51 @@ export const signAndSendTransactionAction = async (
         const paymaster = paymasterFor(config, version);
         const feePayer = await paymaster.getPayer();
 
-        const prepared = await client.prepareExecute({
-            payer: feePayer,
-            walletPda,
-            secp256r1: { credentialIdHash, publicKeyBytes, authorityPda },
-            instructions: payload.instructions,
-        });
-        const encodedChallenge = toBase64Url(prepared.challenge);
+        const txSignature = await withAuthority(authorityPda, async (turn) => {
+            const prepared = await client.prepareExecute({
+                payer: feePayer,
+                walletPda,
+                secp256r1: { credentialIdHash, publicKeyBytes, authorityPda, ...(await turn.challengeReads(connection)) },
+                instructions: payload.instructions,
+            });
+            const encodedChallenge = toBase64Url(prepared.challenge);
 
-        // Build a display-only v0 transaction so the portal can render the ixs.
-        const latest = await connection.getLatestBlockhash();
-        const displayMessage = new TransactionMessage({
-            payerKey: feePayer,
-            recentBlockhash: latest.blockhash,
-            instructions: payload.instructions,
-        }).compileToV0Message();
-        const base64Tx = Buffer.from(new VersionedTransaction(displayMessage).serialize()).toString('base64');
-
-        const dialogManager = createDialogManager(config);
-        try {
-            const signResult: SignResult = await dialogManager.openSign(
-                encodedChallenge,
-                base64Tx,
-                wallet.credentialId,
-                payload.transactionOptions?.clusterSimulation,
-            );
-
-            const { instructions } = client.finalizeExecute(prepared, decodeSignResult(signResult));
-            const txSignature = await buildAndSendTx({
-                paymaster,
-                connection,
+            // A display-only v0 transaction so the portal can render the ixs,
+            // compiled with the caller's lookup tables like the one sent.
+            const latest = await connection.getLatestBlockhash();
+            const base64Tx = buildPreviewTransactionBase64({
                 feePayer,
-                instructions,
+                recentBlockhash: latest.blockhash,
+                instructions: payload.instructions,
                 addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
-                txVersion: payload.transactionOptions?.txVersion,
             });
 
-            payload.onSuccess?.(txSignature);
-            return txSignature;
+            const dialogManager = createDialogManager(config);
+            try {
+                const signResult: SignResult = await dialogManager.openSign(
+                    encodedChallenge,
+                    base64Tx,
+                    wallet.credentialId,
+                    payload.transactionOptions?.clusterSimulation,
+                );
 
-        } finally {
-            dialogManager.destroy();
-        }
+                const { instructions } = client.finalizeExecute(prepared, decodeSignResult(signResult));
+                return await buildAndSendTx({
+                    paymaster,
+                    connection,
+                    feePayer,
+                    instructions,
+                    addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+                    txVersion: payload.transactionOptions?.txVersion,
+                    turn,
+                });
+            } finally {
+                dialogManager.destroy();
+            }
+        });
+
+        payload.onSuccess?.(txSignature);
+        return txSignature;
 
     } catch (error: unknown) {
         return handleActionError(error, set, payload.onFail, walletVersion(get));
@@ -468,58 +499,60 @@ export const createSessionAction = async (
             );
         }
 
-        const prepared = await client.prepareCreateSession({
-            payer: feePayer,
-            walletPda,
-            secp256r1: { credentialIdHash, publicKeyBytes, authorityPda },
-            sessionKey: sessionPublicKey,
-            expiresAt,
-            ...(actions.length > 0 ? { actions } : { unrestricted: true as const }),
-        });
-        const sessionPda = prepared.sessionPda;
+        const sessionPda = await withAuthority(authorityPda, async (turn) => {
+            const prepared = await client.prepareCreateSession({
+                payer: feePayer,
+                walletPda,
+                secp256r1: { credentialIdHash, publicKeyBytes, authorityPda, ...(await turn.challengeReads(connection)) },
+                sessionKey: sessionPublicKey,
+                expiresAt,
+                ...(actions.length > 0 ? { actions } : { unrestricted: true as const }),
+            });
 
-        const encodedChallenge = toBase64Url(prepared.challenge);
-        const dialogManager = createDialogManager(config);
-        try {
-            const signResult: SignResult = await dialogManager.openSign(
-                encodedChallenge,
-                '',
-                wallet.credentialId,
-                undefined,
-            );
+            const encodedChallenge = toBase64Url(prepared.challenge);
+            const dialogManager = createDialogManager(config);
+            try {
+                const signResult: SignResult = await dialogManager.openSign(
+                    encodedChallenge,
+                    '',
+                    wallet.credentialId,
+                    undefined,
+                );
 
-            const { instructions } = client.finalizeCreateSession(prepared, decodeSignResult(signResult));
+                const { instructions } = client.finalizeCreateSession(prepared, decodeSignResult(signResult));
 
-            await buildAndSendTx({ paymaster, connection, feePayer, instructions });
-
-            // Only persist the locally-generated keypair. External keys belong
-            // to the caller; writing them to the user's localStorage would be
-            // a security footgun (e.g. the backend's key ending up in browser).
-            if (sessionKeypair) {
-                localStorage.setItem('lazorkit-session', JSON.stringify({
-                    secretKey: Array.from(sessionKeypair.secretKey),
-                    publicKey: sessionKeypair.publicKey.toBase58(),
-                    sessionPda: sessionPda.toBase58(),
-                    walletPda: walletPda.toBase58(),
-                    expiresAt: expiresAt.toString(),
-                    spendingLimits: payload.spendingLimits ? {
-                        solLifetimeCap: payload.spendingLimits.solLifetimeCap?.toString(),
-                        solPerTxMax: payload.spendingLimits.solPerTxMax?.toString(),
-                        solRecurring: payload.spendingLimits.solRecurring
-                            ? {
-                                limit: payload.spendingLimits.solRecurring.limit.toString(),
-                                windowSlots: payload.spendingLimits.solRecurring.windowSlots.toString(),
-                            }
-                            : undefined,
-                    } : undefined,
-                }));
+                await buildAndSendTx({ paymaster, connection, feePayer, instructions, turn });
+                return prepared.sessionPda;
+            } finally {
+                dialogManager.destroy();
             }
+        });
 
-            payload.onSuccess?.(sessionPda.toBase58(), sessionPublicKey.toBase58());
-            return { sessionPda: sessionPda.toBase58(), sessionPublicKey: sessionPublicKey.toBase58() };
-        } finally {
-            dialogManager.destroy();
+        // Only persist the locally-generated keypair. External keys belong
+        // to the caller; writing them to the user's localStorage would be
+        // a security footgun (e.g. the backend's key ending up in browser).
+        if (sessionKeypair) {
+            localStorage.setItem('lazorkit-session', JSON.stringify({
+                secretKey: Array.from(sessionKeypair.secretKey),
+                publicKey: sessionKeypair.publicKey.toBase58(),
+                sessionPda: sessionPda.toBase58(),
+                walletPda: walletPda.toBase58(),
+                expiresAt: expiresAt.toString(),
+                spendingLimits: payload.spendingLimits ? {
+                    solLifetimeCap: payload.spendingLimits.solLifetimeCap?.toString(),
+                    solPerTxMax: payload.spendingLimits.solPerTxMax?.toString(),
+                    solRecurring: payload.spendingLimits.solRecurring
+                        ? {
+                            limit: payload.spendingLimits.solRecurring.limit.toString(),
+                            windowSlots: payload.spendingLimits.solRecurring.windowSlots.toString(),
+                        }
+                        : undefined,
+                } : undefined,
+            }));
         }
+
+        payload.onSuccess?.(sessionPda.toBase58(), sessionPublicKey.toBase58());
+        return { sessionPda: sessionPda.toBase58(), sessionPublicKey: sessionPublicKey.toBase58() };
     } catch (error) {
         return handleActionError(error, set, payload.onFail, walletVersion(get));
     } finally {
@@ -579,33 +612,35 @@ export const revokeSessionAction = async (
         const paymaster = paymasterFor(config, version);
         const feePayer = await paymaster.getPayer();
 
-        const prepared = await client.prepareRevokeSession({
-            payer: feePayer,
-            walletPda,
-            secp256r1: { credentialIdHash, publicKeyBytes, authorityPda },
-            sessionPda,
+        await withAuthority(authorityPda, async (turn) => {
+            const prepared = await client.prepareRevokeSession({
+                payer: feePayer,
+                walletPda,
+                secp256r1: { credentialIdHash, publicKeyBytes, authorityPda, ...(await turn.challengeReads(connection)) },
+                sessionPda,
+            });
+
+            const encodedChallenge = toBase64Url(prepared.challenge);
+            const dialogManager = createDialogManager(config);
+            try {
+                const signResult: SignResult = await dialogManager.openSign(
+                    encodedChallenge,
+                    '',
+                    wallet.credentialId,
+                    undefined,
+                );
+
+                const { instructions } = client.finalizeRevokeSession(prepared, decodeSignResult(signResult));
+
+                await buildAndSendTx({ paymaster, connection, feePayer, instructions, turn });
+            } finally {
+                dialogManager.destroy();
+            }
         });
 
-        const encodedChallenge = toBase64Url(prepared.challenge);
-        const dialogManager = createDialogManager(config);
-        try {
-            const signResult: SignResult = await dialogManager.openSign(
-                encodedChallenge,
-                '',
-                wallet.credentialId,
-                undefined,
-            );
-
-            const { instructions } = client.finalizeRevokeSession(prepared, decodeSignResult(signResult));
-
-            await buildAndSendTx({ paymaster, connection, feePayer, instructions });
-
-            // Only clear localStorage when we revoked an SDK-managed session.
-            if (!external) localStorage.removeItem('lazorkit-session');
-            payload.onSuccess?.();
-        } finally {
-            dialogManager.destroy();
-        }
+        // Only clear localStorage when we revoked an SDK-managed session.
+        if (!external) localStorage.removeItem('lazorkit-session');
+        payload.onSuccess?.();
     } catch (error) {
         return handleActionError(error, set, payload.onFail, walletVersion(get));
     } finally {
@@ -707,43 +742,45 @@ export const addAuthorityAction = async (
             );
         }
 
-        const prepared = await client.prepareAddAuthority({
-            payer: feePayer,
-            walletPda,
-            secp256r1: { credentialIdHash, publicKeyBytes, authorityPda },
-            newAuthority: { type: 'ed25519', publicKey: authorityKeypair.publicKey },
-            role,
-            policy: payload.policy,
-        });
-        const newAuthorityPda = prepared.newAuthorityPda;
-
-        const encodedChallenge = toBase64Url(prepared.challenge);
-        const dialogManager = createDialogManager(config);
-        try {
-            const signResult: SignResult = await dialogManager.openSign(
-                encodedChallenge,
-                '',
-                wallet.credentialId,
-                undefined,
-            );
-
-            const { instructions } = client.finalizeAddAuthority(prepared, decodeSignResult(signResult));
-
-            await buildAndSendTx({ paymaster, connection, feePayer, instructions });
-
-            localStorage.setItem('lazorkit-authority', JSON.stringify({
-                secretKey: Array.from(authorityKeypair.secretKey),
-                publicKey: authorityKeypair.publicKey.toBase58(),
-                authorityPda: newAuthorityPda.toBase58(),
-                walletPda: walletPda.toBase58(),
+        const newAuthorityPda = await withAuthority(authorityPda, async (turn) => {
+            const prepared = await client.prepareAddAuthority({
+                payer: feePayer,
+                walletPda,
+                secp256r1: { credentialIdHash, publicKeyBytes, authorityPda, ...(await turn.challengeReads(connection)) },
+                newAuthority: { type: 'ed25519', publicKey: authorityKeypair.publicKey },
                 role,
-            }));
+                policy: payload.policy,
+            });
 
-            payload.onSuccess?.(newAuthorityPda.toBase58(), authorityKeypair.publicKey.toBase58());
-            return { authorityPda: newAuthorityPda.toBase58(), authorityPublicKey: authorityKeypair.publicKey.toBase58() };
-        } finally {
-            dialogManager.destroy();
-        }
+            const encodedChallenge = toBase64Url(prepared.challenge);
+            const dialogManager = createDialogManager(config);
+            try {
+                const signResult: SignResult = await dialogManager.openSign(
+                    encodedChallenge,
+                    '',
+                    wallet.credentialId,
+                    undefined,
+                );
+
+                const { instructions } = client.finalizeAddAuthority(prepared, decodeSignResult(signResult));
+
+                await buildAndSendTx({ paymaster, connection, feePayer, instructions, turn });
+                return prepared.newAuthorityPda;
+            } finally {
+                dialogManager.destroy();
+            }
+        });
+
+        localStorage.setItem('lazorkit-authority', JSON.stringify({
+            secretKey: Array.from(authorityKeypair.secretKey),
+            publicKey: authorityKeypair.publicKey.toBase58(),
+            authorityPda: newAuthorityPda.toBase58(),
+            walletPda: walletPda.toBase58(),
+            role,
+        }));
+
+        payload.onSuccess?.(newAuthorityPda.toBase58(), authorityKeypair.publicKey.toBase58());
+        return { authorityPda: newAuthorityPda.toBase58(), authorityPublicKey: authorityKeypair.publicKey.toBase58() };
     } catch (error) {
         return handleActionError(error, set, payload.onFail, walletVersion(get));
     } finally {
@@ -776,31 +813,33 @@ export const removeAuthorityAction = async (
         const feePayer = await paymaster.getPayer();
         const targetAuthorityPda = new PublicKey(payload.targetAuthorityPda);
 
-        const prepared = await client.prepareRemoveAuthority({
-            payer: feePayer,
-            walletPda,
-            secp256r1: { credentialIdHash, publicKeyBytes, authorityPda },
-            targetAuthorityPda,
+        await withAuthority(authorityPda, async (turn) => {
+            const prepared = await client.prepareRemoveAuthority({
+                payer: feePayer,
+                walletPda,
+                secp256r1: { credentialIdHash, publicKeyBytes, authorityPda, ...(await turn.challengeReads(connection)) },
+                targetAuthorityPda,
+            });
+
+            const encodedChallenge = toBase64Url(prepared.challenge);
+            const dialogManager = createDialogManager(config);
+            try {
+                const signResult: SignResult = await dialogManager.openSign(
+                    encodedChallenge,
+                    '',
+                    wallet.credentialId,
+                    undefined,
+                );
+
+                const { instructions } = client.finalizeRemoveAuthority(prepared, decodeSignResult(signResult));
+
+                await buildAndSendTx({ paymaster, connection, feePayer, instructions, turn });
+            } finally {
+                dialogManager.destroy();
+            }
         });
 
-        const encodedChallenge = toBase64Url(prepared.challenge);
-        const dialogManager = createDialogManager(config);
-        try {
-            const signResult: SignResult = await dialogManager.openSign(
-                encodedChallenge,
-                '',
-                wallet.credentialId,
-                undefined,
-            );
-
-            const { instructions } = client.finalizeRemoveAuthority(prepared, decodeSignResult(signResult));
-
-            await buildAndSendTx({ paymaster, connection, feePayer, instructions });
-
-            payload.onSuccess?.();
-        } finally {
-            dialogManager.destroy();
-        }
+        payload.onSuccess?.();
     } catch (error) {
         return handleActionError(error, set, payload.onFail, walletVersion(get));
     } finally {
@@ -809,7 +848,8 @@ export const removeAuthorityAction = async (
 };
 
 /**
- * Authorize + Execute deferred — passkey signs TX1 (authorize), then immediately executes TX2.
+ * Authorize + Execute deferred — passkey signs TX1 (authorize), then executes TX2
+ * once TX1 is confirmed (TX2 spends the authorization TX1 writes).
  * Demonstrates that TX2 requires no passkey (could be submitted by anyone).
  */
 export const authorizeAndExecuteAction = async (
@@ -829,53 +869,61 @@ export const authorizeAndExecuteAction = async (
         const paymaster = paymasterFor(config, version);
         const feePayer = await paymaster.getPayer();
 
-        const prepared = await client.prepareAuthorize({
-            payer: feePayer,
-            walletPda,
-            secp256r1: { credentialIdHash, publicKeyBytes, authorityPda },
-            instructions: payload.instructions,
+        const txSignature = await withAuthority(authorityPda, async (turn) => {
+            const prepared = await client.prepareAuthorize({
+                payer: feePayer,
+                walletPda,
+                secp256r1: { credentialIdHash, publicKeyBytes, authorityPda, ...(await turn.challengeReads(connection)) },
+                instructions: payload.instructions,
+            });
+
+            const encodedChallenge = toBase64Url(prepared.challenge);
+            const dialogManager = createDialogManager(config);
+            try {
+                const signResult: SignResult = await dialogManager.openSign(
+                    encodedChallenge,
+                    '',
+                    wallet.credentialId,
+                    undefined,
+                );
+
+                const { instructions: authorizeIxs, deferredPayload } = client.finalizeAuthorize(prepared, decodeSignResult(signResult));
+
+                // TX1 is confirmed before TX2 is built or sent: TX2 executes the
+                // authorization TX1 writes, and a paymaster simulating TX2
+                // before TX1 has executed rejects it.
+                const txVersion = payload.transactionOptions?.txVersion;
+                await buildAndSendTx({
+                    paymaster,
+                    connection,
+                    feePayer,
+                    instructions: authorizeIxs,
+                    txVersion,
+                    turn,
+                });
+
+                // TX2 consumes no counter. The same client built TX1, so the
+                // fee accounts it resolves are the ones TX1 used (no re-read).
+                const { instructions: execIxs } = await client.executeDeferredFromPayload({
+                    payer: feePayer,
+                    deferredPayload,
+                });
+
+                return await buildAndSendTx({
+                    paymaster,
+                    connection,
+                    feePayer,
+                    instructions: execIxs,
+                    addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+                    txVersion,
+                });
+            } finally {
+                dialogManager.destroy();
+            }
         });
 
-        const encodedChallenge = toBase64Url(prepared.challenge);
-        const dialogManager = createDialogManager(config);
-        try {
-            const signResult: SignResult = await dialogManager.openSign(
-                encodedChallenge,
-                '',
-                wallet.credentialId,
-                undefined,
-            );
-
-            const { instructions: authorizeIxs, deferredPayload } = client.finalizeAuthorize(prepared, decodeSignResult(signResult));
-
-            const txVersion = payload.transactionOptions?.txVersion;
-            await buildAndSendTx({
-                paymaster,
-                connection,
-                feePayer,
-                instructions: authorizeIxs,
-                txVersion,
-            });
-
-            const { instructions: execIxs } = await client.executeDeferredFromPayload({
-                payer: feePayer,
-                deferredPayload,
-            });
-
-            const txSignature = await buildAndSendTx({
-                paymaster,
-                connection,
-                feePayer,
-                instructions: execIxs,
-                addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
-                txVersion,
-            });
-
-            payload.onSuccess?.(txSignature);
-            return txSignature;
-        } finally {
-            dialogManager.destroy();
-        }
+        payload.onSuccess?.(txSignature);
+        return txSignature;
     } catch (error) {
         return handleActionError(error, set, payload.onFail, walletVersion(get));
     } finally {
@@ -906,39 +954,45 @@ export const authorizeDeferredAction = async (
         const paymaster = paymasterFor(config, version);
         const feePayer = await paymaster.getPayer();
 
-        const prepared = await client.prepareAuthorize({
-            payer: feePayer,
-            walletPda,
-            secp256r1: { credentialIdHash, publicKeyBytes, authorityPda },
-            instructions: payload.instructions,
-        });
-
-        const encodedChallenge = toBase64Url(prepared.challenge);
-        const dialogManager = createDialogManager(config);
-        try {
-            const signResult: SignResult = await dialogManager.openSign(
-                encodedChallenge,
-                '',
-                wallet.credentialId,
-                undefined,
-            );
-
-            const { instructions: authorizeIxs, deferredPayload } = client.finalizeAuthorize(prepared, decodeSignResult(signResult));
-
-            const signature = await buildAndSendTx({
-                paymaster,
-                connection,
-                feePayer,
-                instructions: authorizeIxs,
-                txVersion: payload.transactionOptions?.txVersion,
+        const { signature, deferredPayload } = await withAuthority(authorityPda, async (turn) => {
+            const prepared = await client.prepareAuthorize({
+                payer: feePayer,
+                walletPda,
+                secp256r1: { credentialIdHash, publicKeyBytes, authorityPda, ...(await turn.challengeReads(connection)) },
+                instructions: payload.instructions,
             });
 
-            const serialized = serializeDeferred(version, deferredPayload);
-            payload.onSuccess?.({ signature, deferredPayload: serialized });
-            return { signature, deferredPayload: serialized };
-        } finally {
-            dialogManager.destroy();
-        }
+            const encodedChallenge = toBase64Url(prepared.challenge);
+            const dialogManager = createDialogManager(config);
+            try {
+                const signResult: SignResult = await dialogManager.openSign(
+                    encodedChallenge,
+                    '',
+                    wallet.credentialId,
+                    undefined,
+                );
+
+                const { instructions: authorizeIxs, deferredPayload } = client.finalizeAuthorize(prepared, decodeSignResult(signResult));
+
+                // Confirmed before this resolves, so an `executeDeferred` made
+                // right after finds the authorization on chain.
+                const signature = await buildAndSendTx({
+                    paymaster,
+                    connection,
+                    feePayer,
+                    instructions: authorizeIxs,
+                    txVersion: payload.transactionOptions?.txVersion,
+                    turn,
+                });
+                return { signature, deferredPayload };
+            } finally {
+                dialogManager.destroy();
+            }
+        });
+
+        const serialized = serializeDeferred(version, deferredPayload);
+        payload.onSuccess?.({ signature, deferredPayload: serialized });
+        return { signature, deferredPayload: serialized };
     } catch (error) {
         return handleActionError(error, set, payload.onFail, walletVersion(get));
     } finally {

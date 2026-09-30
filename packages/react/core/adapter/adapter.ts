@@ -35,6 +35,8 @@ import {
     V1WalletMigratedError,
 } from '../program';
 import { getCredentialHash } from '../wallet/utils';
+import { sendAndConfirm, withAuthority } from '../wallet/sequence';
+import { buildPreviewTransactionBase64 } from '../wallet/preview';
 import { clearPendingConfirmation, connectAbandoned, connectFreshWallet } from '../wallet/resolveWallet';
 import type { OnConfirmWallet } from '../wallet/confirmation';
 import { Buffer } from 'buffer';
@@ -249,7 +251,7 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
                 createWallet: async (owner) => {
                     const { paymaster, client } = this._initializeClients(2);
                     const feePayer = await paymaster.getPayer();
-                    const { instructions, walletPda } = await client.createWallet({
+                    const { instructions, walletPda, authorityPda } = await client.createWallet({
                         payer: feePayer,
                         userSeed: randomBytes(32),
                         owner: { type: 'secp256r1', ...owner },
@@ -259,8 +261,16 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
                     // Serializing for the paymaster needs both; without them
                     // creation threw before anything was sent.
                     tx.feePayer = feePayer;
-                    tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-                    await paymaster.signAndSend(tx);
+                    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+                    tx.recentBlockhash = blockhash;
+                    // Created once confirmed, and the first signature for it
+                    // is read at or past that slot.
+                    await sendAndConfirm({
+                        connection,
+                        attempt: { blockhash, lastValidBlockHeight },
+                        send: () => paymaster.signAndSend(tx),
+                        createsAuthority: authorityPda,
+                    });
                     return walletPda;
                 },
                 signal,
@@ -338,14 +348,17 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         this.emit('disconnect');
     }
 
+    /**
+     * Sign with the passkey and send through the paymaster. Resolves once the
+     * transaction is confirmed, and rejects if it failed on chain. Calls for
+     * the same passkey run one after another (see core/wallet/sequence), each
+     * signed over a counter that includes the one before.
+     */
     async sendTransaction(
         transaction: Transaction | VersionedTransaction,
     ): Promise<TransactionSignature> {
         try {
             if (!this._wallet || !this._publicKey) throw new WalletDisconnectedError();
-
-            const instructions = this._prepareInstructions(transaction);
-            if (instructions.length === 0) throw new WalletSignTransactionError('No instructions to sign');
 
             const version = versionOf(this._wallet);
             const { connection, paymaster, client } = this._initializeClients(version);
@@ -365,6 +378,11 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
                 );
             }
 
+            // After the lookup tables: an instruction of a v0 transaction can
+            // name accounts that only they hold (a Jupiter route does).
+            const instructions = this._prepareInstructions(transaction, addressLookupTableAccounts);
+            if (instructions.length === 0) throw new WalletSignTransactionError('No instructions to sign');
+
             const feePayer = await paymaster.getPayer();
 
             // Step 1: resolve the connected wallet on chain — the stored one, not
@@ -383,74 +401,92 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
             }
             const { walletPda, authorityPda } = match;
             const publicKeyBytes = await readPasskeyPubkey(version, connection, authorityPda);
+            const credentialId = this._wallet.credentialId;
 
-            // Step 2: prepare execute context (challenge + opaque internal state).
-            const prepared = await client.prepareExecute({
-                payer: feePayer,
-                walletPda,
-                secp256r1: { credentialIdHash, publicKeyBytes, authorityPda },
-                instructions,
-            });
-
-            const encodedChallenge = toBase64Url(prepared.challenge);
-
-            // Build a display-only v0 transaction for the portal preview.
-            const latest = await connection.getLatestBlockhash();
-            const displayMessage = new TransactionMessage({
-                payerKey: feePayer,
-                recentBlockhash: latest.blockhash,
-                instructions,
-            }).compileToV0Message();
-            const base64Tx = Buffer.from(new VersionedTransaction(displayMessage).serialize()).toString('base64');
-
-            const dialogManager = this._createDialogManager();
-            try {
-                // Step 3: obtain the signature via the portal.
-                const signResult: SignResult = await dialogManager.openSign(
-                    encodedChallenge,
-                    base64Tx,
-                    this._wallet.credentialId,
-                    this._config.clusterSimulation,
-                );
-
-                // Step 4: decode portal result.
-                const signature = new Uint8Array(Buffer.from(signResult.signature, 'base64'));
-                const authenticatorData = new Uint8Array(
-                    Buffer.from(signResult.authenticatorDataBase64, 'base64'),
-                );
-                const clientDataJsonRaw = Buffer.from(signResult.clientDataJsonBase64, 'base64');
-                const clientDataJsonHash = new Uint8Array(sha256.arrayBuffer(clientDataJsonRaw));
-
-                const { instructions: finalizedIxs } = client.finalizeExecute(prepared, {
-                    signature,
-                    authenticatorData,
-                    clientDataJsonHash,
-                    clientDataJson: new Uint8Array(clientDataJsonRaw),
+            return await withAuthority(authorityPda, async (turn) => {
+                // Step 2: prepare execute context (challenge + opaque internal
+                // state), from state that includes this passkey's last send.
+                const prepared = await client.prepareExecute({
+                    payer: feePayer,
+                    walletPda,
+                    secp256r1: { credentialIdHash, publicKeyBytes, authorityPda, ...(await turn.challengeReads(connection)) },
+                    instructions,
                 });
 
-                // Step 5: send via paymaster (versioned if LUTs supplied, legacy otherwise).
-                if (addressLookupTableAccounts.length > 0) {
-                    const { blockhash } = await connection.getLatestBlockhash();
-                    const v0Message = new TransactionMessage({
-                        payerKey: feePayer,
-                        recentBlockhash: blockhash,
-                        instructions: finalizedIxs,
-                    }).compileToV0Message(addressLookupTableAccounts);
-                    return await paymaster.signAndSendVersionedTransaction(
-                        new VersionedTransaction(v0Message),
-                    );
-                }
+                const encodedChallenge = toBase64Url(prepared.challenge);
 
-                // A legacy transaction cannot be serialized for the paymaster
-                // without its fee payer and a blockhash.
-                const tx = new Transaction();
-                tx.add(...finalizedIxs);
-                tx.feePayer = feePayer;
-                tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-                return await paymaster.signAndSend(tx);
-            } finally {
-                dialogManager.destroy();
-            }
+                // A display-only v0 transaction for the portal preview,
+                // compiled with the dApp's lookup tables like the one sent.
+                const latest = await connection.getLatestBlockhash();
+                const base64Tx = buildPreviewTransactionBase64({
+                    feePayer,
+                    recentBlockhash: latest.blockhash,
+                    instructions,
+                    addressLookupTables: addressLookupTableAccounts,
+                });
+
+                const dialogManager = this._createDialogManager();
+                try {
+                    // Step 3: obtain the signature via the portal.
+                    const signResult: SignResult = await dialogManager.openSign(
+                        encodedChallenge,
+                        base64Tx,
+                        credentialId,
+                        this._config.clusterSimulation,
+                    );
+
+                    // Step 4: decode portal result.
+                    const signature = new Uint8Array(Buffer.from(signResult.signature, 'base64'));
+                    const authenticatorData = new Uint8Array(
+                        Buffer.from(signResult.authenticatorDataBase64, 'base64'),
+                    );
+                    const clientDataJsonRaw = Buffer.from(signResult.clientDataJsonBase64, 'base64');
+                    const clientDataJsonHash = new Uint8Array(sha256.arrayBuffer(clientDataJsonRaw));
+
+                    const { instructions: finalizedIxs } = client.finalizeExecute(prepared, {
+                        signature,
+                        authenticatorData,
+                        clientDataJsonHash,
+                        clientDataJson: new Uint8Array(clientDataJsonRaw),
+                    });
+
+                    // Step 5: send via paymaster (versioned if LUTs supplied,
+                    // legacy otherwise), then wait until it is confirmed.
+                    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+                    let send: () => Promise<string>;
+                    let simulateLogs: () => Promise<readonly string[] | null | undefined>;
+                    if (addressLookupTableAccounts.length > 0) {
+                        const v0 = new VersionedTransaction(
+                            new TransactionMessage({
+                                payerKey: feePayer,
+                                recentBlockhash: blockhash,
+                                instructions: finalizedIxs,
+                            }).compileToV0Message(addressLookupTableAccounts),
+                        );
+                        send = () => paymaster.signAndSendVersionedTransaction(v0);
+                        simulateLogs = async () =>
+                            (await connection.simulateTransaction(v0, { sigVerify: false, replaceRecentBlockhash: true })).value.logs;
+                    } else {
+                        // A legacy transaction cannot be serialized for the
+                        // paymaster without its fee payer and a blockhash.
+                        const tx = new Transaction();
+                        tx.add(...finalizedIxs);
+                        tx.feePayer = feePayer;
+                        tx.recentBlockhash = blockhash;
+                        send = () => paymaster.signAndSend(tx);
+                        simulateLogs = async () => (await connection.simulateTransaction(tx)).value.logs;
+                    }
+                    return await sendAndConfirm({
+                        connection,
+                        attempt: { blockhash, lastValidBlockHeight },
+                        send,
+                        turn,
+                        simulateLogs,
+                    });
+                } finally {
+                    dialogManager.destroy();
+                }
+            });
 
         } catch (error: any) {
             const err = isRetiredDeploymentError(error, this._wallet ? versionOf(this._wallet) : undefined)
@@ -495,18 +531,34 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         }
     }
 
-    private _prepareInstructions(transaction: Transaction | VersionedTransaction): TransactionInstruction[] {
+    /**
+     * The dApp's instructions. For a v0 transaction the account indexes run
+     * over its static keys and then the addresses its lookup tables load, so
+     * they are resolved with `addressLookupTableAccounts` (before, an index
+     * into a lookup table resolved to no key at all).
+     */
+    private _prepareInstructions(
+        transaction: Transaction | VersionedTransaction,
+        addressLookupTableAccounts: AddressLookupTableAccount[] = [],
+    ): TransactionInstruction[] {
         if ('version' in transaction) {
-            return transaction.message.compiledInstructions.map((ix) => {
+            const message = transaction.message;
+            const accountKeys = message.getAccountKeys({ addressLookupTableAccounts });
+            const keyAt = (index: number) => {
+                const key = accountKeys.get(index);
+                if (!key) throw new WalletSignTransactionError(`Account index ${index} is not in the transaction or its lookup tables`);
+                return key;
+            };
+            return message.compiledInstructions.map((ix) => {
                 return new TransactionInstruction({
                     keys: ix.accountKeyIndexes.map((keyIndex) => {
                         return {
-                            pubkey: transaction.message.staticAccountKeys[keyIndex],
-                            isSigner: transaction.message.isAccountSigner(keyIndex),
-                            isWritable: transaction.message.isAccountWritable(keyIndex),
+                            pubkey: keyAt(keyIndex),
+                            isSigner: message.isAccountSigner(keyIndex),
+                            isWritable: message.isAccountWritable(keyIndex),
                         };
                     }),
-                    programId: new PublicKey(transaction.message.staticAccountKeys[ix.programIdIndex]),
+                    programId: keyAt(ix.programIdIndex),
                     data: Buffer.from(ix.data),
                 });
             });

@@ -101,7 +101,8 @@ So `connect`:
 
 1. keeps only the wallets whose stored key the passkey is proven to hold — the
    key the portal reports, or a signature over a fresh challenge (at most one
-   extra passkey prompt per connect);
+   extra passkey prompt per connect, and one more only to create a wallet for
+   a passkey whose key the portal cannot report — below);
 2. uses one on its own only when it is **the one wallet this passkey has signed
    for, and nothing else can spend from it**: no other authority, live session,
    pending deferred transaction or token approval, and a vault still owned by
@@ -110,10 +111,53 @@ So `connect`:
    own wallet before its first transaction, a wallet made on the LazorKit
    migration page, and any time the passkey has signed for two wallets (a
    signature can be replayed onto a planted copy);
-4. creates a new (v2) wallet only when the passkey holds none. A wallet it just
-   created is saved as it is, never looked up again.
+4. creates a new (v2) wallet only when the passkey holds none, for the
+   passkey's own key (below). A wallet it just created is saved as it is,
+   never looked up again.
 
 A stored wallet is used as stored; none of this runs for it or for signing.
+
+### A passkey that has no wallet yet
+
+Every passkey starts without a v2 wallet, including one the user made long
+ago on another device or browser. Signing in with it never reveals its public
+key (WebAuthn's `get()` does not return one), so the portal reports the key it
+has stored for that passkey: none for a passkey made elsewhere, and possibly
+another passkey's. A wallet created for a key the passkey does not hold could
+never sign, and whatever reached its vault would be stuck. So the key a new
+wallet gets is always one a signature from this connect verifies against:
+
+- a passkey the portal registered just now: the key it reports (no extra
+  prompt);
+- otherwise the reported key, once the ownership proof of step 1 verifies
+  against it — as before: the connect reply's signature when the portal makes
+  one, else one portal sign;
+- otherwise the key **recovered from two of the passkey's signatures** over
+  fresh challenges. One ECDSA signature narrows its signer down to a couple of
+  candidate keys; a second over another challenge leaves one
+  (`resolvePasskeyPublicKey`, `@lazorkit/sdk-legacy` 1.3.0). The two are the
+  ownership proof and the connect reply's signature, or one more portal sign
+  when the reply has none: **one extra passkey prompt** over the case above,
+  a portal "sign" over a random challenge, with no transaction, for the same
+  passkey.
+
+So an existing passkey with no wallet now gets one, for its real key. Closing
+that extra prompt rejects `connect` with `PortalCancelledError`. If the
+signatures still do not settle on one key, `connect` throws an error that
+says so. In both cases nothing is created.
+
+A signature names its signer's key, never its passkey, and the wallet is
+created under the passkey the connect reply names. So a recovered key is used
+only when something ties it to that passkey: the connect reply's own
+signature, or portal signs that name the passkey they were made with (the
+portal signs with the passkey the SDK asks for, its only `allowCredentials`
+entry, and names it back). When a wallet is to be created, a portal sign that
+names another passkey fails `connect`, whichever key the portal reported; so
+does recovery when nothing ties the key to the passkey. Nothing is created in
+either case, since that passkey could never sign for a wallet with another's
+key. Beyond that, the recovered key is whoever signed: those signatures, like
+the reported key and the passkey's credential id, reach the SDK only from the
+portal's origin, so this trusts the portal no more than before.
 
 ### Asking the user: `onConfirmWallet`
 
@@ -209,7 +253,53 @@ Finding wallets yourself with `@lazorkit/sdk-legacy`? Do not take the first
 wallet `findWalletsByAuthority(credentialIdHash)` returns — anyone can plant
 one there. Use `LazorKitClient.findOwnPasskeyWallet` with a proof over
 `createOwnershipChallenge()`; `pickOwnWallet`, `verifyOwnershipProof` and
-`selectWalletByAddress` are re-exported here.
+`selectWalletByAddress` are re-exported here. To create a wallet for a passkey
+whose key you do not have, see `resolvePasskeyPublicKey` in
+`@lazorkit/sdk-legacy`, and its notes on where the signatures must come from.
+
+## Sending transactions
+
+Every send resolves once its transaction is **confirmed**, and rejects if it
+failed on chain: `signAndSendTransaction`, `authorizeAndExecute`,
+`authorizeDeferred`, `executeDeferred`, the session and authority sends,
+`LazorkitWalletAdapter.sendTransaction` and the Wallet Standard
+`signAndSendTransaction`. The paymaster's answer is not enough: a relayer
+that answers once the RPC accepted a transaction answers before it has run.
+Kora confirms before it answers by default, so there the wait is one status
+read.
+
+So two sends in a row are safe (`await` one, then the other). A passkey
+signature commits to the passkey's counter, which the program checks
+(`SignatureReused`, 3006): the wallet prepares each signature for a passkey
+only after that passkey's previous transaction is confirmed, and reads the
+counter at `confirmed` from an RPC node that has executed it
+(`minContextSlot`). Calls for the same passkey made at the same time, through
+the store, the adapter or both, run one after another. The store still
+refuses a second call while one of its own is signing ("Already signing").
+
+| Error | When |
+|---|---|
+| `TransactionFailedError` | The transaction landed and failed: fees were paid, nothing else changed. `signature`, `transactionError`, `slot`, and `logs` when they were read. |
+| `TransactionExpiredError` | It did not land before its blockhash expired, so it never will. Concluded only from an RPC node past that point, in its transaction history, never from a status cache that has forgotten a landed transaction. |
+| `TransactionOutcomeUnknownError` | Whether it landed is not known: check before sending it again. `signature` is `undefined` when the paymaster's answer was lost (a network error, a timeout, a gateway error, or a resend of the same bytes that found them already processed). |
+| `ConfirmationTimeoutError` | A `TransactionOutcomeUnknownError`: no outcome within two minutes, and it may still land. Check `signature` before sending again. |
+| `PreviousTransactionPendingError` | Nothing was signed or sent: the passkey's previous transaction (`pendingSignature`) still has no known outcome, and a new signature could be bound to the counter it may use. Try again later. |
+| `SignatureReusedError` | LazorKit rejected the passkey signature (3006): its counter was already used. Left for the same passkey signing somewhere else at the same moment, or a paymaster reading older state than the wallet. That signature can never be valid, so it is not resent, and no new prompt opens on its own: ask the user to sign again. An inner program's error with the same code (Anchor's `AccountNotMutable`) is told apart by the logs and reported as the failure it is. |
+| `PaymasterError` | The paymaster refused the transaction: `code` and `data` of its JSON-RPC error, or `httpStatus`. |
+
+Every status read and paymaster request is bounded in time, so one that never
+answers cannot hold a passkey's queue. The slot the passkey's last transaction
+landed in, and a send whose outcome is not known yet, are also kept in
+localStorage (the slot for ten minutes): a reload or a second tab of the same
+app reads its first challenge from a node that has that transaction. Two tabs
+that sign for the same passkey at the same moment are still not serialized.
+
+The portal's transaction preview is compiled without lookup tables whenever it
+fits in a packet, so the portal sees every account the transaction touches.
+Only a payload over the 1232-byte limit is compiled with the lookup tables the
+transaction is sent with (`transactionOptions.addressLookupTableAccounts`, or
+those of a dApp's v0 transaction), and a preview still over the limit no longer
+fails the call before the prompt.
 
 ## API Reference
 
@@ -262,8 +352,9 @@ Signs and sends transaction via Paymaster.
 | `payload.transactionOptions` | `object` | Optional config |
 | `transactionOptions.feeToken` | `string` | Token address for gas fees (e.g. USDC). |
 | `transactionOptions.computeUnitLimit` | `number` | Max compute units. |
-| `transactionOptions.addressLookupTableAccounts` | `AddressLookupTableAccount[]` | Signup tables for v0 txs. |
+| `transactionOptions.addressLookupTableAccounts` | `AddressLookupTableAccount[]` | Lookup tables for v0 txs (the portal preview uses them too). |
 | `transactionOptions.clusterSimulation` | `'devnet' \| 'mainnet'` | Network for simulation. |
 
 **Returns**
-`Promise<string>` - Transaction signature.
+`Promise<string>` - Transaction signature, once the transaction is confirmed
+(see [Sending transactions](#sending-transactions)).

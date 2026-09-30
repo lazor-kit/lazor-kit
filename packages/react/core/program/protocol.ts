@@ -78,6 +78,81 @@ export function isRetiredDeploymentError(error: unknown, version?: ProtocolVersi
 }
 
 /**
+ * The LazorKit program's `SignatureReused`: a passkey signature commits to
+ * its authority's counter + 1, and this one's counter had already been used.
+ * Seen as `custom program error: 0xbbe`.
+ */
+export const SIGNATURE_REUSED_CODE = 3006;
+
+/**
+ * The passkey signed a counter that another transaction of the same passkey
+ * had already used, so LazorKit rejected it (`SignatureReused`, 3006).
+ *
+ * The signature is bound to that counter and can never become valid, so the
+ * wallet does not send it again, and it does not open a new prompt on its
+ * own. Ask the user to sign again. The wallet waits for each transaction it
+ * sent for a passkey before preparing that passkey's next signature, so this
+ * is left for the same passkey signing somewhere else at the same moment, or
+ * a paymaster reading older state than the wallet did.
+ */
+export class SignatureReusedError extends Error {
+    readonly code = SIGNATURE_REUSED_CODE;
+    constructor(cause?: unknown) {
+        super(
+            'LazorKit rejected the passkey signature with SignatureReused (3006): the counter it was ' +
+                'signed for had already been used by another transaction of this passkey. That ' +
+                'signature can never be valid, so it was not sent again. Ask the user to sign again.',
+        );
+        this.name = 'SignatureReusedError';
+        if (cause !== undefined) (this as { cause?: unknown }).cause = cause;
+    }
+}
+
+function isLazorKitProgramId(id: string): boolean {
+    return id === PROGRAM_ID_DEVNET.toBase58() || id === PROGRAM_ID_MAINNET.toBase58() || V1_PROGRAM_IDS.includes(id);
+}
+
+/**
+ * Whose `SignatureReused` (3006) this error is, as far as the error itself
+ * says. It reaches the wallet as web3.js text (`custom program error: 0xbbe`),
+ * a TransactionError as JSON (`"Custom":3006`) or as Kora prints it
+ * (`Custom(3006)`). An inner program may use 3006 too (Anchor's
+ * `AccountNotMutable`), and the instruction that CPI'd it then fails with the
+ * same code. Only logs tell them apart: the first program that failed.
+ *
+ * - `'lazorkit'`: a 3006, and the logs name LazorKit as the first program
+ *   to fail with it.
+ * - `'other'`: not a 3006, or the logs name another program.
+ * - `'unknown'`: a 3006 with no logs that name who failed with it (a
+ *   TransactionError read from chain, Kora's text): fetch the logs.
+ */
+export function signatureReusedVerdict(error: unknown): 'lazorkit' | 'other' | 'unknown' {
+    const text =
+        error instanceof Error
+            ? `${error.message} ${JSON.stringify((error as { logs?: unknown }).logs ?? '')} ${JSON.stringify((error as { data?: unknown }).data ?? '')} ${String((error as { cause?: unknown }).cause ?? '')}`
+            : typeof error === 'string'
+                ? error
+                : JSON.stringify(error) ?? String(error);
+    if (!/custom program error: 0xbbe\b/i.test(text) && !/"Custom":\s*3006\b/.test(text) && !/Custom\(\s*3006\s*\)/.test(text)) {
+        return 'other';
+    }
+    const firstFailure = /Program (\w{32,44}) failed: custom program error: 0xbbe\b/i.exec(text);
+    if (!firstFailure) return 'unknown';
+    return isLazorKitProgramId(firstFailure[1]) ? 'lazorkit' : 'other';
+}
+
+/**
+ * True for LazorKit's `SignatureReused` (3006), in any of the shapes it
+ * reaches the wallet in (see `signatureReusedVerdict`). A 3006 whose logs
+ * name another program as the first to fail is not LazorKit's; one with no
+ * logs at all counts as LazorKit's here. The wallet fetches the logs of such
+ * a failure before it reports `SignatureReusedError`.
+ */
+export function isSignatureReusedError(error: unknown): boolean {
+    return signatureReusedVerdict(error) !== 'other';
+}
+
+/**
  * The connected v1 wallet no longer exists: it has been migrated to v2 (or
  * otherwise closed). Connect again to pick up the passkey's v2 wallet.
  */

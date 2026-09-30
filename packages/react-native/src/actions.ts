@@ -28,6 +28,7 @@ import {
   toBase64Url,
 } from './core/wallet/actions';
 import { connectAbandoned, forgetCandidates, hasChooserHost } from './core/wallet/confirmation';
+import { type AuthorityTurn, withAuthority } from './core/wallet/sequence';
 import { logger } from './core/logger';
 import { API_ENDPOINTS } from './config';
 import {
@@ -172,6 +173,23 @@ function buildSecp256r1Params(wallet: {
     ),
     authorityPda: new PublicKey(wallet.walletDevice),
   };
+}
+
+/**
+ * Run a passkey-signed flow in its authority's lane (core/wallet/sequence):
+ * one at a time per passkey, each challenge read at `confirmed` from a node
+ * that has executed the passkey's previous transaction. `fn` gets the
+ * challenge params with those read options, and the turn to confirm with.
+ */
+async function withPasskey<T>(
+  connection: WalletStateClient['connection'],
+  wallet: { credentialId: string; walletDevice: string },
+  fn: (secp256r1: Secp256r1Params, turn: AuthorityTurn) => Promise<T>,
+): Promise<T> {
+  const params = buildSecp256r1Params(wallet);
+  return withAuthority(params.authorityPda!, async (turn) =>
+    fn({ ...params, ...(await turn.challengeReads(connection)) }, turn),
+  );
 }
 
 // ─── Connect / Disconnect ──────────────────────────────────────────
@@ -406,50 +424,53 @@ async function performPasskeyExecute(
 
   const walletPda = new PublicKey(wallet!.walletPda);
 
-  const prepared = await client.prepareExecute({
-    payer: feePayer,
-    walletPda,
-    secp256r1: buildSecp256r1Params(wallet!),
-    instructions: payload.instructions,
-  });
+  return withPasskey(connection, wallet!, async (secp256r1, turn) => {
+    const prepared = await client.prepareExecute({
+      payer: feePayer,
+      walletPda,
+      secp256r1,
+      instructions: payload.instructions,
+    });
 
-  const previewBase64Tx = await buildPreviewTransactionBase64({
-    connection,
-    feePayer,
-    instructions: payload.instructions,
-  });
+    const previewBase64Tx = await buildPreviewTransactionBase64({
+      connection,
+      feePayer,
+      instructions: payload.instructions,
+      addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+    });
 
-  const webAuthnResponse = await signChallengeViaPortal({
-    challenge: prepared.challenge,
-    credentialId: wallet!.credentialId,
-    portalUrl: config.portalUrl,
-    redirectUrl: options.redirectUrl,
-    previewBase64Tx,
-    clusterSimulation: payload.transactionOptions?.clusterSimulation,
-  });
+    const webAuthnResponse = await signChallengeViaPortal({
+      challenge: prepared.challenge,
+      credentialId: wallet!.credentialId,
+      portalUrl: config.portalUrl,
+      redirectUrl: options.redirectUrl,
+      previewBase64Tx,
+      clusterSimulation: payload.transactionOptions?.clusterSimulation,
+    });
 
-  const { instructions } = client.finalizeExecute(prepared, webAuthnResponse);
-  const executeInstructions: TransactionInstruction[] = [];
-  if (payload.transactionOptions?.computeUnitLimit) {
-    executeInstructions.push(
-      ComputeBudgetProgram.setComputeUnitLimit({
-        units: payload.transactionOptions.computeUnitLimit,
-      }),
-    );
-  }
-  executeInstructions.push(...instructions);
+    const { instructions } = client.finalizeExecute(prepared, webAuthnResponse);
+    const executeInstructions: TransactionInstruction[] = [];
+    if (payload.transactionOptions?.computeUnitLimit) {
+      executeInstructions.push(
+        ComputeBudgetProgram.setComputeUnitLimit({
+          units: payload.transactionOptions.computeUnitLimit,
+        }),
+      );
+    }
+    executeInstructions.push(...instructions);
 
-  const signature = await sendInstructionsViaPaymaster({
-    instructions: executeInstructions,
-    connection,
-    feePayer,
-    config,
-    version,
-    addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
-    feeToken: payload.transactionOptions?.feeToken,
+    // Resolves once confirmed; rejects if it failed on chain.
+    return sendInstructionsViaPaymaster({
+      instructions: executeInstructions,
+      connection,
+      feePayer,
+      config,
+      version,
+      addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+      feeToken: payload.transactionOptions?.feeToken,
+      turn,
+    });
   });
-  await connection.confirmTransaction(signature, 'confirmed');
-  return signature;
 }
 
 // ─── Sign Message (portal-only, no on-chain tx) ─────────────────────
@@ -512,34 +533,36 @@ export const createSessionAction = async (
         );
       }
 
-      const prepared = await client.prepareCreateSession({
-        payer: feePayer,
-        walletPda,
-        secp256r1: buildSecp256r1Params(wallet!),
-        sessionKey: params.sessionKey,
-        expiresAt: params.expiresAtSlot,
-        ...(params.actions?.length
-          ? { actions: params.actions }
-          : { unrestricted: true as const }),
-      });
+      const { signature, sessionPda } = await withPasskey(connection, wallet!, async (secp256r1, turn) => {
+        const prepared = await client.prepareCreateSession({
+          payer: feePayer,
+          walletPda,
+          secp256r1,
+          sessionKey: params.sessionKey,
+          expiresAt: params.expiresAtSlot,
+          ...(params.actions?.length
+            ? { actions: params.actions }
+            : { unrestricted: true as const }),
+        });
 
-      const response = await signChallengeViaPortal({
-        challenge: prepared.challenge,
-        credentialId: wallet!.credentialId,
-        portalUrl: config.portalUrl,
-        redirectUrl: options.redirectUrl,
-      });
+        const response = await signChallengeViaPortal({
+          challenge: prepared.challenge,
+          credentialId: wallet!.credentialId,
+          portalUrl: config.portalUrl,
+          redirectUrl: options.redirectUrl,
+        });
 
-      const { instructions } = client.finalizeCreateSession(prepared, response);
-      const signature = await sendInstructionsViaPaymaster({
-        instructions,
-        connection,
-        feePayer,
-        config,
-        version,
+        const { instructions } = client.finalizeCreateSession(prepared, response);
+        const signature = await sendInstructionsViaPaymaster({
+          instructions,
+          connection,
+          feePayer,
+          config,
+          version,
+          turn,
+        });
+        return { signature, sessionPda: prepared.sessionPda };
       });
-      await connection.confirmTransaction(signature, 'confirmed');
-      const sessionPda = prepared.sessionPda;
       options?.onSuccess?.({ signature, sessionPda });
       return { signature, sessionPda };
     } catch (err) {
@@ -565,30 +588,32 @@ export const revokeSessionAction = async (
       const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
 
-      const prepared = await client.prepareRevokeSession({
-        payer: feePayer,
-        walletPda,
-        secp256r1: buildSecp256r1Params(wallet!),
-        sessionPda: params.sessionPda,
-        refundDestination: params.refundDestination,
-      });
+      const signature = await withPasskey(connection, wallet!, async (secp256r1, turn) => {
+        const prepared = await client.prepareRevokeSession({
+          payer: feePayer,
+          walletPda,
+          secp256r1,
+          sessionPda: params.sessionPda,
+          refundDestination: params.refundDestination,
+        });
 
-      const response = await signChallengeViaPortal({
-        challenge: prepared.challenge,
-        credentialId: wallet!.credentialId,
-        portalUrl: config.portalUrl,
-        redirectUrl: options.redirectUrl,
-      });
+        const response = await signChallengeViaPortal({
+          challenge: prepared.challenge,
+          credentialId: wallet!.credentialId,
+          portalUrl: config.portalUrl,
+          redirectUrl: options.redirectUrl,
+        });
 
-      const { instructions } = client.finalizeRevokeSession(prepared, response);
-      const signature = await sendInstructionsViaPaymaster({
-        instructions,
-        connection,
-        feePayer,
-        config,
-        version,
+        const { instructions } = client.finalizeRevokeSession(prepared, response);
+        return sendInstructionsViaPaymaster({
+          instructions,
+          connection,
+          feePayer,
+          config,
+          version,
+          turn,
+        });
       });
-      await connection.confirmTransaction(signature, 'confirmed');
       options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
@@ -653,7 +678,6 @@ export const signAndSendWithSessionAction = async (
         feeToken: payload.transactionOptions?.feeToken,
         extraSigners: [payload.sessionKeypair],
       });
-      await connection.confirmTransaction(signature, 'confirmed');
       options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
@@ -700,35 +724,37 @@ export const addAuthorityEd25519Action = async (
         );
       }
 
-      const prepared = await client.prepareAddAuthority({
-        payer: feePayer,
-        walletPda,
-        secp256r1: buildSecp256r1Params(wallet!),
-        newAuthority: {
-          type: 'ed25519',
-          publicKey: params.newEd25519Pubkey,
-        },
-        role: params.role ?? ROLE_SPENDER,
-        policy: params.policy,
-      });
+      const { signature, newAuthorityPda } = await withPasskey(connection, wallet!, async (secp256r1, turn) => {
+        const prepared = await client.prepareAddAuthority({
+          payer: feePayer,
+          walletPda,
+          secp256r1,
+          newAuthority: {
+            type: 'ed25519',
+            publicKey: params.newEd25519Pubkey,
+          },
+          role: params.role ?? ROLE_SPENDER,
+          policy: params.policy,
+        });
 
-      const response = await signChallengeViaPortal({
-        challenge: prepared.challenge,
-        credentialId: wallet!.credentialId,
-        portalUrl: config.portalUrl,
-        redirectUrl: options.redirectUrl,
-      });
+        const response = await signChallengeViaPortal({
+          challenge: prepared.challenge,
+          credentialId: wallet!.credentialId,
+          portalUrl: config.portalUrl,
+          redirectUrl: options.redirectUrl,
+        });
 
-      const { instructions } = client.finalizeAddAuthority(prepared, response);
-      const signature = await sendInstructionsViaPaymaster({
-        instructions,
-        connection,
-        feePayer,
-        config,
-        version,
+        const { instructions } = client.finalizeAddAuthority(prepared, response);
+        const signature = await sendInstructionsViaPaymaster({
+          instructions,
+          connection,
+          feePayer,
+          config,
+          version,
+          turn,
+        });
+        return { signature, newAuthorityPda: prepared.newAuthorityPda };
       });
-      await connection.confirmTransaction(signature, 'confirmed');
-      const newAuthorityPda = prepared.newAuthorityPda;
       options?.onSuccess?.({ signature, newAuthorityPda });
       return { signature, newAuthorityPda };
     } catch (err) {
@@ -754,30 +780,32 @@ export const removeAuthorityAction = async (
       const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
 
-      const prepared = await client.prepareRemoveAuthority({
-        payer: feePayer,
-        walletPda,
-        secp256r1: buildSecp256r1Params(wallet!),
-        targetAuthorityPda: params.targetAuthorityPda,
-        refundDestination: params.refundDestination,
-      });
+      const signature = await withPasskey(connection, wallet!, async (secp256r1, turn) => {
+        const prepared = await client.prepareRemoveAuthority({
+          payer: feePayer,
+          walletPda,
+          secp256r1,
+          targetAuthorityPda: params.targetAuthorityPda,
+          refundDestination: params.refundDestination,
+        });
 
-      const response = await signChallengeViaPortal({
-        challenge: prepared.challenge,
-        credentialId: wallet!.credentialId,
-        portalUrl: config.portalUrl,
-        redirectUrl: options.redirectUrl,
-      });
+        const response = await signChallengeViaPortal({
+          challenge: prepared.challenge,
+          credentialId: wallet!.credentialId,
+          portalUrl: config.portalUrl,
+          redirectUrl: options.redirectUrl,
+        });
 
-      const { instructions } = client.finalizeRemoveAuthority(prepared, response);
-      const signature = await sendInstructionsViaPaymaster({
-        instructions,
-        connection,
-        feePayer,
-        config,
-        version,
+        const { instructions } = client.finalizeRemoveAuthority(prepared, response);
+        return sendInstructionsViaPaymaster({
+          instructions,
+          connection,
+          feePayer,
+          config,
+          version,
+          turn,
+        });
       });
-      await connection.confirmTransaction(signature, 'confirmed');
       options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
@@ -809,69 +837,77 @@ export const authorizeAndExecuteAction = async (
       const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
 
-      const prepared = await client.prepareAuthorize({
-        payer: feePayer,
-        walletPda,
-        secp256r1: buildSecp256r1Params(wallet!),
-        instructions: payload.instructions,
-        expiryOffset: payload.expiryOffset,
-      });
+      const executeSig = await withPasskey(connection, wallet!, async (secp256r1, turn) => {
+        const prepared = await client.prepareAuthorize({
+          payer: feePayer,
+          walletPda,
+          secp256r1,
+          instructions: payload.instructions,
+          expiryOffset: payload.expiryOffset,
+        });
 
-      const previewBase64Tx = await buildPreviewTransactionBase64({
-        connection,
-        feePayer,
-        instructions: payload.instructions,
-      });
+        // What the user approves: the inner instructions, compiled with the
+        // lookup tables TX2 is sent with (the payloads this flow exists for
+        // are over the packet limit without them).
+        const previewBase64Tx = await buildPreviewTransactionBase64({
+          connection,
+          feePayer,
+          instructions: payload.instructions,
+          addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+        });
 
-      const response = await signChallengeViaPortal({
-        challenge: prepared.challenge,
-        credentialId: wallet!.credentialId,
-        portalUrl: config.portalUrl,
-        redirectUrl: options.redirectUrl,
-        previewBase64Tx,
-        clusterSimulation: payload.transactionOptions?.clusterSimulation,
-      });
+        const response = await signChallengeViaPortal({
+          challenge: prepared.challenge,
+          credentialId: wallet!.credentialId,
+          portalUrl: config.portalUrl,
+          redirectUrl: options.redirectUrl,
+          previewBase64Tx,
+          clusterSimulation: payload.transactionOptions?.clusterSimulation,
+        });
 
-      // TX1: Authorize (finalize also returns deferredPayload for TX2)
-      const {
-        instructions: authorizeIxs,
-        deferredPayload,
-      } = client.finalizeAuthorize(prepared, response);
-      const authorizeSig = await sendInstructionsViaPaymaster({
-        instructions: authorizeIxs,
-        connection,
-        feePayer,
-        config,
-        version,
-      });
-      await connection.confirmTransaction(authorizeSig, 'confirmed');
+        // TX1: Authorize (finalize also returns deferredPayload for TX2).
+        // Confirmed before TX2 is built or sent: TX2 executes the
+        // authorization TX1 writes.
+        const {
+          instructions: authorizeIxs,
+          deferredPayload,
+        } = client.finalizeAuthorize(prepared, response);
+        await sendInstructionsViaPaymaster({
+          instructions: authorizeIxs,
+          connection,
+          feePayer,
+          config,
+          version,
+          turn,
+        });
 
-      // TX2: ExecuteDeferred
-      const { instructions: executeIxs } = await client.executeDeferredFromPayload({
-        payer: feePayer,
-        deferredPayload,
-      });
+        // TX2: ExecuteDeferred. It consumes no counter, and the same client
+        // built TX1, so the fee accounts it resolves are TX1's (no re-read).
+        const { instructions: executeIxs } = await client.executeDeferredFromPayload({
+          payer: feePayer,
+          deferredPayload,
+        });
 
-      const tx2Instructions: TransactionInstruction[] = [];
-      if (payload.transactionOptions?.computeUnitLimit) {
-        tx2Instructions.push(
-          ComputeBudgetProgram.setComputeUnitLimit({
-            units: payload.transactionOptions.computeUnitLimit,
-          }),
-        );
-      }
-      tx2Instructions.push(...executeIxs);
+        const tx2Instructions: TransactionInstruction[] = [];
+        if (payload.transactionOptions?.computeUnitLimit) {
+          tx2Instructions.push(
+            ComputeBudgetProgram.setComputeUnitLimit({
+              units: payload.transactionOptions.computeUnitLimit,
+            }),
+          );
+        }
+        tx2Instructions.push(...executeIxs);
 
-      const executeSig = await sendInstructionsViaPaymaster({
-        instructions: tx2Instructions,
-        connection,
-        feePayer,
-        config,
-        version,
-        addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
-        feeToken: payload.transactionOptions?.feeToken,
+        return sendInstructionsViaPaymaster({
+          instructions: tx2Instructions,
+          connection,
+          feePayer,
+          config,
+          version,
+          addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+          feeToken: payload.transactionOptions?.feeToken,
+        });
       });
-      await connection.confirmTransaction(executeSig, 'confirmed');
       options?.onSuccess?.(executeSig);
       return executeSig;
     } catch (err) {
@@ -903,48 +939,51 @@ export const authorizeDeferredAction = async (
       const { client, version } = await buildClient(get);
       const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
-      const secp256r1 = buildSecp256r1Params(wallet!);
 
-      const prepared = await client.prepareAuthorize({
-        payer: feePayer,
-        walletPda,
-        secp256r1,
-        instructions: payload.instructions,
-        expiryOffset: payload.expiryOffset,
+      const result = await withPasskey(connection, wallet!, async (secp256r1, turn): Promise<AuthorizeResult> => {
+        const prepared = await client.prepareAuthorize({
+          payer: feePayer,
+          walletPda,
+          secp256r1,
+          instructions: payload.instructions,
+          expiryOffset: payload.expiryOffset,
+        });
+
+        const previewBase64Tx = await buildPreviewTransactionBase64({
+          connection,
+          feePayer,
+          instructions: payload.instructions,
+          addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+        });
+
+        const response = await signChallengeViaPortal({
+          challenge: prepared.challenge,
+          credentialId: wallet!.credentialId,
+          portalUrl: config.portalUrl,
+          redirectUrl: options.redirectUrl,
+          previewBase64Tx,
+          clusterSimulation: payload.transactionOptions?.clusterSimulation,
+        });
+
+        const {
+          instructions,
+          deferredExecPda,
+          counter,
+          deferredPayload,
+        } = client.finalizeAuthorize(prepared, response);
+
+        // Confirmed before this resolves, so an `executeDeferred` made right
+        // after finds the authorization on chain.
+        const signature = await sendInstructionsViaPaymaster({
+          instructions,
+          connection,
+          feePayer,
+          config,
+          version,
+          turn,
+        });
+        return { signature, deferredPayload, deferredExecPda, counter };
       });
-
-      const previewBase64Tx = await buildPreviewTransactionBase64({
-        connection,
-        feePayer,
-        instructions: payload.instructions,
-      });
-
-      const response = await signChallengeViaPortal({
-        challenge: prepared.challenge,
-        credentialId: wallet!.credentialId,
-        portalUrl: config.portalUrl,
-        redirectUrl: options.redirectUrl,
-        previewBase64Tx,
-        clusterSimulation: payload.transactionOptions?.clusterSimulation,
-      });
-
-      const {
-        instructions,
-        deferredExecPda,
-        counter,
-        deferredPayload,
-      } = client.finalizeAuthorize(prepared, response);
-
-      const signature = await sendInstructionsViaPaymaster({
-        instructions,
-        connection,
-        feePayer,
-        config,
-        version,
-      });
-      await connection.confirmTransaction(signature, 'confirmed');
-
-      const result: AuthorizeResult = { signature, deferredPayload, deferredExecPda, counter };
       options?.onSuccess?.(result);
       return result;
     } catch (err) {
@@ -1005,7 +1044,6 @@ export const executeDeferredAction = async (
         addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
         feeToken: payload.transactionOptions?.feeToken,
       });
-      await connection.confirmTransaction(signature, 'confirmed');
       options?.onSuccess?.(signature);
       return signature;
     } catch (err) {
@@ -1050,7 +1088,6 @@ export const reclaimDeferredAction = async (
         config,
         version,
       });
-      await connection.confirmTransaction(signature, 'confirmed');
       options?.onSuccess?.(signature);
       return signature;
     } catch (err) {

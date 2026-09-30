@@ -58,6 +58,12 @@ export interface SignResult {
   readonly clientDataJsonBase64: string;
   readonly authenticatorDataBase64: string;
   readonly signedPayload: string;
+  /**
+   * The credential (base64) the portal says it signed with, when it says. The
+   * portal signs with the `credentialId` the sign URL names (as the only
+   * `allowCredentials` entry) and names it back here.
+   */
+  readonly credentialId?: string;
 }
 
 export interface DialogManagerConfig {
@@ -763,7 +769,8 @@ export class DialogManager extends EventEmitter {
             signature: data.normalized,
             clientDataJsonBase64: data.clientDataJSONReturn,
             authenticatorDataBase64: data.authenticatorDataReturn,
-            signedPayload: data.msg
+            signedPayload: data.msg,
+            credentialId: typeof data.credentialId === 'string' && data.credentialId ? data.credentialId : undefined,
           };
           this.emit('sign-result', transformedDataSignResult);
           this.closeDialog();

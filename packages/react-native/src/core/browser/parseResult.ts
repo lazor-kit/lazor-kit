@@ -62,6 +62,7 @@ export const handleBrowserResult = (url: string): BrowserResult => {
       clientDataJsonBase64,
       authenticatorDataBase64,
       message,
+      credentialId: parsed.searchParams.get('credentialId') || undefined,
     };
   } catch (error) {
     logger.error('Failed to handle browser result:', error, { url });
