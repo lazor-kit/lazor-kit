@@ -10,7 +10,7 @@ export { useWalletStore } from './react/store';
 
 // Type exports
 export type { WalletInfo, WalletConfig } from '././core/storage';
-export type { WalletHookInterface, ConnectHookOptions } from './react/useWallet';
+export type { WalletHookInterface, ConnectHookOptions, DeferredTxPayload } from './react/useWallet';
 export type { SpendingLimits } from './core/types';
 
 // Core exports (for advanced usage)
@@ -91,6 +91,14 @@ export {
   ConfirmationTimeoutError,
   PreviousTransactionPendingError,
 } from './core/wallet/sequence';
+// A deferred execution whose authorization expired before TX2 ran (3014).
+export {
+  DeferredExpiredError,
+  isDeferredExpiredError,
+  DEFERRED_EXPIRED_CODE,
+  MIN_DEFERRED_EXPIRY_SLOTS,
+  MAX_DEFERRED_EXPIRY_SLOTS,
+} from './core/wallet/deferred';
 // Which wallet is a passkey's own (the credential hash alone is public): what
 // connect asks the user when it will not adopt one on its own.
 export {

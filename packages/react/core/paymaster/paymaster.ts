@@ -9,6 +9,7 @@ import {
 import { Logger } from '../../utils/logger';
 import { Buffer } from 'buffer';
 import { SignatureReusedError, isSignatureReusedError } from '../program/protocol';
+import { isDeferredExpiredError } from '../wallet/deferred';
 export interface PaymasterConfig {
     paymasterUrl: string;
     apiKey?: string;
@@ -249,6 +250,8 @@ export class Paymaster {
      * - LazorKit rejected the passkey signature (3006) and no earlier attempt
      *   may have been sent: `SignatureReusedError`. Those bytes are bound to a
      *   counter already used and can never succeed.
+     * - the program rejected an ExecuteDeferred whose authorization expired
+     *   (3014) and no earlier attempt may have been sent: the `PaymasterError`.
      */
     private async sendWithRetries(
         attemptSend: () => Promise<string>,
@@ -272,6 +275,9 @@ export class Paymaster {
                 }
                 maybeSent ||= error.maybeSent;
                 if (!maybeSent && isSignatureReusedError(error)) throw new SignatureReusedError(error);
+                // DeferredAuthorizationExpired (3014): the slot only moves on,
+                // so the same bytes can never pass again.
+                if (!maybeSent && isDeferredExpiredError(error)) throw error;
                 if (attempt === maxRetries) {
                     this.logger.error('All retry attempts failed', error);
                     // A later refusal does not undo an earlier attempt whose

@@ -73,8 +73,11 @@ export default function DeferredScreen() {
       const result = await authorizeDeferred(
         {
           instructions: [ix],
-          // ~2 minutes (default 300 slots). Bump for QR / cross-device flows.
-          expiryOffset: 600,
+          // Slots after TX1 that executeDeferred is still accepted: the
+          // default is 1500, the program's maximum 9000. A slot's length
+          // depends on the cluster and its load. A cross-device (QR) flow
+          // needs more room than the default.
+          expiryOffset: 4_500,
         },
         {
           redirectUrl: REDIRECT_URL,

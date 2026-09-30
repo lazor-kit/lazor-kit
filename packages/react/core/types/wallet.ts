@@ -45,7 +45,7 @@ export interface WalletState {
     signAndSendWithAuthority: (payload: SignAndSendTransactionPayload) => Promise<string>;
 
     // Deferred execution
-    authorizeAndExecute: (payload: SignAndSendTransactionPayload) => Promise<string>;
+    authorizeAndExecute: (payload: AuthorizeAndExecutePayload) => Promise<string>;
     /** Step 1: passkey signs TX1 and returns a serialized payload for later TX2 submission. */
     authorizeDeferred: (payload: AuthorizeDeferredPayload) => Promise<{ signature: string; deferredPayload: string }>;
     /** Step 2: submit TX2 using a previously-authorized payload. No passkey needed. */
@@ -169,9 +169,26 @@ export interface SignResponse {
     readonly authenticatorDataReturn: string;
 }
 
+export interface AuthorizeAndExecutePayload extends SignAndSendTransactionPayload {
+    /**
+     * How many slots after TX1 (Authorize) the program still accepts TX2
+     * (ExecuteDeferred): 10 to 9000. Defaults to `DEFAULTS.DEFERRED_EXPIRY_SLOTS`
+     * (1500). A slot's length varies by cluster and load, so leave room: past
+     * the window TX2 fails with `DeferredExpiredError`, and the user has to
+     * approve again.
+     */
+    readonly expiryOffset?: number;
+}
+
 export interface AuthorizeDeferredPayload {
     readonly transactionOptions?: SignAndSendTransactionPayload['transactionOptions'];
     readonly instructions: TransactionInstruction[];
+    /**
+     * How many slots after TX1 the program still accepts `executeDeferred`: 10
+     * to 9000, default `DEFAULTS.DEFERRED_EXPIRY_SLOTS` (1500). Counted from
+     * TX1's slot, not from when this call resolves.
+     */
+    readonly expiryOffset?: number;
     readonly onSuccess?: (result: { signature: string; deferredPayload: string }) => void;
     readonly onFail?: (error: Error) => void;
 }

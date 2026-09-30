@@ -16,7 +16,7 @@ import {
 import { SignResult } from '../portal';
 import { StorageManager, WalletInfo } from '../storage';
 import { Paymaster } from '../paymaster/paymaster';
-import { WalletState, ConnectOptions, DisconnectOptions, SignAndSendTransactionPayload, CreateSessionPayload, RevokeSessionPayload, AddAuthorityPayload, AuthorizeDeferredPayload, ExecuteDeferredPayload } from '../types';
+import { WalletState, ConnectOptions, DisconnectOptions, SignAndSendTransactionPayload, CreateSessionPayload, RevokeSessionPayload, AddAuthorityPayload, AuthorizeAndExecutePayload, AuthorizeDeferredPayload, ExecuteDeferredPayload } from '../types';
 import {
     createDialogManager,
     getCredentialHash,
@@ -42,6 +42,7 @@ import { SpendingLimits } from '../types';
 import { DEFAULTS } from '../../config';
 import { type AuthorityTurn, sendAndConfirm, withAuthority } from './sequence';
 import { buildPreviewTransactionBase64 } from './preview';
+import { deferredExpiryOffset, executeBeforeExpiry } from './deferred';
 
 export function randomBytes(size: number): Uint8Array {
     return globalThis.crypto.getRandomValues(new Uint8Array(size));
@@ -851,11 +852,16 @@ export const removeAuthorityAction = async (
  * Authorize + Execute deferred — passkey signs TX1 (authorize), then executes TX2
  * once TX1 is confirmed (TX2 spends the authorization TX1 writes).
  * Demonstrates that TX2 requires no passkey (could be submitted by anyone).
+ *
+ * The authorization is open for `expiryOffset` slots (default
+ * `DEFAULTS.DEFERRED_EXPIRY_SLOTS`), longer than the wallet can wait for TX1.
+ * When it has expired anyway, TX2 is not sent (or its 3014 is reported) as
+ * `DeferredExpiredError`, with TX1's signature and the account holding the rent.
  */
 export const authorizeAndExecuteAction = async (
     get: () => WalletState,
     set: (state: Partial<WalletState>) => void,
-    payload: SignAndSendTransactionPayload
+    payload: AuthorizeAndExecutePayload
 ): Promise<string> => {
     const { isSigning, connection, wallet, config } = get();
     if (isSigning) throw new Error('Already signing');
@@ -864,6 +870,7 @@ export const authorizeAndExecuteAction = async (
 
     set({ isSigning: true, error: null });
     try {
+        const expiryOffset = deferredExpiryOffset(payload.expiryOffset);
         const { client, version, walletPda, authorityPda, publicKeyBytes, credentialIdHash } =
             await resolvePasskeyWallet(wallet, connection);
         const paymaster = paymasterFor(config, version);
@@ -875,6 +882,7 @@ export const authorizeAndExecuteAction = async (
                 walletPda,
                 secp256r1: { credentialIdHash, publicKeyBytes, authorityPda, ...(await turn.challengeReads(connection)) },
                 instructions: payload.instructions,
+                expiryOffset,
             });
 
             const encodedChallenge = toBase64Url(prepared.challenge);
@@ -887,13 +895,16 @@ export const authorizeAndExecuteAction = async (
                     undefined,
                 );
 
-                const { instructions: authorizeIxs, deferredPayload } = client.finalizeAuthorize(prepared, decodeSignResult(signResult));
+                const { instructions: authorizeIxs, deferredExecPda, deferredPayload } = client.finalizeAuthorize(
+                    prepared,
+                    decodeSignResult(signResult),
+                );
 
                 // TX1 is confirmed before TX2 is built or sent: TX2 executes the
                 // authorization TX1 writes, and a paymaster simulating TX2
                 // before TX1 has executed rejects it.
                 const txVersion = payload.transactionOptions?.txVersion;
-                await buildAndSendTx({
+                const authorizeSignature = await buildAndSendTx({
                     paymaster,
                     connection,
                     feePayer,
@@ -909,13 +920,19 @@ export const authorizeAndExecuteAction = async (
                     deferredPayload,
                 });
 
-                return await buildAndSendTx({
-                    paymaster,
+                return await executeBeforeExpiry({
                     connection,
-                    feePayer,
-                    instructions: execIxs,
-                    addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
-                    txVersion,
+                    deferredExecPda,
+                    authorizeSignature,
+                    send: () =>
+                        buildAndSendTx({
+                            paymaster,
+                            connection,
+                            feePayer,
+                            instructions: execIxs,
+                            addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+                            txVersion,
+                        }),
                 });
             } finally {
                 dialogManager.destroy();
@@ -949,6 +966,7 @@ export const authorizeDeferredAction = async (
 
     set({ isSigning: true, error: null });
     try {
+        const expiryOffset = deferredExpiryOffset(payload.expiryOffset);
         const { client, version, walletPda, authorityPda, publicKeyBytes, credentialIdHash } =
             await resolvePasskeyWallet(wallet, connection);
         const paymaster = paymasterFor(config, version);
@@ -960,6 +978,7 @@ export const authorizeDeferredAction = async (
                 walletPda,
                 secp256r1: { credentialIdHash, publicKeyBytes, authorityPda, ...(await turn.challengeReads(connection)) },
                 instructions: payload.instructions,
+                expiryOffset,
             });
 
             const encodedChallenge = toBase64Url(prepared.challenge);
@@ -1029,13 +1048,20 @@ export const executeDeferredAction = async (
             deferredPayload,
         });
 
-        const signature = await buildAndSendTx({
-            paymaster,
+        // An expired authorization is refused before it is sent, or its
+        // 3014 reported, as `DeferredExpiredError`.
+        const signature = await executeBeforeExpiry({
             connection,
-            feePayer,
-            instructions,
-            addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
-            txVersion: payload.transactionOptions?.txVersion,
+            deferredExecPda: deferredPayload.deferredExecPda,
+            send: () =>
+                buildAndSendTx({
+                    paymaster,
+                    connection,
+                    feePayer,
+                    instructions,
+                    addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+                    txVersion: payload.transactionOptions?.txVersion,
+                }),
         });
 
         payload.onSuccess?.(signature);

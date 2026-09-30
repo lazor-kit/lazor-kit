@@ -286,6 +286,7 @@ refuses a second call while one of its own is signing ("Already signing").
 | `PreviousTransactionPendingError` | Nothing was signed or sent: the passkey's previous transaction (`pendingSignature`) still has no known outcome, and a new signature could be bound to the counter it may use. Try again later. |
 | `SignatureReusedError` | LazorKit rejected the passkey signature (3006): its counter was already used. Left for the same passkey signing somewhere else at the same moment, or a paymaster reading older state than the wallet. That signature can never be valid, so it is not resent, and no new prompt opens on its own: ask the user to sign again. An inner program's error with the same code (Anchor's `AccountNotMutable`) is told apart by the logs and reported as the failure it is. |
 | `PaymasterError` | The paymaster refused the transaction: `code` and `data` of its JSON-RPC error, or `httpStatus`. |
+| `DeferredExpiredError` | TX2 of a deferred execution (`authorizeAndExecute`, `executeDeferred`) came after its authorization expired (`DeferredAuthorizationExpired`, 3014), so nothing in it ran. `authorizeSignature` (TX1, when this call sent it), `deferredExecPda` (the account holding the paymaster's rent until the Authorize payer reclaims it) and `expiresAtSlot`. The passkey approval is spent: ask the user to approve again. |
 
 Every status read and paymaster request is bounded in time, so one that never
 answers cannot hold a passkey's queue. The slot the passkey's last transaction
@@ -293,6 +294,15 @@ landed in, and a send whose outcome is not known yet, are also kept in
 localStorage (the slot for ten minutes): a reload or a second tab of the same
 app reads its first challenge from a node that has that transaction. Two tabs
 that sign for the same passkey at the same moment are still not serialized.
+
+**Deferred execution.** `authorizeAndExecute` and `authorizeDeferred` take
+`expiryOffset`: how many slots after TX1 the program still accepts TX2 (10 to
+9000). The default, `DEFAULTS.DEFERRED_EXPIRY_SLOTS`, is 1500. The window is
+counted in slots, whose length depends on the cluster and its load, and it
+starts at TX1's slot, not when `authorizeDeferred` resolves. The wallet may
+wait up to two minutes for TX1 to be confirmed before it sends TX2, so do not
+pass a small value. An authorization that has already expired is not sent,
+and a paymaster's 3014 is not retried: both reject with `DeferredExpiredError`.
 
 The portal's transaction preview is compiled without lookup tables whenever it
 fits in a packet, so the portal sees every account the transaction touches.

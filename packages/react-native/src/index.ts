@@ -23,6 +23,14 @@ export {
   ConfirmationTimeoutError,
   PreviousTransactionPendingError,
 } from './core/wallet/sequence';
+// A deferred execution whose authorization expired before TX2 ran (3014).
+export {
+  DeferredExpiredError,
+  isDeferredExpiredError,
+  DEFERRED_EXPIRED_CODE,
+  MIN_DEFERRED_EXPIRY_SLOTS,
+  MAX_DEFERRED_EXPIRY_SLOTS,
+} from './core/wallet/deferred';
 export { PaymasterError } from './core/paymaster';
 export * from './config';
 export * from './program';

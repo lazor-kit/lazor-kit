@@ -282,14 +282,24 @@ export interface SignAndSendTransactionPayload {
 
 /** Payload for `authorizeAndExecute` (2-tx deferred, bundled). */
 export interface AuthorizeExecutePayload extends SignAndSendTransactionPayload {
-  /** Expiry offset in slots for the authorization window (default 300 = ~2 min). */
+  /**
+   * How many slots after TX1 (Authorize) the program still accepts TX2
+   * (ExecuteDeferred): 10 to 9000. Defaults to `DEFAULTS.DEFERRED_EXPIRY_SLOTS`
+   * (1500). A slot's length varies by cluster and load, so leave room: past
+   * the window TX2 fails with `DeferredExpiredError`, and the user has to
+   * approve again.
+   */
   readonly expiryOffset?: number;
 }
 
 /** Payload for `authorize` (standalone TX1 — returns payload so TX2 can happen elsewhere). */
 export interface AuthorizePayload {
   readonly instructions: TransactionInstruction[];
-  /** Expiry offset in slots for the authorization window (default 300 = ~2 min). */
+  /**
+   * How many slots after TX1 the program still accepts `executeDeferred`: 10
+   * to 9000, default `DEFAULTS.DEFERRED_EXPIRY_SLOTS` (1500). Counted from
+   * TX1's slot, not from when this call resolves.
+   */
   readonly expiryOffset?: number;
   readonly transactionOptions?: TransactionOptions;
 }

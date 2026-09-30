@@ -70,9 +70,9 @@ export interface WalletHookInterface {
   signAndSendWithAuthority: (payload: SendTxPayload) => Promise<string>;
 
   // Deferred execution
-  authorizeAndExecute: (payload: SendTxPayload) => Promise<string>;
+  authorizeAndExecute: (payload: DeferredTxPayload) => Promise<string>;
   /** TX1 only — passkey ký và trả về serialized deferredPayload cho TX2. */
-  authorizeDeferred: (payload: SendTxPayload) => Promise<{ signature: string; deferredPayload: string }>;
+  authorizeDeferred: (payload: DeferredTxPayload) => Promise<{ signature: string; deferredPayload: string }>;
   /** TX2 only — submit từ serialized deferredPayload. Không cần passkey. */
   executeDeferred: (payload: ExecuteDeferredHookPayload) => Promise<string>;
 }
@@ -94,6 +94,16 @@ export interface SendTxPayload {
     /** Wire format for the transaction. Defaults to 'v0'. */
     txVersion?: 'legacy' | 'v0';
   };
+}
+
+/**
+ * `authorizeAndExecute` / `authorizeDeferred`: a send, and how many slots after
+ * TX1 the program still accepts TX2 (10 to 9000; default
+ * `DEFAULTS.DEFERRED_EXPIRY_SLOTS`, 1500). Past it, TX2 fails with
+ * `DeferredExpiredError`.
+ */
+export interface DeferredTxPayload extends SendTxPayload {
+  expiryOffset?: number;
 }
 
 export interface ExecuteDeferredHookPayload {
@@ -225,11 +235,11 @@ export const useWallet = (): WalletHookInterface => {
 
     // Deferred execution
     authorizeAndExecute: useCallback(
-      (payload: SendTxPayload) => authorizeAndExecute(payload),
+      (payload: DeferredTxPayload) => authorizeAndExecute(payload),
       [authorizeAndExecute]
     ),
     authorizeDeferred: useCallback(
-      (payload: SendTxPayload) => authorizeDeferred(payload),
+      (payload: DeferredTxPayload) => authorizeDeferred(payload),
       [authorizeDeferred]
     ),
     executeDeferred: useCallback(
