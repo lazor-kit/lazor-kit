@@ -31,6 +31,7 @@ export {
   MIN_DEFERRED_EXPIRY_SLOTS,
   MAX_DEFERRED_EXPIRY_SLOTS,
 } from './core/wallet/deferred';
+export type { DeferredFailureContext } from './core/wallet/deferred';
 export { PaymasterError } from './core/paymaster';
 export * from './config';
 export * from './program';

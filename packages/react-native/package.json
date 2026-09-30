@@ -11,7 +11,7 @@
     "access": "public"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --test test/deferred.test.cjs",
     "build": "rollup --bundleConfigAsCjs -c rollup.config.js",
     "prepublishOnly": "node scripts/prepublish-check.js && npm run build",
     "prepack": "npm run build",
