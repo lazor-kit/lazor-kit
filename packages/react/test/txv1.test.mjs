@@ -8,7 +8,7 @@
 // packages/react-native/test (scripts/check-txv1-identical.mjs). Each copy
 // loads its own package's txv1.ts, through TypeScript's transpileModule
 // (types are checked by the typecheck and build), with that package's
-// @solana/web3.js and @noble/curves.
+// @solana/web3.js; @noble/curves (a devDependency) checks its signatures.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -35,10 +35,14 @@ const LAZORKIT = new PublicKey('57bTNWqtYTJbWuLWASKo6GqUTAK6oFDUR5c6hEc6V8nv');
 const SECP256R1 = new PublicKey('Secp256r1SigVerify1111111111111111111111111');
 const COMPUTE_BUDGET = new PublicKey('ComputeBudget111111111111111111111111111111');
 
-async function loadWriter() {
-  const source = ['core/wallet/txv1.ts', 'src/core/wallet/txv1.ts']
+function writerSource() {
+  return ['core/wallet/txv1.ts', 'src/core/wallet/txv1.ts']
     .map((path) => join(PACKAGE, path))
     .find((path) => existsSync(path));
+}
+
+async function loadWriter() {
+  const source = writerSource();
   const code = ts.transpileModule(readFileSync(source, 'utf8'), {
     fileName: source,
     compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ES2020 },
@@ -513,8 +517,38 @@ test('U3: signing refuses a key that is not a signer, a secret key that is not t
   assert.throws(() => T.signTransactionV1(compiled, [key('stranger')]), /not a signer/);
   const forged = { publicKey: PAYER, secretKey: key('stranger').secretKey };
   assert.throws(() => T.signTransactionV1(compiled, [forged]), /not its own/);
+  // Another key's seed with this key's public half: the halves disagree.
+  const spliced = new Uint8Array(64);
+  spliced.set(key('stranger').secretKey.subarray(0, 32), 0);
+  spliced.set(PAYER.toBytes(), 32);
+  assert.throws(() => T.signTransactionV1(compiled, [{ publicKey: PAYER, secretKey: spliced }]), /not its own/);
+  // The seed alone (32 bytes) is not a secret key.
+  const seedOnly = { publicKey: PAYER, secretKey: key('payer').secretKey.slice(0, 32) };
+  assert.throws(() => T.signTransactionV1(compiled, [seedOnly]), /not its own/);
   const tooBig = compile([ix(address('program-a'), accounts(63))]);
   assert.throws(() => T.signTransactionV1(tooBig, [key('payer')]), /does not fit/);
+});
+
+test('U3: the writer imports only @solana/web3.js and signs with its ed25519, so an app bundles one copy', () => {
+  // An import of @noble/curves gave an app bundled with esbuild, which loads
+  // web3.js's CommonJS build, a second, ESM copy of noble's ed25519.
+  const source = readFileSync(writerSource(), 'utf8');
+  const imports = [...source.matchAll(/^import[^;]*?from\s+'([^']+)';/gms)].map((m) => m[1]);
+  assert.deepEqual(imports, ['@solana/web3.js']);
+  assert.doesNotMatch(source, /\brequire\(|\bimport\(/, 'no other way in');
+  // Standard RFC 8032 signatures: noble's, over the message, for every signer.
+  const authority = key('authority');
+  const compiled = compile([ix(LAZORKIT, [meta(authority.publicKey, true, false), ...accounts(2)], 9)]);
+  const signed = T.signTransactionV1(compiled, [key('payer'), authority]);
+  const message = compiled.wire.subarray(0, compiled.messageLength);
+  [key('payer'), authority].forEach((signer, i) => {
+    const at = compiled.messageLength + 64 * i;
+    assert.deepEqual(
+      signed.subarray(at, at + 64),
+      ed25519.sign(message, signer.secretKey.subarray(0, 32)),
+      `slot ${i}`
+    );
+  });
 });
 
 // ─── U6: program ceilings ───────────────────────────────────────────────────

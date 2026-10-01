@@ -1,7 +1,7 @@
 // Loads the wallets' v1 writer (TypeScript) into Node. TypeScript's
 // transpileModule strips the types (`pnpm --filter @lazorkit/wallet typecheck`
 // checks them); the result is written under this package's node_modules, so
-// its imports resolve to this package's @solana/web3.js and @noble/curves.
+// its import resolves to this package's @solana/web3.js.
 // Both copies are byte-identical (scripts/check-txv1-identical.mjs), so the
 // oracle runs the web one.
 import { createHash } from 'node:crypto';

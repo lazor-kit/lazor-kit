@@ -10,8 +10,9 @@
  * tools/txv1-oracle checks this writer against @solana/kit 8.4.0 and
  * @solana/web3.js 1.99.0.
  *
- * No network, storage, globals, TextEncoder or WebCrypto: web3.js and
- * @noble/curves only, so the same file runs on Hermes. BigInt is needed only
+ * No network, storage, globals, TextEncoder or WebCrypto, and no import but
+ * @solana/web3.js, so the same file runs on Hermes, and an app bundles one
+ * ed25519 signer, web3.js's own (`signTransactionV1`). BigInt is needed only
  * for a priority fee, which the wallets never set.
  *
  * Wire layout (the signatures come last, unlike legacy and v0):
@@ -26,6 +27,7 @@
  *   | signatures [64 × numRequiredSignatures], signer i over everything before them
  */
 import {
+  Ed25519Program,
   PublicKey,
   TransactionMessage,
   VersionedTransaction,
@@ -33,7 +35,6 @@ import {
   type Signer,
   type TransactionInstruction,
 } from '@solana/web3.js';
-import { ed25519 } from '@noble/curves/ed25519';
 
 // ─── Limits ─────────────────────────────────────────────────────────────────
 
@@ -300,15 +301,44 @@ export function signTransactionV1(
     if (index < 0) {
       throw new Error(`txv1: ${signer.publicKey.toBase58()} is not a signer of this transaction`);
     }
-    const seed = signer.secretKey.subarray(0, 32);
-    if (!equalBytes(ed25519.getPublicKey(seed), publicKey)) {
-      throw new Error(
-        `txv1: the secret key given for ${signer.publicKey.toBase58()} is not its own`
-      );
-    }
-    signed.set(ed25519.sign(message, seed), messageLength + SIGNATURE_BYTES * index);
+    signed.set(ed25519Sign(message, signer), messageLength + SIGNATURE_BYTES * index);
   }
   return signed;
+}
+
+/**
+ * `signer`'s ed25519 signature of `message`, made by web3.js's own signer
+ * (the one its transactions use), so an app bundles a single copy of it:
+ * importing @noble/curves here gave bundlers that load web3.js's CommonJS
+ * build (esbuild does) a second, ESM copy. web3.js reaches that signer
+ * publicly only through `Ed25519Program.createInstructionWithPrivateKey`,
+ * which checks that the secret key's two halves agree and returns the Ed25519
+ * precompile's instruction data: a 16-byte header of u16 offsets, then the
+ * public key, the signature and the message, where the header says. The
+ * instruction is never sent.
+ */
+function ed25519Sign(message: Uint8Array, signer: Signer): Uint8Array {
+  let data: Uint8Array;
+  try {
+    data = Ed25519Program.createInstructionWithPrivateKey({
+      privateKey: signer.secretKey,
+      message,
+    }).data;
+  } catch {
+    // A secret key whose halves disagree, or that is not 64 bytes.
+    data = new Uint8Array(0);
+  }
+  const u16 = (at: number) => (data[at] | (data[at + 1] << 8)) >>> 0;
+  const signatureAt = u16(2);
+  const publicKeyAt = u16(6);
+  if (
+    data[0] !== 1 ||
+    data.length < signatureAt + SIGNATURE_BYTES ||
+    !equalBytes(data.subarray(publicKeyAt, publicKeyAt + ADDRESS_BYTES), signer.publicKey.toBytes())
+  ) {
+    throw new Error(`txv1: the secret key given for ${signer.publicKey.toBase58()} is not its own`);
+  }
+  return data.slice(signatureAt, signatureAt + SIGNATURE_BYTES);
 }
 
 /**
