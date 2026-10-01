@@ -282,8 +282,10 @@ export interface TransactionOptions {
    * (up to 4096 bytes and 64 addresses, no lookup tables), experimental and
    * devnet-only. It is used when the paymaster declares `acceptsTxV1`, no
    * `feeToken` is set, and the wallet is on the devnet LazorKit v2 program.
-   * Otherwise the transaction is sent as v0, exactly as with `'v0'`, and the
-   * reason is logged. A 'v1' request that cannot be sent in the format chosen
+   * Otherwise the transaction is sent as v0, with the bytes a `'v0'` request
+   * sends, and the reason is logged (the README lists what a 'v1' request
+   * still checks and reads before the portal opens; the v1 limits are not
+   * checked then). A 'v1' request that cannot be sent in the format chosen
    * throws `TransactionTooLargeError` (or `PayloadExceedsProgramLimitsError`)
    * before anything is sent, and before the portal opens when that is already
    * known. Honoured by signAndSendTransaction, transferSol,
@@ -292,9 +294,9 @@ export interface TransactionOptions {
    */
   readonly txVersion?: 'v0' | 'v1';
   /**
-   * v1 only: the loaded-accounts data size limit, in bytes, 196,608 to
-   * 67,108,864. Default: measured. In a deferred pair it applies to TX2, as
-   * `computeUnitLimit` does.
+   * v1 only (ignored when a 'v1' request goes out as v0): the loaded-accounts
+   * data size limit, in bytes, 196,608 to 67,108,864. Default: measured. In a
+   * deferred pair it applies to TX2, as `computeUnitLimit` does.
    */
   readonly loadedAccountsDataSizeLimit?: number;
 }

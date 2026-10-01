@@ -309,7 +309,8 @@ nothing changes: the adapter sends the same v0 transaction as before.
 Connecting, sessions and authorities always send v0.
 
 A `'v1'` request goes out as v1 only when all of these hold. Otherwise it goes
-out as v0, exactly as with `'v0'`, and the reason is logged once:
+out as v0, with the same bytes as a `'v0'` request, and the reason is logged
+once:
 
 - the paymaster says it signs v1 transactions:
   `configPaymaster={{ paymasterUrl, acceptsTxV1: true }}`;
@@ -322,6 +323,14 @@ out as v0, exactly as with `'v0'`, and the reason is logged once:
 Do not set `acceptsTxV1` for `kora.devnet.lazorkit.com`: it cannot read v1
 transactions.
 
+A `'v1'` request that goes out as v0 differs from a `'v0'` one only before the
+portal opens. It rejects there what a `'v0'` request would only fail on later:
+a v0 transaction that no passkey response could fit, and, on the devnet v2
+program, a payload over the program's limits (see below). For
+`authorizeAndExecute` and `authorizeDeferred` it builds TX2 to measure it,
+which reads the protocol config and the fee payer's FeeRecord: two account
+reads more. It does not check the v1 limits.
+
 - **Limits.** A v1 transaction carries its compute-unit limit and its
   loaded-accounts data size limit in the transaction itself, and the adapter
   always sets both. `computeUnitLimit` (1 to 1,400,000) and
@@ -331,23 +340,27 @@ transactions.
   196,608). When the simulation fails or does not answer in time, the
   transaction goes out with the maximums, which in v1 do not change the fee. A v1
   transaction has no SetComputeUnitLimit instruction. A limit out of range throws
-  a `RangeError` before the portal opens. In `authorizeAndExecute` the limits
-  apply to TX2, as `computeUnitLimit` does for v0.
-- **No lookup tables.** v1 has none. `addressLookupTableAccounts` still serves
-  the preview, and the transaction when it goes out as v0.
+  a `RangeError` before the portal opens, when the request goes out as v1. In
+  `authorizeAndExecute` the limits apply to TX2, as `computeUnitLimit` does for
+  v0.
+- **No lookup tables.** v1 has none. `addressLookupTableAccounts` serves only a
+  request that goes out as v0: its transaction and its preview. The preview of
+  a v1 request is built without them, so the portal lists every account the
+  passkey approves.
 - **Too large.** A `'v1'` request that cannot be sent in the format chosen
   throws, and nothing is sent:
 
   | Error | When |
   |---|---|
   | `TransactionTooLargeError` | Over 4096 bytes or 64 addresses as v1; over 1232 bytes or 64 account locks as v0. `format`, `bytes`, `addresses`, and `v1Unavailable` (why v1 was not used). `stage: 'before-signing'`: found before the portal opened. `stage: 'after-signing'`: the passkey's answer was longer than estimated. The user approved, but nothing was sent and the approval was not used, so they can approve again. `transaction: 'tx2'`: TX2 of a deferred pair could not be carried, so TX1 was not sent either. |
-  | `PayloadExceedsProgramLimitsError` | The payload is over the LazorKit program's ceilings, in any format: more than 16 instructions, or an instruction with more than 64 accounts when the instructions have more than 128 accounts in all, counting one more for each instruction. Before the portal opens. |
+  | `PayloadExceedsProgramLimitsError` | The payload is over the devnet LazorKit v2 program's ceilings, in any format: more than 16 instructions, or more heap than its 32,760 bytes (`heapBytes`). The heap grows with the payload's accounts and depends on the instruction that runs it: a passkey Execute needs the most (16 instructions of 16 accounts, or one of 128, are too many), an ExecuteDeferred a little less, a session's Execute much less (one of 128 runs). A session's policy uses more, which is not counted. Before the portal opens. |
 
 - **A paymaster that refuses v1.** It answers -32051 before signing anything.
   That call rejects with `PaymasterError` (`code: -32051`). It is not retried,
   and it is not sent again as v0. Later `'v1'` requests to that paymaster go out
   as v0 until the app restarts.
-- **The portal** still shows the payload as a v0 transaction, as before.
+- **The portal** still shows the payload as a v0 transaction, as before;
+  for a v1 request, without lookup tables.
 
 ## API Reference
 

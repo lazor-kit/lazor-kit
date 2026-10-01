@@ -333,8 +333,8 @@ payloads no v0 transaction can, such as swap routes that do not fit even with
 lookup tables. A v1 transaction has no lookup tables.
 
 It is opt-in per call, and used only when all of these hold. Otherwise the
-transaction goes out as v0, exactly as with `'v0'`, and the reason is logged
-once (`[TxV1] … goes out as v0: <reason>`):
+transaction goes out as v0, with the same bytes as a `'v0'` request, and the
+reason is logged once (`[TxV1] … goes out as v0: <reason>`):
 
 | Condition | Reason when it does not hold |
 |---|---|
@@ -347,6 +347,14 @@ once (`[TxV1] … goes out as v0: <reason>`):
 `executeDeferred` take it. `connect` and the session and authority management
 calls ignore it.
 
+A `'v1'` request that goes out as v0 differs from a `'v0'` one only before the
+prompt. It rejects there what a `'v0'` request would only fail on later: a v0
+transaction that no passkey response could fit (`TransactionTooLargeError`,
+with `v1Unavailable`), and, on the devnet v2 program, a payload over the
+program's limits. For `authorizeAndExecute` and `authorizeDeferred` it builds
+TX2 to measure it, which reads the protocol config and the fee payer's
+FeeRecord: two account reads more. It does not check the v1 limits below.
+
 - **Too large.** A transaction over the limit of the format it goes out in
   rejects with `TransactionTooLargeError`, and nothing is sent. v0 is not a
   fallback for size: a transaction over v1's limits is over v0's too. The
@@ -356,11 +364,16 @@ calls ignore it.
   (`stage: 'after-signing'`: the passkey approved, nothing was sent, and the
   approval was not used). For a deferred pair, TX2 is measured before the
   prompt too, so TX1 never authorizes a TX2 that cannot be sent.
-- **Program limits.** The LazorKit program runs at most 16 inner instructions.
-  Its heap runs out when one inner instruction has more than 64 accounts and
-  the inner instructions have more than 128 accounts in all, counting one more
-  for each instruction. Such a payload rejects with
-  `PayloadExceedsProgramLimitsError` before the prompt, whatever the format.
+- **Program limits.** The devnet LazorKit v2 program runs at most 16 inner
+  instructions, and has 32,760 bytes of heap to run them. The heap a payload
+  needs grows with its accounts, and depends on the instruction that runs it:
+  a passkey Execute needs the most (16 inner instructions of 16 accounts each
+  are too many, and so is one of 128), an ExecuteDeferred (TX2) a little less,
+  and a session's or an Ed25519 authority's Execute much less (one of 128 runs,
+  one of 129 does not). Such a payload rejects with
+  `PayloadExceedsProgramLimitsError` before the prompt, whatever the format;
+  `heapBytes` is the heap it needs. A policy on the session or authority uses
+  more heap, which this does not count.
 - **Limits.** Every v1 transaction carries a compute-unit limit and a
   loaded-accounts data size limit. By default they come from one simulation,
   bounded to 3 s (units × 1.2 + 5,000, at least 20,000; loaded bytes × 1.1 in
@@ -368,19 +381,28 @@ calls ignore it.
   maximums (1,400,000 and 64 MiB); in v1 the fee does not depend on them.
   `computeUnitLimit` (1 to 1,400,000) and `loadedAccountsDataSizeLimit`
   (196,608 to 67,108,864) set them yourself; out of range is a `RangeError`
-  before the prompt. Legacy and v0 sends still ignore `computeUnitLimit`.
+  before the prompt when the request goes out as v1. Legacy and v0 sends still
+  ignore `computeUnitLimit`.
 - **A paymaster that refuses v1.** It answers `PaymasterError` with code
   -32051 before signing anything. That call fails, and is neither retried nor
   sent again as v0; later `'v1'` calls to the same paymaster in the page go out
   as v0. A reload clears this.
 - **Preview.** The portal still previews a v0 transaction of your
-  instructions. For a payload only v1 can carry, its simulation banner may
-  fail, as for a large swap today; signing is not blocked.
+  instructions. When the request goes out as v1, the preview is built without
+  your lookup tables, which the v1 transaction does not use, so the portal
+  lists every account the passkey approves. For a payload only v1 can carry,
+  its simulation banner may fail, as for a large swap today; signing is not
+  blocked.
+- **Bundle size.** The v1 code is in the package whether or not you use it:
+  about 6 KB gzip in an app. Bundled with esbuild, an app can also get a
+  second, ESM copy of `@noble/curves`' ed25519 (and `@noble/hashes`' sha2) next
+  to the CJS copy `@solana/web3.js` loads there, about 12 KB gzip more; Vite
+  (Rollup) shares one copy.
 
 | Error | When |
 |---|---|
 | `TransactionTooLargeError` | Only for `'v1'`: the transaction is over the limit of the format it was measured in. `stage` (`'before-signing'` / `'after-signing'`), `format` (`'v1'` / `'v0'`), `transaction` (`'single'`, `'tx1'`, `'tx2'`), `bytes`, `byteLimit`, `addresses`, `addressLimit`, `instructions`, and `v1Unavailable` (the reason above) when it was measured as v0. Nothing was sent. |
-| `PayloadExceedsProgramLimitsError` | Only for `'v1'`: the payload is over the program's limits (`limit`: `'inner-instructions'` or `'heap'`; `innerInstructions`, `maxMetas`, `totalMetas`). Nothing was signed or sent. |
+| `PayloadExceedsProgramLimitsError` | Only for `'v1'`: the payload is over the program's limits (`limit`: `'inner-instructions'` or `'heap'`; `innerInstructions`, `maxMetas`, `totalMetas`, `heapBytes`). Nothing was signed or sent. |
 
 ## API Reference
 
