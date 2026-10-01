@@ -60,6 +60,8 @@ export const LazorKitProvider = ({
   // still reaches the store (an object literal prop would not be compared).
   const v1PaymasterUrl = v1ConfigPaymaster?.paymasterUrl;
   const v1PaymasterApiKey = v1ConfigPaymaster?.apiKey;
+  const acceptsTxV1 = configPaymaster.acceptsTxV1;
+  const v1PaymasterAcceptsTxV1 = v1ConfigPaymaster?.acceptsTxV1;
   // The same for the key lists, which apps tend to pass as inline arrays: a
   // new array each render must not reset the config each render.
   const trustedKeysKey = (trustedAuthorities ?? []).join(',');
@@ -92,9 +94,14 @@ export const LazorKitProvider = ({
         configPaymaster: {
           paymasterUrl: effectivePaymasterUrl,
           apiKey: configPaymaster.apiKey,
+          ...(acceptsTxV1 !== undefined ? { acceptsTxV1 } : {}),
         },
         v1ConfigPaymaster: v1PaymasterUrl
-          ? { paymasterUrl: v1PaymasterUrl, apiKey: v1PaymasterApiKey }
+          ? {
+              paymasterUrl: v1PaymasterUrl,
+              apiKey: v1PaymasterApiKey,
+              ...(v1PaymasterAcceptsTxV1 !== undefined ? { acceptsTxV1: v1PaymasterAcceptsTxV1 } : {}),
+            }
           : undefined,
         rpcUrl: effectiveRpcUrl,
         cluster,
@@ -117,8 +124,10 @@ export const LazorKitProvider = ({
     effectivePortalUrl,
     effectivePaymasterUrl,
     configPaymaster.apiKey,
+    acceptsTxV1,
     v1PaymasterUrl,
     v1PaymasterApiKey,
+    v1PaymasterAcceptsTxV1,
     cluster,
     effectiveRpcUrl,
     effectiveRpId,
