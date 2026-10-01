@@ -46,7 +46,7 @@ import { getFeePayer, signAndExecuteTransaction } from '../paymaster';
 import { logger } from '../logger';
 import { type AuthorityTurn, sendAndConfirm } from './sequence';
 import { buildPreviewTransactionBase64 as previewTransactionBase64 } from './preview';
-import { type TxV1Request, gateTxV1, sendViaPaymasterTxV1 } from './txv1-send';
+import { type TxV1Request, sendViaPaymasterTxV1 } from './txv1-send';
 
 /**
  * Factory that returns high-level wallet operations bound to a given
@@ -249,6 +249,9 @@ export const createWalletActions = (
       }
       allInstructions.push(...instructions);
 
+      // Always the v0 transaction, as for a 'v0' request: a 'v1' request goes
+      // out as v1 only once it was decided, checked and measured before the
+      // portal opened (./txv1-send), and the passkey signed before this runs.
       const alts = transactionOptions?.addressLookupTableAccounts ?? [];
       return await sendInstructionsViaPaymaster({
         instructions: allInstructions,
@@ -258,22 +261,6 @@ export const createWalletActions = (
         version: versionOf(data),
         addressLookupTables: alts,
         feeToken: transactionOptions?.feeToken,
-        // The passkey has signed already: the format is decided here, and a
-        // size error is reported as after signing.
-        ...(transactionOptions?.txVersion === 'v1'
-          ? {
-              txVersion: 'v1' as const,
-              v1: {
-                decision: gateTxV1({
-                  paymaster: paymasterFor(config, versionOf(data)),
-                  instructions: allInstructions,
-                  feeToken: transactionOptions.feeToken,
-                }),
-                computeUnitLimit: transactionOptions.computeUnitLimit,
-                loadedAccountsDataSizeLimit: transactionOptions.loadedAccountsDataSizeLimit,
-              },
-            }
-          : {}),
       });
     } catch (error) {
       logger.error('ExecuteWallet action failed:', error, {

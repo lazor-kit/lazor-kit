@@ -631,6 +631,10 @@ export interface WalletActions {
    * minutes ago; else `null`.
    */
   adoptRemembered: (confirmWallet: string) => WalletInfo | null;
+  /**
+   * Sends an Execute the passkey has signed, as v0 whatever `txVersion`
+   * says: a 'v1' request is decided and measured before the portal opens.
+   */
   executeWallet: (
     data: WalletInfo,
     feePayer: PublicKey,

@@ -15,7 +15,8 @@
 //   as v0, remembered for later requests.
 //
 // The gate and the strip are also tested on the source, with their imports
-// stubbed. The flag-off identity (U4) is the packed-tarball comparison against
+// stubbed, and so is executeWallet (internal; entered after the passkey
+// signed), which sends a 'v1' request exactly as 'v0'. The flag-off identity (U4) is the packed-tarball comparison against
 // the 2.2.1 goldens; here a request without 'v1' is only checked to take the
 // v0 path.
 'use strict';
@@ -805,6 +806,16 @@ function loadSend() {
     },
     './sequence': { sendAndConfirm: async (params) => params.send() },
   };
+  const send = loadSource(path.join(__dirname, '..', 'src', 'core', 'wallet', 'txv1-send.ts'), stubs);
+  return { send, warnings, paymaster, PaymasterError };
+}
+
+/**
+ * A file of src/, transpiled, with fresh module state: an import named in
+ * `stubs` gets the stub, any other relative import is loaded the same way, the
+ * rest comes from node_modules.
+ */
+function loadSource(entry, stubs) {
   const cache = new Map();
   const loadTs = (file) => {
     if (cache.has(file)) return cache.get(file).exports;
@@ -823,8 +834,7 @@ function loadSend() {
     new Function('require', 'module', 'exports', code)(local, module, module.exports);
     return module.exports;
   };
-  const send = loadTs(path.join(__dirname, '..', 'src', 'core', 'wallet', 'txv1-send.ts'));
-  return { send, warnings, paymaster, PaymasterError };
+  return loadTs(entry);
 }
 
 const lazorkitIx = (programId = sdk.PROGRAM_ID_DEVNET) =>
@@ -926,4 +936,115 @@ test("the strip: the caller's limits win over the stripped ones, and what was dr
   ]);
   for (const tx of sent) assert.equal(tx.message.compiledInstructions.length, 1);
   assert.equal(warnings.filter((w) => /SetComputeUnitPrice was left out/.test(w)).length, 2);
+});
+
+// ─── executeWallet (core/wallet/actions.ts), on the source ──────────────────
+
+/**
+ * src/core/wallet/actions.ts, transpiled, with its portal, paymaster, logger
+ * and confirmation imports stubbed; ./txv1-send and ./txv1 are the real ones.
+ * `trace` gets every RPC call, confirmation and paymaster send, in order.
+ */
+function loadWalletActions() {
+  const trace = [];
+  const warnings = [];
+  const unused = (name) => () => assert.fail(`executeWallet used ${name}`);
+  class PaymasterError extends Error {}
+  const stubs = {
+    // The built package's program and config modules.
+    '../../program': M,
+    '../../config': M,
+    '../logger': { logger: { log() {}, info() {}, warn: (message) => warnings.push(message), error() {} } },
+    '../paymaster': {
+      PaymasterError,
+      getFeePayer: unused('getFeePayer'),
+      signAndExecuteTransaction: async (...args) => {
+        trace.push(['paymaster', ...args]);
+        return '5'.repeat(88);
+      },
+    },
+    './sequence': {
+      sendAndConfirm: async (params) => {
+        trace.push(['confirm', Object.keys(params.attempt).sort(), params.attempt.blockhash, params.turn, params.createsAuthority]);
+        return params.send();
+      },
+    },
+    './confirmation': { connectAbandoned: unused('connectAbandoned'), rememberCandidates: unused('rememberCandidates'), takeRememberedCandidate: unused('takeRememberedCandidate') },
+    './resolveWallet': { keyToCreate: unused('keyToCreate'), resolveWallet: unused('resolveWallet') },
+    '../browser/open': { openBrowser: unused('openBrowser') },
+    '../browser/parseResult': { handleBrowserResult: unused('handleBrowserResult') },
+    './preview': { buildPreviewTransactionBase64: unused('buildPreviewTransactionBase64') },
+  };
+  const actions = loadSource(path.join(__dirname, '..', 'src', 'core', 'wallet', 'actions.ts'), stubs);
+  const rpcEndpoint = 'http://rpc-execute-wallet.devnet.test/';
+  M.registerCluster(rpcEndpoint, 'devnet');
+  const connection = {
+    rpcEndpoint,
+    getLatestBlockhash: async (...args) => {
+      trace.push(['getLatestBlockhash', ...args]);
+      return { blockhash: new PublicKey(Buffer.alloc(32, 9)).toBase58(), lastValidBlockHeight: 1_000 };
+    },
+    _rpcRequest: async (method, args) => {
+      trace.push(['rpc', method, args]);
+      return { result: { value: { err: null, unitsConsumed: 13_011, loadedAccountsDataSize: 161_320 } } };
+    },
+  };
+  return { actions, connection, trace, warnings };
+}
+
+test("executeWallet sends a 'v1' request exactly as 'v0': it starts after the passkey signed, so there is no prompt left to plan before", async () => {
+  const key = (n) => new PublicKey(Buffer.alloc(32, n));
+  const feePayer = key(1);
+  // A passkey Execute on the devnet v2 program, as `finalize` returns it.
+  const execute = new TransactionInstruction({
+    programId: sdk.PROGRAM_ID_DEVNET,
+    keys: [2, 3, 4, 5].map((n) => ({ pubkey: key(n), isSigner: false, isWritable: n !== 5 })),
+    data: Buffer.from([4, 1, 2, 3]),
+  });
+  const finalize = () => ({ instructions: [execute] });
+  const browserResult = {
+    signature: Buffer.alloc(64, 6).toString('base64'),
+    authenticatorDataBase64: Buffer.alloc(37, 7).toString('base64'),
+    clientDataJsonBase64: Buffer.from('{"type":"webauthn.get"}').toString('base64'),
+    credentialId: Buffer.alloc(16, 8).toString('base64'),
+  };
+  const data = {
+    credentialId: browserResult.credentialId,
+    passkeyPubkey: Array.from(Buffer.alloc(33, 2)),
+    smartWallet: key(10).toBase58(),
+    walletPda: key(11).toBase58(),
+    walletDevice: key(12).toBase58(),
+    protocolVersion: 2,
+  };
+  // A paymaster that accepts v1: the gate would pass.
+  const config = { portalUrl: 'https://portal.lazor.sh', configPaymaster: { paymasterUrl: 'http://paymaster-execute-wallet.test/', acceptsTxV1: true } };
+  const table = new web3.AddressLookupTableAccount({
+    key: key(20),
+    state: { deactivationSlot: 18446744073709551615n, lastExtendedSlot: 0, lastExtendedSlotStartIndex: 0, addresses: [key(3), key(4), key(5)] },
+  });
+
+  for (const [label, options] of [
+    ['no other option', {}],
+    ['both limits', { computeUnitLimit: 200_000, loadedAccountsDataSizeLimit: 300_000 }],
+    ['a loaded-data limit out of a v1 range', { loadedAccountsDataSizeLimit: 1 }],
+    ['a lookup table', { addressLookupTableAccounts: [table] }],
+    ['a fee token', { feeToken: key(30).toBase58() }],
+  ]) {
+    const runs = {};
+    for (const txVersion of ['v1', 'v0', 'none']) {
+      const { actions, connection, trace, warnings } = loadWalletActions();
+      const transactionOptions = txVersion === 'none' ? options : { ...options, txVersion };
+      const signature = await actions
+        .createWalletActions(connection, () => {}, config)
+        .executeWallet(data, feePayer, finalize, browserResult, transactionOptions);
+      assert.equal(signature, '5'.repeat(88), `${label}, ${txVersion}`);
+      assert.deepEqual(warnings, [], `${label}, ${txVersion}`);
+      runs[txVersion] = trace;
+    }
+    // The same calls with the same arguments, the same bytes to the paymaster.
+    assert.deepEqual(runs.v1, runs.v0, label);
+    assert.deepEqual(runs.none, runs.v0, label);
+    const [, serialized] = runs.v1.find(([kind]) => kind === 'paymaster');
+    assert.equal(web3.VersionedTransaction.deserialize(Buffer.from(serialized, 'base64')).version, 0, label);
+  }
 });
