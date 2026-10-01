@@ -1,0 +1,80 @@
+{
+  "source": "devnet getTransaction(2PNwx8YnL6LZR44DpZyL7uCMayYvVnDLGrsapQBZ2EFxPkagSs2EAy78GatPUhD5LM8jE6cNDkSNApV9mda8PwTK, {encoding: base64, commitment: confirmed, maxSupportedTransactionVersion: 1}): a passkey Execute sent as a SIMD-0385 v1 transaction, read 2026-10-01",
+  "result": {
+    "blockTime": 1790777218,
+    "meta": {
+      "computeUnitsConsumed": 13011,
+      "costUnits": 20479,
+      "err": null,
+      "fee": 11000,
+      "innerInstructions": [
+        {
+          "index": 1,
+          "instructions": [
+            {
+              "accounts": [
+                1,
+                5
+              ],
+              "data": "3Bxs4Bc3VYuGVB19",
+              "programIdIndex": 6,
+              "stackHeight": 2
+            }
+          ]
+        }
+      ],
+      "loadedAddresses": {
+        "readonly": [],
+        "writable": []
+      },
+      "logMessages": [
+        "Program 57bTNWqtYTJbWuLWASKo6GqUTAK6oFDUR5c6hEc6V8nv invoke [1]",
+        "Program 11111111111111111111111111111111 invoke [2]",
+        "Program 11111111111111111111111111111111 success",
+        "Program 57bTNWqtYTJbWuLWASKo6GqUTAK6oFDUR5c6hEc6V8nv consumed 13011 of 14313 compute units",
+        "Program 57bTNWqtYTJbWuLWASKo6GqUTAK6oFDUR5c6hEc6V8nv success"
+      ],
+      "postBalances": [
+        1767710551,
+        29000000,
+        1386840,
+        0,
+        0,
+        1000000,
+        1,
+        690880,
+        833120,
+        0,
+        1,
+        0
+      ],
+      "postTokenBalances": [],
+      "preBalances": [
+        1767721551,
+        30000000,
+        1386840,
+        0,
+        0,
+        0,
+        1,
+        690880,
+        833120,
+        0,
+        1,
+        0
+      ],
+      "preTokenBalances": [],
+      "rewards": [],
+      "status": {
+        "Ok": null
+      }
+    },
+    "slot": 505928884,
+    "transaction": [
+      "gQEABg8AAAD4OwPZ5vlGImMv797pfTM60jgKitiAxk8iwb3MQTUV1QIMmQujhsunOCOyglmLnkmXGlA9eqE4Ev0+SJkgxLeALfIqqJfZTHHwZUZHgGTVccAw4Mivg7p5wg/Cu6Zj7FRupjzd/2WKC4zG3Vp6n7Pr94k9Ywf17oQ8tUAGje1IQYaHUoXeijq8etD2ncqrBG/2uBqMj0Jew02VpskkaHaERt9bGpQYZ0WGY6h2y2Tj9P8Vd6ZIy91oC8A4QDG12c/V+NsPKvBa76hfxNIFPaxqBPdSJo93ls4AFAynJ4K9fHfRAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwX2Jj6R68vF8BGmBrBCl2ZnECLnqT71QHBh9dtzAMVD0fMMnqe6IvkQPiv2LsdnjpmC/z5MNJ6BKubNbZG+Ez2TEyaLCivFX/bp7HueDzBlnmHIwl0/2wpyylhYwq+xAGkg3sL+pxtbcjgU10LakDHIPnX9t5XVaOdUeAIAAAAAan1RcYe9FmNdrUBFX9wsDBJMaPIVZ1pdu6y18IAAAA6AMAAAAAAADpNwAAAIACAAoAtwAIC/kAAQAQAP//UAD//3IARQD//xAeh1t8IAYYJ+VXGG0s2A7Rbin86C2d5whelvrLslJEENfsEYpixF4i9+YYJ8LjXxDP5BJpG2B1hpVEE83MpY8DU71DPRQyXcW2LMGvECW3JxI+80agcw5oYbSAxDZ03PsAWu8oEwgYpx+1bn545ONF2XAVHoesO6c4t+38o/oW/DUFAAAAANRXAIikNJuQYYU5edoaviy5VtGbZIOAAY/ztiwJxmp8AAcCAQsGBQkEAwYEAQUCgwYMAAIAAABAQg8AAAAAAK3cJx4AAAAAAQAAAASAJQBa7ygTCBinH7Vufnjk40XZcBUeh6w7pzi37fyj+hb8NQUAAAAArgB7InR5cGUiOiJ3ZWJhdXRobi5nZXQiLCJjaGFsbGVuZ2UiOiJFcm1NeFhLU2pqbWNYQ3dQcFgtMW9LMG9tdVZQUXh5SVhoMzFQcHNpN3JNIiwib3JpZ2luIjoiaHR0cHM6Ly9wb3J0YWwubGF6b3Iuc2giLCJjcm9zc09yaWdpbiI6dHJ1ZSwidG9wT3JpZ2luIjoiaHR0cHM6Ly9taWdyYXRlLmxhem9yLnNoIn1FULZ6amFJcBJmZrFAU+A4g10ssGhUbHcLVNB8jXoze5ONAhhv6V1+/o/3L9o+HSgLvhrRjBTqN7g3WdzBljMO",
+      "base64"
+    ],
+    "transactionIndex": 0,
+    "version": 1
+  }
+}
