@@ -347,13 +347,12 @@ reason is logged once (`[TxV1] … goes out as v0: <reason>`):
 `executeDeferred` take it. `connect` and the session and authority management
 calls ignore it.
 
-A `'v1'` request that goes out as v0 differs from a `'v0'` one only before the
-prompt. It rejects there what a `'v0'` request would only fail on later: a v0
-transaction that no passkey response could fit (`TransactionTooLargeError`,
-with `v1Unavailable`), and, on the devnet v2 program, a payload over the
-program's limits. For `authorizeAndExecute` and `authorizeDeferred` it builds
-TX2 to measure it, which reads the protocol config and the fee payer's
-FeeRecord: two account reads more. It does not check the v1 limits below.
+A `'v1'` request that goes out as v0 makes the paymaster requests and RPC
+calls a `'v0'` one makes. It differs only before the prompt, where it rejects
+what a `'v0'` request would only fail on later: a v0 transaction that no
+passkey response could fit (`TransactionTooLargeError`, with `v1Unavailable`),
+and, on the devnet v2 program, a payload over the program's limits. It does
+not check the v1 limits below.
 
 - **Too large.** A transaction over the limit of the format it goes out in
   rejects with `TransactionTooLargeError`, and nothing is sent. v0 is not a
@@ -362,8 +361,9 @@ FeeRecord: two account reads more. It does not check the v1 limits below.
   return, so the user is not asked to approve a transaction that cannot be
   sent; the check after signing, on the real bytes, decides
   (`stage: 'after-signing'`: the passkey approved, nothing was sent, and the
-  approval was not used). For a deferred pair, TX2 is measured before the
-  prompt too, so TX1 never authorizes a TX2 that cannot be sent.
+  approval was not used). For a deferred pair that goes out as v1, TX2 is
+  measured before the prompt too, so TX1 never authorizes a v1 TX2 that cannot
+  be sent.
 - **Program limits.** The devnet LazorKit v2 program runs at most 16 inner
   instructions, and has 32,760 bytes of heap to run them. The heap a payload
   needs grows with its accounts, and depends on the instruction that runs it:
@@ -394,10 +394,8 @@ FeeRecord: two account reads more. It does not check the v1 limits below.
   its simulation banner may fail, as for a large swap today; signing is not
   blocked.
 - **Bundle size.** The v1 code is in the package whether or not you use it:
-  about 6 KB gzip in an app. Bundled with esbuild, an app can also get a
-  second, ESM copy of `@noble/curves`' ed25519 (and `@noble/hashes`' sha2) next
-  to the CJS copy `@solana/web3.js` loads there, about 12 KB gzip more; Vite
-  (Rollup) shares one copy.
+  about 6 KB gzip in an app. It adds no dependency: v1 transactions are signed
+  with `@solana/web3.js`'s own ed25519.
 
 | Error | When |
 |---|---|

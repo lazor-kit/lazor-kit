@@ -282,9 +282,9 @@ export interface TransactionOptions {
    * (up to 4096 bytes and 64 addresses, no lookup tables), experimental and
    * devnet-only. It is used when the paymaster declares `acceptsTxV1`, no
    * `feeToken` is set, and the wallet is on the devnet LazorKit v2 program.
-   * Otherwise the transaction is sent as v0, with the bytes a `'v0'` request
-   * sends, and the reason is logged (the README lists what a 'v1' request
-   * still checks and reads before the portal opens; the v1 limits are not
+   * Otherwise the transaction is sent as v0, with the requests a `'v0'`
+   * request makes, and the reason is logged (the README lists what a 'v1'
+   * request still checks before the portal opens; the v1 limits are not
    * checked then). A 'v1' request that cannot be sent in the format chosen
    * throws `TransactionTooLargeError` (or `PayloadExceedsProgramLimitsError`)
    * before anything is sent, and before the portal opens when that is already

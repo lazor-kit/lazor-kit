@@ -323,13 +323,11 @@ once:
 Do not set `acceptsTxV1` for `kora.devnet.lazorkit.com`: it cannot read v1
 transactions.
 
-A `'v1'` request that goes out as v0 differs from a `'v0'` one only before the
-portal opens. It rejects there what a `'v0'` request would only fail on later:
-a v0 transaction that no passkey response could fit, and, on the devnet v2
-program, a payload over the program's limits (see below). For
-`authorizeAndExecute` and `authorizeDeferred` it builds TX2 to measure it,
-which reads the protocol config and the fee payer's FeeRecord: two account
-reads more. It does not check the v1 limits.
+A `'v1'` request that goes out as v0 makes the paymaster requests and RPC
+calls a `'v0'` one makes. It differs only before the portal opens, where it
+rejects what a `'v0'` request would only fail on later: a v0 transaction that
+no passkey response could fit, and, on the devnet v2 program, a payload over
+the program's limits (see below). It does not check the v1 limits.
 
 - **Limits.** A v1 transaction carries its compute-unit limit and its
   loaded-accounts data size limit in the transaction itself, and the adapter
@@ -352,7 +350,7 @@ reads more. It does not check the v1 limits.
 
   | Error | When |
   |---|---|
-  | `TransactionTooLargeError` | Over 4096 bytes or 64 addresses as v1; over 1232 bytes or 64 account locks as v0. `format`, `bytes`, `addresses`, and `v1Unavailable` (why v1 was not used). `stage: 'before-signing'`: found before the portal opened. `stage: 'after-signing'`: the passkey's answer was longer than estimated. The user approved, but nothing was sent and the approval was not used, so they can approve again. `transaction: 'tx2'`: TX2 of a deferred pair could not be carried, so TX1 was not sent either. |
+  | `TransactionTooLargeError` | Over 4096 bytes or 64 addresses as v1; over 1232 bytes or 64 account locks as v0. `format`, `bytes`, `addresses`, and `v1Unavailable` (why v1 was not used). `stage: 'before-signing'`: found before the portal opened. `stage: 'after-signing'`: the passkey's answer was longer than estimated. The user approved, but nothing was sent and the approval was not used, so they can approve again. `transaction: 'tx2'`: TX2 of a deferred pair going out as v1 could not be carried, so TX1 was not sent either. |
   | `PayloadExceedsProgramLimitsError` | The payload is over the devnet LazorKit v2 program's ceilings, in any format: more than 16 instructions, or more heap than its 32,760 bytes (`heapBytes`). The heap grows with the payload's accounts and depends on the instruction that runs it: a passkey Execute needs the most (16 instructions of 16 accounts, or one of 128, are too many), an ExecuteDeferred a little less, a session's Execute much less (one of 128 runs). A session's policy uses more, which is not counted. Before the portal opens. |
 
 - **A paymaster that refuses v1.** It answers -32051 before signing anything.

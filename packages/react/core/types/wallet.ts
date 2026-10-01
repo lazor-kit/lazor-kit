@@ -160,13 +160,13 @@ export interface SignAndSendTransactionPayload {
          * 'v1' (SIMD-0385, up to 4096 bytes and 64 addresses) is experimental
          * and devnet only. It is used when the paymaster declares
          * `acceptsTxV1` and the wallet is on the devnet LazorKit v2 program;
-         * otherwise the transaction goes out as v0, with the bytes a 'v0'
-         * request sends (the README lists what a 'v1' request still checks
-         * and reads before the prompt). A v1 transaction has no lookup
-         * tables: `addressLookupTableAccounts` serve only the v0 fallback and
-         * its preview. A transaction that does not fit the format it goes out
-         * in throws `TransactionTooLargeError`, before the prompt when that
-         * is already known; nothing is sent.
+         * otherwise the transaction goes out as v0, with the requests a 'v0'
+         * request makes (the README lists what a 'v1' request still checks
+         * before the prompt). A v1 transaction has no lookup tables:
+         * `addressLookupTableAccounts` serve only the v0 fallback and its
+         * preview. A transaction that does not fit the format it goes out in
+         * throws `TransactionTooLargeError`, before the prompt when that is
+         * already known; nothing is sent.
          */
         readonly txVersion?: 'legacy' | 'v0' | 'v1';
         /**
