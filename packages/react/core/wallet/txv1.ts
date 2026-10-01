@@ -80,12 +80,12 @@ export const TX_V1_CEILING_CONFIG: TxV1Config = Object.freeze({
 /** The LazorKit program's own ceilings on an Execute payload (program/src/compact.rs). */
 export const LAZORKIT_MAX_INNER_INSTRUCTIONS = 16;
 /**
- * The program's fixed 32 KiB heap runs out when one inner instruction has more
- * than 64 account metas and Σ(1 + metas) over all inner instructions is more
- * than 128 (measured on devnet; a v1 heap request does not lift it).
+ * The program's heap: pinocchio's default allocator, 32 KiB handed out from
+ * the top down and never freed, with its cursor in the lowest 8 bytes. A v1
+ * heap request does not change it.
  */
-export const LAZORKIT_HEAP_MAX_METAS = 64;
-export const LAZORKIT_HEAP_MAX_TOTAL_METAS = 128;
+export const LAZORKIT_HEAP_BYTES = 32 * 1024;
+export const LAZORKIT_HEAP_USABLE_BYTES = LAZORKIT_HEAP_BYTES - 8;
 
 const COMPUTE_BUDGET_PROGRAM_ID = new PublicKey('ComputeBudget111111111111111111111111111111');
 const SECP256R1_PROGRAM_ID = new PublicKey('Secp256r1SigVerify1111111111111111111111111');
@@ -404,22 +404,37 @@ export function measureV0(params: {
 
 // ─── Program ceilings ───────────────────────────────────────────────────────
 
+/**
+ * The LazorKit instruction that runs a payload, which decides what it puts on
+ * the program's heap:
+ * - `secp256r1`: Execute approved by a passkey;
+ * - `ed25519`: Execute signed by an Ed25519 authority or a session key;
+ * - `deferred`: ExecuteDeferred (TX2 of a deferred pair).
+ */
+export type LazorKitExecutePath = 'secp256r1' | 'ed25519' | 'deferred';
+
 export interface ProgramCeilingMeasurement {
   readonly innerInstructions: number;
   /** The largest account-meta count of one inner instruction. */
   readonly maxMetas: number;
   /** Σ(1 + metas) over the inner instructions. */
   readonly totalMetas: number;
+  /** The heap the program allocates to run the payload (`lazorkitHeapBytes`). */
+  readonly heapBytes: number;
 }
 
 /**
  * Checks an Execute payload (the inner instructions) against the LazorKit
- * program's ceilings, which only a transaction over 1232 bytes can reach. The
- * program rejects these payloads in any format, so the check applies whatever
- * the format. Throws PayloadExceedsProgramLimitsError.
+ * program's ceilings, which only a transaction over 1232 bytes can reach in
+ * practice: at most 16 inner instructions, and the heap the program needs to
+ * run them (`lazorkitHeapBytes`) within its 32,760 bytes. The program rejects
+ * these payloads in any format. Throws PayloadExceedsProgramLimitsError.
+ *
+ * `path` defaults to `secp256r1`, which allocates the most.
  */
 export function checkProgramCeilings(
-  innerInstructions: readonly TransactionInstruction[]
+  innerInstructions: readonly TransactionInstruction[],
+  path: LazorKitExecutePath = 'secp256r1'
 ): ProgramCeilingMeasurement {
   let maxMetas = 0;
   let totalMetas = 0;
@@ -427,14 +442,106 @@ export function checkProgramCeilings(
     maxMetas = Math.max(maxMetas, ix.keys.length);
     totalMetas += 1 + ix.keys.length;
   }
-  const measured = { innerInstructions: innerInstructions.length, maxMetas, totalMetas };
+  const measured = {
+    innerInstructions: innerInstructions.length,
+    maxMetas,
+    totalMetas,
+    heapBytes: lazorkitHeapBytes(innerInstructions, path),
+  };
   if (measured.innerInstructions > LAZORKIT_MAX_INNER_INSTRUCTIONS) {
     throw new PayloadExceedsProgramLimitsError({ limit: 'inner-instructions', ...measured });
   }
-  if (maxMetas > LAZORKIT_HEAP_MAX_METAS && totalMetas > LAZORKIT_HEAP_MAX_TOTAL_METAS) {
+  if (measured.heapBytes > LAZORKIT_HEAP_USABLE_BYTES) {
     throw new PayloadExceedsProgramLimitsError({ limit: 'heap', ...measured });
   }
   return measured;
+}
+
+/**
+ * The heap, in bytes, the LazorKit v2 program allocates to run these inner
+ * instructions, alignment included: what the devnet build at 57bTNW…
+ * (3584aec7…, lazorkit-protocol develop 5fb8d46) does, without a policy, in
+ * its order. The allocator never frees, so a buffer that grows leaves every
+ * smaller copy behind.
+ *
+ * 1. The parsed instructions: 40 bytes each.
+ * 2. `secp256r1` and `deferred`: the accounts-hash preimage, 33 bytes for
+ *    each instruction's program and each of its accounts, in a buffer that
+ *    starts at 132 bytes per instruction and doubles when it is full.
+ * 3. `secp256r1`: the signed payload (the compact instructions and 32 bytes)
+ *    and the challenge in base64 (44 bytes).
+ * 4. The account metas (16 bytes each) and CPI accounts (56 bytes each),
+ *    reused across the inner instructions: room for 32 of each, doubled when
+ *    an instruction has more.
+ * 5. For each inner instruction, its accounts (8 bytes each) and their signer
+ *    flags (1 byte each).
+ *
+ * Checked against that build on a local validator, on all three paths and on
+ * both sides of the limit; on the passkey path to the byte (a payload that
+ * needs 32,760 bytes runs, one that needs 32,765 runs out of memory). A policy
+ * on the authority or session allocates more, and is not counted here. A
+ * build that sizes these buffers exactly (lazorkit-protocol#42) allocates
+ * less for any payload, so the check stays safe there, if stricter than it
+ * needs to be.
+ */
+export function lazorkitHeapBytes(
+  innerInstructions: readonly TransactionInstruction[],
+  path: LazorKitExecutePath
+): number {
+  // Offset from the start of the heap; allocations go down from the top.
+  let top = LAZORKIT_HEAP_BYTES;
+  const alloc = (bytes: number, align: number) => {
+    if (bytes > 0) top = Math.floor((top - bytes) / align) * align;
+  };
+  // Rust's Vec growth: double, or what is needed if more, and never under 8
+  // one-byte or 4 larger elements. Each growth is a new allocation.
+  const reserve = (
+    vec: { cap: number; len: number },
+    more: number,
+    size: number,
+    align: number
+  ) => {
+    if (vec.cap - vec.len >= more) return;
+    vec.cap = Math.max(vec.cap * 2, vec.len + more, size === 1 ? 8 : 4);
+    alloc(vec.cap * size, align);
+  };
+  const k = innerInstructions.length;
+  alloc(40 * k, 8);
+  if (path !== 'ed25519') {
+    const preimage = { cap: 132 * k, len: 0 };
+    alloc(preimage.cap, 1);
+    for (const ix of innerInstructions) {
+      for (let account = 0; account <= ix.keys.length; account++) {
+        reserve(preimage, 32, 1, 1);
+        preimage.len += 32;
+        reserve(preimage, 1, 1, 1);
+        preimage.len += 1;
+      }
+    }
+  }
+  if (path === 'secp256r1') {
+    let compact = 1;
+    for (const ix of innerInstructions) compact += 4 + ix.keys.length + ix.data.length;
+    alloc(compact + 32, 1);
+    alloc(44, 1);
+  }
+  const metas = { cap: 32, len: 0 };
+  const cpiAccounts = { cap: 32, len: 0 };
+  alloc(16 * metas.cap, 8);
+  alloc(56 * cpiAccounts.cap, 8);
+  for (const ix of innerInstructions) {
+    alloc(8 * ix.keys.length, 8);
+    alloc(ix.keys.length, 1);
+    metas.len = 0;
+    cpiAccounts.len = 0;
+    for (let account = 0; account < ix.keys.length; account++) {
+      reserve(metas, 1, 16, 8);
+      metas.len++;
+      reserve(cpiAccounts, 1, 56, 8);
+      cpiAccounts.len++;
+    }
+  }
+  return LAZORKIT_HEAP_BYTES - top;
 }
 
 // ─── Limits ─────────────────────────────────────────────────────────────────
@@ -667,8 +774,8 @@ export class TransactionTooLargeError extends Error {
 /**
  * The payload's inner instructions are over a LazorKit program ceiling, so
  * the program would reject it in any format: more than 16 inner instructions,
- * or the heap rule (LAZORKIT_HEAP_MAX_METAS). Thrown before the prompt;
- * nothing was signed or sent.
+ * or more heap than the program has (`lazorkitHeapBytes`). Thrown before the
+ * prompt; nothing was signed or sent.
  */
 export class PayloadExceedsProgramLimitsError extends Error {
   readonly limit: 'inner-instructions' | 'heap';
@@ -677,19 +784,22 @@ export class PayloadExceedsProgramLimitsError extends Error {
   readonly maxMetas: number;
   /** Σ(1 + metas) over the inner instructions. */
   readonly totalMetas: number;
+  /** The heap the program would need, in bytes; it has 32,760. */
+  readonly heapBytes: number;
 
   constructor(details: {
     limit: 'inner-instructions' | 'heap';
     innerInstructions: number;
     maxMetas: number;
     totalMetas: number;
+    heapBytes: number;
   }) {
     super(
       (details.limit === 'inner-instructions'
         ? `The payload has ${details.innerInstructions} instructions; the LazorKit program runs at most ${LAZORKIT_MAX_INNER_INSTRUCTIONS}.`
-        : `The payload is too large for the LazorKit program's heap: one instruction has ${details.maxMetas} accounts ` +
-          `(more than ${LAZORKIT_HEAP_MAX_METAS}) and the instructions have ${details.totalMetas} in all, counting one ` +
-          `per instruction (more than ${LAZORKIT_HEAP_MAX_TOTAL_METAS}).`) +
+        : `The payload is too large for the LazorKit program's heap: running its ${details.innerInstructions} ` +
+          `instructions (${details.totalMetas - details.innerInstructions} accounts in all, at most ${details.maxMetas} in one) ` +
+          `needs ${details.heapBytes} bytes, and the program has ${LAZORKIT_HEAP_USABLE_BYTES}.`) +
         ' Nothing was signed or sent.'
     );
     this.name = 'PayloadExceedsProgramLimitsError';
@@ -697,6 +807,7 @@ export class PayloadExceedsProgramLimitsError extends Error {
     this.innerInstructions = details.innerInstructions;
     this.maxMetas = details.maxMetas;
     this.totalMetas = details.totalMetas;
+    this.heapBytes = details.heapBytes;
   }
 }
 

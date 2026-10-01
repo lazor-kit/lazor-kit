@@ -527,6 +527,7 @@ test('U6: 16 inner instructions pass, 17 fail', () => {
     innerInstructions: 16,
     maxMetas: 1,
     totalMetas: 32,
+    heapBytes: 5_465,
   });
   assert.throws(
     () => T.checkProgramCeilings(inner(...Array(17).fill(1))),
@@ -534,30 +535,109 @@ test('U6: 16 inner instructions pass, 17 fail', () => {
   );
 });
 
-test('U6: the heap rule passes the shapes that landed and fails the ones that ran out of memory', () => {
-  const pass = [
-    [127],
-    [64, 64],
-    [100, 20],
-    [60, 60, 10],
-    [80, 8, 8, 8, 8, 8],
-    [30, 30, 30, 30, 30],
-    [83, 7],
-  ];
-  const fail = [[128], [70, 70], [100, 30], [80, 80], [200]];
-  for (const shape of pass) T.checkProgramCeilings(inner(...shape));
-  for (const shape of fail) {
-    assert.throws(
-      () => T.checkProgramCeilings(inner(...shape)),
-      (e) =>
-        e instanceof T.PayloadExceedsProgramLimitsError &&
-        e.limit === 'heap' &&
-        e.maxMetas === Math.max(...shape) &&
-        e.totalMetas === shape.reduce((n, m) => n + 1 + m, 0) &&
-        e.innerInstructions === shape.length,
-      shape.join('+')
-    );
+/**
+ * A payload in the shorthand of the measurements below: "KxM" is K inner
+ * instructions of M accounts, "A,B,…" one of A accounts, one of B, …; each
+ * has 12 bytes of data (a System transfer's), and "+N" adds N bytes to the
+ * last one's.
+ */
+function heapShape(text) {
+  const [shape, extra = '0'] = text.split('+');
+  const counts = shape.includes('x')
+    ? Array(Number(shape.split('x')[0])).fill(Number(shape.split('x')[1]))
+    : shape.split(',').map(Number);
+  return counts.map((m, i) =>
+    ix(
+      address('program-a'),
+      Array(m).fill(meta(address('account-0'))),
+      12 + (i === counts.length - 1 ? Number(extra) : 0)
+    )
+  );
+}
+
+// What the devnet v2 build at 57bTNW… (3584aec7…) did with these payloads on a
+// local validator (System transfers of 0 lamports, simulated as v1): ran, or
+// ran out of memory ("memory allocation failed, out of memory"). The passkey
+// pairs at the limit pin the model to the byte; the program has 32,760.
+const HEAP_ON_CHAIN = {
+  secp256r1: {
+    runs: [
+      '16x12',
+      '1x127',
+      '2x64',
+      '100,20',
+      '80,8,8,8,8,8',
+      '60,60,10',
+      '30,30,30,30,30',
+      '83,7',
+    ],
+    outOfMemory: ['16x16', '8x32', '16x24', '1x128', '2x70', '100,30', '80,80', '1x200'],
+    atTheLimit: [
+      ['13x29+102', 32_757, true],
+      ['13x29+103', 32_765, false],
+      ['13x24+791', 32_760, true],
+      ['13x24+792', 32_768, false],
+      ['5x63+1876', 32_759, true],
+      ['5x63+1877', 32_767, false],
+    ],
+  },
+  ed25519: {
+    runs: ['16x16', '8x32', '16x24', '1x128', '128,128', '13x128', '14x127', '16x110', '2x70'],
+    outOfMemory: ['1x129', '1x200', '14x128', '16x120'],
+  },
+  deferred: {
+    runs: ['16x12', '14x16', '1x127', '2x64'],
+    outOfMemory: ['16x16', '14x17', '1x128', '2x70'],
+  },
+};
+
+test('U6: the heap model runs what the deployed program ran, and refuses what ran out of memory', () => {
+  for (const [path, measured] of Object.entries(HEAP_ON_CHAIN)) {
+    for (const text of measured.runs) {
+      const result = T.checkProgramCeilings(heapShape(text), path);
+      assert.ok(result.heapBytes <= T.LAZORKIT_HEAP_USABLE_BYTES, `${path} ${text}`);
+    }
+    for (const text of measured.outOfMemory) {
+      const shape = heapShape(text);
+      assert.throws(
+        () => T.checkProgramCeilings(shape, path),
+        (e) =>
+          e instanceof T.PayloadExceedsProgramLimitsError &&
+          e.limit === 'heap' &&
+          e.heapBytes > T.LAZORKIT_HEAP_USABLE_BYTES &&
+          e.heapBytes === T.lazorkitHeapBytes(shape, path) &&
+          e.innerInstructions === shape.length &&
+          e.maxMetas === Math.max(...shape.map((i) => i.keys.length)) &&
+          e.totalMetas === shape.reduce((n, i) => n + 1 + i.keys.length, 0),
+        `${path} ${text}`
+      );
+    }
+    for (const [text, bytes, runs] of measured.atTheLimit ?? []) {
+      assert.equal(T.lazorkitHeapBytes(heapShape(text), path), bytes, `${path} ${text}`);
+      assert.equal(bytes <= T.LAZORKIT_HEAP_USABLE_BYTES, runs, `${path} ${text}`);
+    }
   }
+});
+
+test('U6: the passkey path allocates the most, and is the default', () => {
+  for (const text of ['16x12', '1x127', '8x32', '13x29+102', '2x70']) {
+    const shape = heapShape(text);
+    const [secp256r1, deferred, ed25519] = ['secp256r1', 'deferred', 'ed25519'].map((path) =>
+      T.lazorkitHeapBytes(shape, path)
+    );
+    assert.ok(secp256r1 > deferred && deferred > ed25519, text);
+  }
+  assert.deepEqual(
+    ['secp256r1', 'deferred', 'ed25519'].map((path) =>
+      T.lazorkitHeapBytes(heapShape('16x12'), path)
+    ),
+    [20_044, 19_516, 4_732]
+  );
+  assert.throws(
+    () => T.checkProgramCeilings(heapShape('16x16')),
+    T.PayloadExceedsProgramLimitsError
+  );
+  assert.equal(T.checkProgramCeilings(heapShape('16x16'), 'ed25519').heapBytes, 5_248);
 });
 
 // ─── Limits (the pure part of U7) ───────────────────────────────────────────
@@ -803,9 +883,17 @@ test('PayloadExceedsProgramLimitsError carries its counts', () => {
     innerInstructions: 2,
     maxMetas: 70,
     totalMetas: 142,
+    heapBytes: 34_358,
   });
   assert.ok(e instanceof Error);
   assert.equal(e.name, 'PayloadExceedsProgramLimitsError');
-  assert.deepEqual([e.limit, e.innerInstructions, e.maxMetas, e.totalMetas], ['heap', 2, 70, 142]);
+  assert.deepEqual(
+    [e.limit, e.innerInstructions, e.maxMetas, e.totalMetas, e.heapBytes],
+    ['heap', 2, 70, 142, 34_358]
+  );
+  assert.match(
+    e.message,
+    /140 accounts in all, at most 70 in one\) needs 34358 bytes, and the program has 32760/
+  );
   assert.match(e.message, /Nothing was signed or sent/);
 });
