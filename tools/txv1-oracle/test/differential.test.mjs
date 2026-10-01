@@ -10,6 +10,11 @@
 // - web3.js reads back version 1 with the same keys, instructions and config;
 // - the signatures verify, sit in their signers' slots, leave the other slots
 //   empty, and equal kit's own partiallySignTransaction.
+// One case in fifty is also sent with its first instruction's program set to
+// the fee payer: kit and web3.js compile and read that, but Agave refuses the
+// message at sanitize (a program index of 0), so the writer must throw rather
+// than say it fits. Derived from the case without drawing from the generator,
+// so every seed gives the same 10,000 cases as before.
 //
 // Reproduce a run with TXV1_SEED=<seed> (and TXV1_CASES=<n>); the seed is
 // printed. Every failing case is reported with its index.
@@ -115,7 +120,7 @@ function randomCase(r) {
 test(`U11: ${CASES} seeded random messages agree with kit 8.4.0 and web3.js 1.99.0`, { timeout: 30 * 60_000 }, async () => {
   console.log(`# seed ${SEED} (0x${SEED.toString(16)}), ${CASES} cases; reproduce with TXV1_SEED=${SEED}`);
   const r = seededRandom(SEED);
-  const tally = { cases: 0, agree: 0, fits: 0, sameBytesAsKit: 0, signed: 0, atByteLimit: [0, 0, 0], overflow: {} };
+  const tally = { cases: 0, agree: 0, fits: 0, sameBytesAsKit: 0, signed: 0, atByteLimit: [0, 0, 0], overflow: {}, payerAsProgram: 0 };
   const failures = [];
   for (let i = 0; i < CASES; i++) {
     const { input, signers, over } = randomCase(r);
@@ -139,6 +144,21 @@ test(`U11: ${CASES} seeded random messages agree with kit 8.4.0 and web3.js 1.99
       legacyCompiler: i % 100 === 0,
     });
     tally.cases++;
+    if (i % 50 === 0 && input.instructions.length) {
+      const [first, ...rest] = input.instructions;
+      const payerAsProgram = {
+        ...input,
+        instructions: [new TransactionInstruction({ programId: input.payer, keys: first.keys, data: first.data }), ...rest],
+      };
+      try {
+        const compiled = T.compileTransactionV1(payerAsProgram);
+        result.failures.push(`the fee payer as a program compiled (fits ${compiled.fits}) instead of throwing`);
+      } catch (error) {
+        if (!(error instanceof TypeError) || !/program is the fee payer/.test(error.message)) {
+          result.failures.push(`the fee payer as a program threw the wrong error: ${error}`);
+        } else tally.payerAsProgram++;
+      }
+    }
     if (result.failures.length) {
       failures.push(`case ${i}: ${result.failures.join('; ')}`);
       continue;
@@ -161,6 +181,7 @@ test(`U11: ${CASES} seeded random messages agree with kit 8.4.0 and web3.js 1.99
     assert.ok(tally.overflow[kind] > 0, `some case goes over ${kind}`);
   }
   assert.ok(tally.atByteLimit.every((n) => n > 0), 'some cases are 4095, 4096 and 4097 bytes');
+  assert.ok(tally.payerAsProgram >= Math.floor(CASES / 60), 'the fee payer as a program is refused, in enough cases');
 });
 
 /** Only a transaction that fits can be signed. */

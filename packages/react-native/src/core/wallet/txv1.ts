@@ -148,8 +148,11 @@ export interface CompiledTransactionV1 {
  *
  * Never throws for size: a transaction over a SIMD-0385 limit returns
  * `fits: false`, the first `overflow`, and its measurements. Throws for a
- * config that is missing a limit or out of range, and for a malformed
- * blockhash.
+ * config that is missing a limit or out of range, for a malformed
+ * blockhash, and for an instruction whose program is the fee payer: that
+ * compiles (to program index 0), and kit and web3.js read it back, but the
+ * runtime refuses the message when it sanitizes it, so `fits` would not
+ * mean the transaction can be sent.
  *
  * Account order, deduplication, the header and the index remapping come from
  * web3.js's own compiler (`CompiledKeys`, as the legacy and v0 paths use);
@@ -168,13 +171,20 @@ export function compileTransactionV1(params: {
   checkConfig(config);
   const blockhash = blockhashBytes(params.blockhash);
 
-  const keys = new Set<string>([payer.toBase58()]);
-  const signerKeys = new Set<string>([payer.toBase58()]);
+  const payerKey = payer.toBase58();
+  const keys = new Set<string>([payerKey]);
+  const signerKeys = new Set<string>([payerKey]);
   let payloadBytes = 0;
   let accountsOverflow = false;
   let dataOverflow = false;
-  for (const ix of instructions) {
-    keys.add(ix.programId.toBase58());
+  for (const [i, ix] of instructions.entries()) {
+    const program = ix.programId.toBase58();
+    if (program === payerKey) {
+      throw new TypeError(
+        `txv1: instruction ${i}'s program is the fee payer (${payerKey}); the runtime refuses such a message`
+      );
+    }
+    keys.add(program);
     for (const meta of ix.keys) {
       const key = meta.pubkey.toBase58();
       keys.add(key);

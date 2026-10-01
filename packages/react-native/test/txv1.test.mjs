@@ -294,6 +294,31 @@ test('U2: at every limit it fits; one over, it returns fits:false and the limit,
   );
 });
 
+test('U2: an instruction whose program is the fee payer throws: the runtime refuses that message', () => {
+  const program = address('program-a');
+  // web3.js compiles it, to program index 0, which Agave's sanitize refuses.
+  const message = new TransactionMessage({
+    payerKey: PAYER,
+    recentBlockhash: blockhash('test'),
+    instructions: [ix(PAYER)],
+  }).compileToV0Message();
+  assert.equal(message.compiledInstructions[0].programIdIndex, 0);
+  for (const [name, instructions] of [
+    ['alone', [ix(PAYER)]],
+    ['second, with accounts and data', [ix(program, accounts(2)), ix(PAYER, accounts(3), 8)]],
+    // A malformed message, not a size: it throws even when over a limit.
+    ['over 64 addresses', [ix(program, accounts(70)), ix(PAYER)]],
+  ]) {
+    assert.throws(
+      () => compile(instructions),
+      (e) => e instanceof TypeError && /instruction \d+'s program is the fee payer/.test(e.message),
+      name
+    );
+  }
+  // The fee payer as an account of an instruction is fine.
+  assert.equal(compile([ix(program, [meta(PAYER, true, true)])]).fits, true);
+});
+
 test('U2: the first limit broken is reported, in a fixed order', () => {
   const program = address('program-a');
   // 70 addresses, 13 signers and over 4096 bytes: addresses comes first.
