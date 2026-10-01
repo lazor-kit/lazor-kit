@@ -46,6 +46,11 @@ jobs:
           pnpm --filter @lazorkit/wallet build
           pnpm --filter @lazorkit/wallet-mobile-adapter build
 
+      - name: Test the built web SDK and mobile adapter
+        run: |
+          pnpm --filter @lazorkit/wallet test
+          pnpm --filter @lazorkit/wallet-mobile-adapter test
+
       - name: Verify web SDK dist
         run: |
           test -f packages/react/dist/index.js

@@ -99,6 +99,7 @@ export {
   MIN_DEFERRED_EXPIRY_SLOTS,
   MAX_DEFERRED_EXPIRY_SLOTS,
 } from './core/wallet/deferred';
+export type { DeferredFailureContext } from './core/wallet/deferred';
 // Which wallet is a passkey's own (the credential hash alone is public): what
 // connect asks the user when it will not adopt one on its own.
 export {
