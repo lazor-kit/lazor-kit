@@ -47,7 +47,7 @@
     "dev": "rollup -c -w",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/deferred.test.mjs test/txv1.test.mjs",
+    "test": "node --test test/deferred.test.mjs test/txv1.test.mjs test/flagoff.test.mjs test/txv1-send.test.mjs",
     "prepublishOnly": "npm run clean && npm run build"
   },
   "publishConfig": {
