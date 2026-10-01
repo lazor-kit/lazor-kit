@@ -42,6 +42,13 @@ import { PaymasterError } from '../paymaster';
 export interface SendAttempt {
   blockhash: string;
   lastValidBlockHeight: number;
+  /**
+   * How to read the logs of this transaction once it landed, when
+   * `getTransaction` with `maxSupportedTransactionVersion: 0` cannot (a v1
+   * transaction). Never stored: it is dropped with the rest of a function
+   * when a pending send is kept in AsyncStorage.
+   */
+  landedLogs?: (signature: string) => Promise<readonly string[] | null | undefined>;
 }
 
 /** A sent transaction, with what it takes to tell when it can no longer land. */
@@ -261,6 +268,7 @@ async function failure(
   signature: string,
   outcome: { slot: number; err: TransactionError },
   mapReused: boolean,
+  landedLogs?: SendAttempt['landedLogs'],
 ): Promise<Error> {
   const failed = new TransactionFailedError(signature, outcome.err, outcome.slot);
   if (!mapReused) return failed;
@@ -270,11 +278,16 @@ async function failure(
     // An on-chain TransactionError has no logs, and an inner program's
     // 3006 looks the same as LazorKit's: the logs say which failed first.
     try {
-      const tx = await bounded(
-        connection.getTransaction(signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }),
-        Date.now() + REQUEST_TIMEOUT_MS,
-      );
-      logs = tx?.meta?.logMessages ?? undefined;
+      if (landedLogs) {
+        const read = await bounded(landedLogs(signature), Date.now() + REQUEST_TIMEOUT_MS);
+        logs = read ? [...read] : undefined;
+      } else {
+        const tx = await bounded(
+          connection.getTransaction(signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }),
+          Date.now() + REQUEST_TIMEOUT_MS,
+        );
+        logs = tx?.meta?.logMessages ?? undefined;
+      }
     } catch {
       logs = undefined;
     }
@@ -296,7 +309,7 @@ async function outcomeResult(
     case 'landed':
       return outcome.slot;
     case 'failed':
-      throw await failure(connection, sent.signature, outcome, mapReused);
+      throw await failure(connection, sent.signature, outcome, mapReused, sent.landedLogs);
     case 'expired':
       throw new TransactionExpiredError(sent.signature);
     case 'unknown':
