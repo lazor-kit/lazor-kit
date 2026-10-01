@@ -290,8 +290,9 @@ function originOf(url: string): string {
  * response could not fit: a 'v1' request on a paymaster without v1 is no
  * stricter than 'v0', and between the two the real bytes decide after
  * signing. `tx2` builds a deferred pair's TX2, which carries no WebAuthn bytes
- * and so is measured exactly, in the same format: TX1 is never sent for a TX2
- * that could not be.
+ * and so is measured exactly, when the pair goes out as v1: TX1 is never sent
+ * for a v1 TX2 that could not be. As v0 it is not built here (building it
+ * reads the chain), and goes out as a 'v0' request's TX2 does.
  */
 export async function planTxV1BeforePrompt(params: {
   paymaster: TxV1Paymaster;
@@ -335,7 +336,7 @@ export async function planTxV1BeforePrompt(params: {
   } else {
     measure({ ...measured, instructions: params.draft(shortestWebAuthn(params.portalUrl)) });
   }
-  if (params.tx2) {
+  if (params.tx2 && decision.v1) {
     const tx2 = await params.tx2();
     measure({
       decision,
@@ -435,14 +436,18 @@ export async function sendViaPaymasterTxV1(
     if (decision.v1) assertTxV1LimitOptions(callerLimits(request, stripComputeBudget(params.instructions)));
     if (request.payload && targetsDevnetV2(params.instructions)) checkProgramCeilings(request.payload, 'ed25519');
   }
-  measure({
-    decision,
-    instructions: params.instructions,
-    payer: params.feePayer,
-    addressLookupTables: params.addressLookupTables,
-    stage,
-    transaction,
-  });
+  // TX2 of a pair decided v0 before the prompt was not built then: it is left
+  // to the v0 path, as a 'v0' request's TX2 is.
+  if (decision.v1 || transaction !== 'tx2' || !request.decision) {
+    measure({
+      decision,
+      instructions: params.instructions,
+      payer: params.feePayer,
+      addressLookupTables: params.addressLookupTables,
+      stage,
+      transaction,
+    });
+  }
   if (!decision.v1) {
     if (!warnedReasons.has(decision.reason)) {
       warnedReasons.add(decision.reason);

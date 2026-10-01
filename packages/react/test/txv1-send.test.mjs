@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BLOCK_HEIGHT0, COUNTER0, NOOP_PROGRAM, h } from './support/corpus.mjs';
+import { BLOCK_HEIGHT0, COUNTER0, NOOP_PROGRAM } from './support/corpus.mjs';
 import { setHandlers } from './support/env.mjs';
 import { compact, runCase } from './support/flagoff.mjs';
 import { loadWallet, portal, router, sdk, setup, web3 } from './support/wallet.mjs';
@@ -45,8 +45,6 @@ const SECP256R1 = 'Secp256r1SigVerify1111111111111111111111111';
 const COMPUTE_BUDGET = 'ComputeBudget111111111111111111111111111111';
 const CEILINGS = { computeUnitLimit: 1_400_000, loadedAccountsDataSizeLimit: 67_108_864 };
 const V1 = { txVersion: 'v1' };
-const PROTOCOL_CONFIG = sdk.findProtocolConfigPda(sdk.PROGRAM_ID_DEVNET)[0].toBase58();
-const FEE_RECORD = sdk.findFeeRecordPda(Keypair.fromSeed(h('fee-payer')).publicKey, sdk.PROGRAM_ID_DEVNET)[0].toBase58();
 const ACCEPTS = { acceptsTxV1: true };
 
 // ── helpers ─────────────────────────────────────────────────────────────
@@ -267,24 +265,19 @@ test("U5: a paymaster that did not declare acceptsTxV1: a 'v1' request is exactl
   }
 });
 
-test("U5: the deferred pair without acceptsTxV1: the 'v0' requests, plus reading TX2's fee accounts before the prompt", async () => {
+test("U5: the deferred pair without acceptsTxV1: exactly the 'v0' requests, with no read of TX2's fee accounts before the prompt", async () => {
   for (const [flow, payload] of [
     ['authorizeAndExecute', 'lutFits'],
+    ['authorizeAndExecute', 'transfer1'],
+    ['deferred', 'lutFits'],
     ['deferred', 'transfer1'],
   ]) {
     const record = await runCase(DIST, { id: `v1-without-acceptsTxV1/${flow}/${payload}`, flow, payload, options: V1 });
     const got = compact(record);
     const want = golden.cases[`web/${flow}/${payload}/v0`];
-    for (const section of ['steps', 'paymaster', 'portal']) assert.deepEqual(got[section], want[section], `${flow}/${payload}: ${section}`);
-    // TX2 is measured before the prompt with a client of its own, which reads
-    // the protocol config and the fee payer's FeeRecord once each. Without
-    // those first two reads, the requests are the 'v0' ones, in order.
-    const extra = [PROTOCOL_CONFIG, FEE_RECORD].map((address) =>
-      record.rpc.findIndex((r) => r.method === 'getAccountInfo' && r.params[0] === address),
-    );
-    assert.ok(extra.every((i) => i >= 0 && i < record.steps[0].ranges.rpc[1]), 'read within the first call');
-    const rest = record.rpc.filter((_, i) => !extra.includes(i));
-    assert.deepEqual(compact({ ...record, rpc: rest }).rpc, want.rpc, `${flow}/${payload}: rpc`);
+    // TX2 is built before the prompt only for v1: that reads the protocol
+    // config and the fee payer's FeeRecord, which a 'v0' request does not.
+    for (const section of ['steps', 'paymaster', 'rpc', 'portal']) assert.deepEqual(got[section], want[section], `${flow}/${payload}: ${section}`);
   }
 });
 
@@ -313,6 +306,21 @@ test('U5: the mainnet program never goes out as v1 (not-devnet-v2), even with a 
     assert.equal(landed(c)[1].version, 0);
   });
   assert.equal(logged.warn.filter((w) => /goes out as v0: not-devnet-v2/.test(w)).length, 1, 'logged once per reason');
+});
+
+test("U5: a deferred pair on the mainnet program, as 'v1', reads what a 'v0' one does: TX2 is not built before the prompt", async () => {
+  for (const flow of ['authorizeAndExecute', 'authorizeDeferred']) {
+    const methods = {};
+    for (const txVersion of ['v0', 'v1']) {
+      await withCase({ programId: sdk.PROGRAM_ID_MAINNET, cluster: 'mainnet', paymasterConfig: ACCEPTS }, async (c) => {
+        await c.S()[flow](request(c, 'transfer1', { txVersion }));
+        assert.equal(c.S().error, null, `${flow} ${txVersion}`);
+        assert.ok(landed(c).every((tx) => tx.version === 0));
+        methods[txVersion] = c.chain.rec.rpc.map((r) => r.method);
+      });
+    }
+    assert.deepEqual(methods.v1, methods.v0, flow);
+  }
 });
 
 test("U5: limits out of range are a RangeError before the prompt, for 'v1' only", async () => {

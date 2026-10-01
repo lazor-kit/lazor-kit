@@ -44,7 +44,9 @@ import { type AuthorityTurn, sendAndConfirm, withAuthority } from './sequence';
 import { buildPreviewTransactionBase64 } from './preview';
 import { deferredExpiryOffset, executeBeforeExpiry } from './deferred';
 import {
+    type TxV1Draft,
     type TxV1Plan,
+    gateTxV1,
     innerInstructionsOf,
     placeholderForPrompt,
     planTxV1,
@@ -160,7 +162,11 @@ async function buildAndSendTx(params: {
 interface TxV1Send {
     plan: TxV1Plan;
     transaction: 'single' | 'tx1' | 'tx2';
-    /** Where a size failure of the real instructions stands; null when it was measured exactly before. */
+    /**
+     * Where a size failure of the real instructions stands; null for TX2 of a
+     * pair (measured exactly before the prompt as v1; as v0, left to v0, as a
+     * 'v0' request's TX2 is).
+     */
     stage: 'before-signing' | 'after-signing' | null;
 }
 
@@ -219,15 +225,18 @@ function planLocallySignedTxV1(params: {
 
 /**
  * Plan a 'v1' deferred pair before the prompt (see ./txv1-send `planTxV1`):
- * TX1 built from stand-in WebAuthn responses, and TX2 exactly, since it
- * carries no WebAuthn bytes. One decision covers both, and TX2 must fit, so
- * TX1 never authorizes a TX2 that cannot be sent.
+ * TX1 built from stand-in WebAuthn responses, and, when the pair goes out as
+ * v1, TX2 exactly, since it carries no WebAuthn bytes. One decision covers
+ * both, taken on TX1 (TX2 targets the same program), and a v1 TX2 must fit,
+ * so TX1 never authorizes a v1 TX2 that cannot be sent.
  *
- * TX2 is built by a client of its own. `executeDeferredFromPayload` is not
- * free of RPC (sdk-legacy 1.3): it reads the protocol config (cached per
- * client) and, until it has seen it, the fee payer's FeeRecord; and when it
- * adds RegisterPayer it marks the payer registered in that client. Built with
- * the flow's client, the real TX2 would then leave RegisterPayer out.
+ * TX2 is built only for v1, by a client of its own. `executeDeferredFromPayload`
+ * is not free of RPC (sdk-legacy 1.3): it reads the protocol config (cached
+ * per client) and, until it has seen it, the fee payer's FeeRecord; and when
+ * it adds RegisterPayer it marks the payer registered in that client. Built
+ * with the flow's client, the real TX2 would then leave RegisterPayer out. A
+ * pair that goes out as v0 makes neither read: it is the 'v0' request, whose
+ * TX2 is built and measured by v0 once TX1 has landed.
  */
 async function planDeferredPairTxV1(params: {
     client: ReturnType<typeof clientFor>;
@@ -242,24 +251,27 @@ async function planDeferredPairTxV1(params: {
     const { feePayer, payload } = params;
     const tx1 = params.client.finalizeAuthorize(params.prepared, placeholderForPrompt(params.portalUrl));
     const tx1Shortest = params.client.finalizeAuthorize(params.prepared, shortestForPrompt(params.portalUrl));
-    const tx2 = await clientFor(params.version, params.connection).executeDeferredFromPayload({
-        payer: feePayer,
-        deferredPayload: tx1.deferredPayload,
-    });
+    const drafts: TxV1Draft[] = [
+        { transaction: 'tx1', instructions: tx1.instructions, shortest: tx1Shortest.instructions },
+    ];
+    if (gateTxV1({ paymaster: params.paymaster, instructions: tx1.instructions }).v1) {
+        const tx2 = await clientFor(params.version, params.connection).executeDeferredFromPayload({
+            payer: feePayer,
+            deferredPayload: tx1.deferredPayload,
+        });
+        drafts.push({
+            transaction: 'tx2',
+            instructions: tx2.instructions,
+            addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+        });
+    }
     return planTxV1({
         paymaster: params.paymaster,
         feePayer,
         inner: payload.instructions,
         // TX2, ExecuteDeferred, runs the payload.
         execute: 'deferred',
-        drafts: [
-            { transaction: 'tx1', instructions: tx1.instructions, shortest: tx1Shortest.instructions },
-            {
-                transaction: 'tx2',
-                instructions: tx2.instructions,
-                addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
-            },
-        ],
+        drafts,
         options: payload.transactionOptions,
     });
 }
@@ -1036,8 +1048,8 @@ export const authorizeAndExecuteAction = async (
                 instructions: payload.instructions,
                 expiryOffset,
             });
-            // 'v1' only: one decision for TX1 and TX2, and TX2 measured
-            // exactly, before the prompt.
+            // 'v1' only: one decision for TX1 and TX2 and, for v1, TX2
+            // measured exactly, before the prompt.
             const v1Plan =
                 payload.transactionOptions?.txVersion === 'v1'
                     ? await planDeferredPairTxV1({
@@ -1149,8 +1161,8 @@ export const authorizeDeferredAction = async (
                 instructions: payload.instructions,
                 expiryOffset,
             });
-            // 'v1' only, before the prompt: TX2 as this fee payer would send
-            // it later must fit too, or the authorization would be stranded.
+            // 'v1' only, before the prompt: as v1, TX2 as this fee payer would
+            // send it later must fit too, or the authorization would be stranded.
             const v1Plan =
                 payload.transactionOptions?.txVersion === 'v1'
                     ? await planDeferredPairTxV1({

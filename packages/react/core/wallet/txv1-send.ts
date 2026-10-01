@@ -228,8 +228,9 @@ export function innerInstructionsOf(
  *   with the longest WebAuthn response, so the user is never asked to approve
  *   one that cannot be sent; else v0 with its lookup tables, measured with
  *   the shortest response, so a transaction a 'v0' request would send is
- *   never refused. A deferred pair is decided once, and its TX2 must fit too,
- *   so TX1 is never authorized for a TX2 that cannot be sent.
+ *   never refused. A deferred pair is decided once; as v1 its TX2 must fit
+ *   too, so TX1 is never authorized for a v1 TX2 that cannot be sent (as v0,
+ *   TX2 is not built before the prompt, as for a 'v0' request).
  */
 export function planTxV1(params: {
     paymaster: Paymaster;
@@ -300,8 +301,8 @@ export function shortestForPrompt(portalUrl: string): WebAuthnPlaceholder {
  * `stage`: the measurement on the real instructions, which is authoritative.
  * 'after-signing' for a passkey transaction (the passkey approved it; nothing
  * is sent if it does not fit), 'before-signing' for one a local key signs,
- * and null when it was measured exactly before the prompt (TX2 of a pair: it
- * carries no WebAuthn bytes).
+ * and null for TX2 of a pair: as v1 it was measured exactly before the prompt
+ * (it carries no WebAuthn bytes); as v0 it is the 'v0' request's TX2.
  *
  * The gate failed: `sendV0()`, the unchanged v0 path with the caller's lookup
  * tables. It passed: `sendTxV1`.

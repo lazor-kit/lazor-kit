@@ -122,6 +122,21 @@ test("'v1' on the mainnet program goes out as v0 (not-devnet-v2)", async () => {
   assert.ok(lines.warn.some((l) => /devnet LazorKit v2/.test(l)), lines.warn.join('\n'));
 });
 
+test("a deferred pair on the mainnet program, as 'v1', reads what a 'v0' one does: TX2 is not built before the prompt", async () => {
+  for (const flow of ['authorizeAndExecute', 'authorizeDeferred']) {
+    const methods = {};
+    for (const txVersion of ['v0', 'v1']) {
+      const w = world({ cluster: 'mainnet' });
+      const S = use(w, { acceptsTxV1: true });
+      const { error } = await captureConsole(() => S[flow]({ instructions: [w.transfer()], transactionOptions: { txVersion } }, SIGN));
+      assert.equal(error, undefined, `${flow} ${txVersion}: ${error?.message}`);
+      assert.ok(w.sent().every((send) => send.version === 0));
+      methods[txVersion] = w.methods();
+    }
+    assert.deepEqual(methods.v1, methods.v0, flow);
+  }
+});
+
 test('a paymaster that refuses v1 (-32051) fails that operation once; later requests go out as v0', async () => {
   const w = world();
   w.script.send = (decoded, attempt) =>

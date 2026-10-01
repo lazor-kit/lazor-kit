@@ -103,7 +103,8 @@ async function main() {
 
   const payload = corpus.payloads[kase.payload];
   const transactionOptions = () => ({
-    ...C.MOBILE_VARIANTS[kase.variant],
+    // `options` replaces the variant's (the txv1 tests' 'v1' requests).
+    ...(kase.options ?? C.MOBILE_VARIANTS[kase.variant]),
     ...(payload.lookupTables.length ? { addressLookupTableAccounts: payload.lookupTables } : {}),
   });
   const send = () => ({ instructions: payload.instructions(), transactionOptions: transactionOptions() });

@@ -235,8 +235,10 @@ function limitsOf(options: TransactionOptions): { computeUnitLimit?: number; loa
 /**
  * The format of a deferred pair ('v1' requests), decided before the portal
  * opens: one decision for both transactions. TX1 (Authorize) is measured with
- * a worst-case WebAuthn response, and TX2 (ExecuteDeferred) exactly, since it
- * carries no WebAuthn bytes: TX1 is never sent for a TX2 that could not be.
+ * a worst-case WebAuthn response and, when the pair goes out as v1, TX2
+ * (ExecuteDeferred) exactly, since it carries no WebAuthn bytes: TX1 is never
+ * sent for a v1 TX2 that could not be. A pair that goes out as v0 does not
+ * build TX2 here, so it reads nothing a 'v0' request does not.
  */
 function planAuthorizeTxV1(params: {
   client: LazorKitClient;
@@ -958,7 +960,7 @@ export const authorizeAndExecuteAction = async (
         });
 
         // 'v1' only: one format for both transactions, decided before the
-        // portal opens, with TX2 measured exactly.
+        // portal opens, with a v1 TX2 measured exactly.
         const txOptions = payload.transactionOptions;
         const v1 =
           txOptions?.txVersion === 'v1'
@@ -1100,7 +1102,7 @@ export const authorizeDeferredAction = async (
         });
 
         // 'v1' only: decided before the portal opens, with the TX2 this
-        // authorization is for measured too.
+        // authorization is for measured too when it is v1.
         const txOptions = payload.transactionOptions;
         const v1 =
           txOptions?.txVersion === 'v1'

@@ -44,3 +44,28 @@ test('U4: with no v1 request, every flow makes the requests 2.2.1 made, and ends
     });
   }
 });
+
+test("D1: a 'v1' request to a paymaster without acceptsTxV1 makes exactly the 'v0' requests, and ends as 'v0' does", async (t) => {
+  // The same cases as a 'v0' request, with txVersion 'v1': the gate fails
+  // (reason 'paymaster') before anything is read, and the request goes out as
+  // v0. For the deferred pair, TX2 is then not built before the prompt (that
+  // reads the protocol config and the fee payer's FeeRecord). Left out: the
+  // payloads no v0 form can carry, which a 'v1' request refuses before the
+  // prompt (txv1-send.test.cjs), where 'v0' fails after it.
+  const cases = caseMatrix()
+    .filter((kase) => kase.variant === 'v0' && !kase.fault && !kase.payload.startsWith('payload2k2'))
+    .map((kase) => ({ ...kase, id: kase.id.replace(/\/v0$/, '/v1-without-acceptsTxV1'), options: { txVersion: 'v1' }, golden: kase.id }));
+  assert.ok(cases.some((kase) => kase.flow === 'authorizeAndExecute') && cases.some((kase) => kase.flow === 'deferred'));
+  const records = await pool(cases, 6, (kase) => runCase(DIST, kase));
+  for (const [i, kase] of cases.entries()) {
+    await t.test(kase.id, () => {
+      const record = records[i];
+      assert.deepEqual(record.diagnostics.unexpectedRequests, [], 'no request left the process');
+      const got = compact(record);
+      const want = golden.cases[kase.golden];
+      for (const section of ['steps', 'paymaster', 'rpc', 'portal']) {
+        assert.deepEqual(got[section], want[section], `${kase.id}: ${section}`);
+      }
+    });
+  }
+});
