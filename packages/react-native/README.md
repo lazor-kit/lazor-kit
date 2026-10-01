@@ -295,6 +295,60 @@ Only a payload over the 1232-byte limit is compiled with
 limit no longer fails `signAndSendTransaction`, `authorizeAndExecute` or
 `authorizeDeferred` before the portal opens.
 
+### Transaction v1 (experimental, devnet only)
+
+A SIMD-0385 v1 transaction carries up to 4096 bytes and 64 addresses. v0 stops
+at 1232 bytes, and lookup tables do not lift its 64 account locks, which count
+the accounts a table resolves. So payloads that v0 cannot carry even with
+lookup tables, such as many swap routes, fit in v1.
+
+It is opt-in, per call: pass `transactionOptions.txVersion: 'v1'` to
+`signAndSendTransaction`, `transferSol`, `signAndSendWithSession`,
+`authorizeAndExecute`, `authorizeDeferred` or `executeDeferred`. Without it
+nothing changes: the adapter sends the same v0 transaction as before.
+Connecting, sessions and authorities always send v0.
+
+A `'v1'` request goes out as v1 only when all of these hold. Otherwise it goes
+out as v0, exactly as with `'v0'`, and the reason is logged once:
+
+- the paymaster says it signs v1 transactions:
+  `configPaymaster={{ paymasterUrl, acceptsTxV1: true }}`;
+- that paymaster has not refused a v1 transaction (JSON-RPC error -32051)
+  since the app started;
+- no `feeToken` is set;
+- the wallet is on the devnet LazorKit v2 program. Mainnet, and wallets still
+  on LazorKit v1, never send v1.
+
+Do not set `acceptsTxV1` for `kora.devnet.lazorkit.com`: it cannot read v1
+transactions.
+
+- **Limits.** A v1 transaction carries its compute-unit limit and its
+  loaded-accounts data size limit in the transaction itself, and the adapter
+  always sets both. `computeUnitLimit` (1 to 1,400,000) and
+  `loadedAccountsDataSizeLimit` (196,608 to 67,108,864 bytes) set them. Whatever
+  is not set is measured by one simulation, bounded to 3 seconds: units × 1.2 +
+  5,000 (at least 20,000), and loaded bytes × 1.1 rounded up to 32 KiB (at least
+  196,608). When the simulation fails or does not answer in time, the
+  transaction goes out with the maximums, which in v1 do not change the fee. A v1
+  transaction has no SetComputeUnitLimit instruction. A limit out of range throws
+  a `RangeError` before the portal opens. In `authorizeAndExecute` the limits
+  apply to TX2, as `computeUnitLimit` does for v0.
+- **No lookup tables.** v1 has none. `addressLookupTableAccounts` still serves
+  the preview, and the transaction when it goes out as v0.
+- **Too large.** A `'v1'` request that cannot be sent in the format chosen
+  throws, and nothing is sent:
+
+  | Error | When |
+  |---|---|
+  | `TransactionTooLargeError` | Over 4096 bytes or 64 addresses as v1; over 1232 bytes or 64 account locks as v0. `format`, `bytes`, `addresses`, and `v1Unavailable` (why v1 was not used). `stage: 'before-signing'`: found before the portal opened. `stage: 'after-signing'`: the passkey's answer was longer than estimated. The user approved, but nothing was sent and the approval was not used, so they can approve again. `transaction: 'tx2'`: TX2 of a deferred pair could not be carried, so TX1 was not sent either. |
+  | `PayloadExceedsProgramLimitsError` | The payload is over the LazorKit program's ceilings, in any format: more than 16 instructions, or an instruction with more than 64 accounts while all of them have more than 128 (counting one per instruction). Before the portal opens. |
+
+- **A paymaster that refuses v1.** It answers -32051 before signing anything.
+  That call rejects with `PaymasterError` (`code: -32051`). It is not retried,
+  and it is not sent again as v0. Later `'v1'` requests to that paymaster go out
+  as v0 until the app restarts.
+- **The portal** still shows the payload as a v0 transaction, as before.
+
 ## API Reference
 
 ### `useWallet()`
@@ -341,9 +395,11 @@ Signs and sends transaction.
 | `payload.instructions` | `TransactionInstruction[]` | Instructions |
 | `payload.transactionOptions` | `object` | Config options |
 | `transactionOptions.feeToken` | `string` | Token address for gas fees (e.g. USDC). |
-| `transactionOptions.computeUnitLimit` | `number` | Max compute units. |
+| `transactionOptions.computeUnitLimit` | `number` | Max compute units. v0: a SetComputeUnitLimit instruction. v1: the transaction's config. |
 | `transactionOptions.addressLookupTableAccounts` | `AddressLookupTableAccount[]` | Lookup tables for v0 txs (the portal preview uses them too). |
 | `transactionOptions.clusterSimulation` | `'devnet' \| 'mainnet'` | Network for simulation. |
+| `transactionOptions.txVersion` | `'v0' \| 'v1'` | Default `'v0'`. `'v1'` is experimental and devnet only: see [Transaction v1](#transaction-v1-experimental-devnet-only). |
+| `transactionOptions.loadedAccountsDataSizeLimit` | `number` | v1 only: the loaded-accounts data size limit, in bytes. Default: measured. |
 
 | `options.redirectUrl` | `string` | Deep link URL |
 
