@@ -341,7 +341,7 @@ transactions.
   | Error | When |
   |---|---|
   | `TransactionTooLargeError` | Over 4096 bytes or 64 addresses as v1; over 1232 bytes or 64 account locks as v0. `format`, `bytes`, `addresses`, and `v1Unavailable` (why v1 was not used). `stage: 'before-signing'`: found before the portal opened. `stage: 'after-signing'`: the passkey's answer was longer than estimated. The user approved, but nothing was sent and the approval was not used, so they can approve again. `transaction: 'tx2'`: TX2 of a deferred pair could not be carried, so TX1 was not sent either. |
-  | `PayloadExceedsProgramLimitsError` | The payload is over the LazorKit program's ceilings, in any format: more than 16 instructions, or an instruction with more than 64 accounts while all of them have more than 128 (counting one per instruction). Before the portal opens. |
+  | `PayloadExceedsProgramLimitsError` | The payload is over the LazorKit program's ceilings, in any format: more than 16 instructions, or an instruction with more than 64 accounts when the instructions have more than 128 accounts in all, counting one more for each instruction. Before the portal opens. |
 
 - **A paymaster that refuses v1.** It answers -32051 before signing anything.
   That call rejects with `PaymasterError` (`code: -32051`). It is not retried,

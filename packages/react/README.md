@@ -356,11 +356,11 @@ calls ignore it.
   (`stage: 'after-signing'`: the passkey approved, nothing was sent, and the
   approval was not used). For a deferred pair, TX2 is measured before the
   prompt too, so TX1 never authorizes a TX2 that cannot be sent.
-- **Program limits.** The LazorKit program runs at most 16 inner instructions,
-  and its heap runs out when one inner instruction has more than 64 accounts
-  and all of them have more than 128 (counting one per instruction). Such a
-  payload rejects with `PayloadExceedsProgramLimitsError` before the prompt,
-  whatever the format.
+- **Program limits.** The LazorKit program runs at most 16 inner instructions.
+  Its heap runs out when one inner instruction has more than 64 accounts and
+  the inner instructions have more than 128 accounts in all, counting one more
+  for each instruction. Such a payload rejects with
+  `PayloadExceedsProgramLimitsError` before the prompt, whatever the format.
 - **Limits.** Every v1 transaction carries a compute-unit limit and a
   loaded-accounts data size limit. By default they come from one simulation,
   bounded to 3 s (units × 1.2 + 5,000, at least 20,000; loaded bytes × 1.1 in
