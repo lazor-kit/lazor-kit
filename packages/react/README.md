@@ -325,6 +325,63 @@ transaction is sent with (`transactionOptions.addressLookupTableAccounts`, or
 those of a dApp's v0 transaction), and a preview still over the limit no longer
 fails the call before the prompt.
 
+### Transaction v1 (experimental, devnet only)
+
+`transactionOptions.txVersion: 'v1'` sends a SIMD-0385 v1 transaction: up to
+4096 bytes and 64 addresses, against 1232 bytes for legacy and v0. That carries
+payloads no v0 transaction can, such as swap routes that do not fit even with
+lookup tables. A v1 transaction has no lookup tables.
+
+It is opt-in per call, and used only when all of these hold. Otherwise the
+transaction goes out as v0, exactly as with `'v0'`, and the reason is logged
+once (`[TxV1] … goes out as v0: <reason>`):
+
+| Condition | Reason when it does not hold |
+|---|---|
+| The paymaster declares that it signs v1: `paymasterConfig: { paymasterUrl, acceptsTxV1: true }`. Do not set it for `kora.devnet.lazorkit.com`, which cannot decode v1. | `paymaster` |
+| The paymaster has not refused a v1 transaction in this page (see below). | `refused` |
+| The wallet is on the devnet LazorKit v2 program. Mainnet and v1 wallets never send v1. | `not-devnet-v2` |
+
+`signAndSendTransaction`, `signAndSendWithSession`, `signAndSendWithAuthority`,
+`authorizeAndExecute` (both transactions), `authorizeDeferred` and
+`executeDeferred` take it. `connect` and the session and authority management
+calls ignore it.
+
+- **Too large.** A transaction over the limit of the format it goes out in
+  rejects with `TransactionTooLargeError`, and nothing is sent. v0 is not a
+  fallback for size: a transaction over v1's limits is over v0's too. The
+  check runs before the passkey prompt, on the largest response the portal can
+  return, so the user is not asked to approve a transaction that cannot be
+  sent; the check after signing, on the real bytes, decides
+  (`stage: 'after-signing'`: the passkey approved, nothing was sent, and the
+  approval was not used). For a deferred pair, TX2 is measured before the
+  prompt too, so TX1 never authorizes a TX2 that cannot be sent.
+- **Program limits.** The LazorKit program runs at most 16 inner instructions,
+  and its heap runs out when one inner instruction has more than 64 accounts
+  and all of them have more than 128 (counting one per instruction). Such a
+  payload rejects with `PayloadExceedsProgramLimitsError` before the prompt,
+  whatever the format.
+- **Limits.** Every v1 transaction carries a compute-unit limit and a
+  loaded-accounts data size limit. By default they come from one simulation,
+  bounded to 3 s (units × 1.2 + 5,000, at least 20,000; loaded bytes × 1.1 in
+  32 KiB pages, at least 196,608). Any problem with the simulation gives the
+  maximums (1,400,000 and 64 MiB); in v1 the fee does not depend on them.
+  `computeUnitLimit` (1 to 1,400,000) and `loadedAccountsDataSizeLimit`
+  (196,608 to 67,108,864) set them yourself; out of range is a `RangeError`
+  before the prompt. Legacy and v0 sends still ignore `computeUnitLimit`.
+- **A paymaster that refuses v1.** It answers `PaymasterError` with code
+  -32051 before signing anything. That call fails, and is neither retried nor
+  sent again as v0; later `'v1'` calls to the same paymaster in the page go out
+  as v0. A reload clears this.
+- **Preview.** The portal still previews a v0 transaction of your
+  instructions. For a payload only v1 can carry, its simulation banner may
+  fail, as for a large swap today; signing is not blocked.
+
+| Error | When |
+|---|---|
+| `TransactionTooLargeError` | Only for `'v1'`: the transaction is over the limit of the format it was measured in. `stage` (`'before-signing'` / `'after-signing'`), `format` (`'v1'` / `'v0'`), `transaction` (`'single'`, `'tx1'`, `'tx2'`), `bytes`, `byteLimit`, `addresses`, `addressLimit`, `instructions`, and `v1Unavailable` (the reason above) when it was measured as v0. Nothing was sent. |
+| `PayloadExceedsProgramLimitsError` | Only for `'v1'`: the payload is over the program's limits (`limit`: `'inner-instructions'` or `'heap'`; `innerInstructions`, `maxMetas`, `totalMetas`). Nothing was signed or sent. |
+
 ## API Reference
 
 ### `useWallet()`
@@ -375,8 +432,10 @@ Signs and sends transaction via Paymaster.
 | `payload.instructions` | `TransactionInstruction[]` | Instructions |
 | `payload.transactionOptions` | `object` | Optional config |
 | `transactionOptions.feeToken` | `string` | Token address for gas fees (e.g. USDC). |
-| `transactionOptions.computeUnitLimit` | `number` | Max compute units. |
-| `transactionOptions.addressLookupTableAccounts` | `AddressLookupTableAccount[]` | Lookup tables for v0 txs (the portal preview uses them too). |
+| `transactionOptions.txVersion` | `'legacy' \| 'v0' \| 'v1'` | Wire format. Default `'v0'`. `'v1'` is experimental and devnet only: see [Transaction v1](#transaction-v1-experimental-devnet-only). |
+| `transactionOptions.computeUnitLimit` | `number` | With `'v1'`: the compute-unit limit, 1 to 1,400,000 (default: simulated). Ignored by legacy and v0 sends. |
+| `transactionOptions.loadedAccountsDataSizeLimit` | `number` | With `'v1'` only: the loaded-accounts data size limit in bytes, 196,608 to 67,108,864 (default: simulated). |
+| `transactionOptions.addressLookupTableAccounts` | `AddressLookupTableAccount[]` | Lookup tables for v0 txs (the portal preview uses them too). A v1 transaction has none. |
 | `transactionOptions.clusterSimulation` | `'devnet' \| 'mainnet'` | Network for simulation. |
 
 **Returns**

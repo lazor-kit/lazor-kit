@@ -100,6 +100,13 @@ export {
   MAX_DEFERRED_EXPIRY_SLOTS,
 } from './core/wallet/deferred';
 export type { DeferredFailureContext } from './core/wallet/deferred';
+// txVersion 'v1' (SIMD-0385, experimental, devnet only): a transaction over
+// the limit of the format it goes out in, and a payload the LazorKit program
+// cannot run. Only a 'v1' request throws them, and never after anything was sent.
+export {
+  TransactionTooLargeError,
+  PayloadExceedsProgramLimitsError,
+} from './core/wallet/txv1';
 // Which wallet is a passkey's own (the credential hash alone is public): what
 // connect asks the user when it will not adopt one on its own.
 export {

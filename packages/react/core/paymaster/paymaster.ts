@@ -13,6 +13,39 @@ import { hasDeferredExpiredCode } from '../wallet/deferred';
 export interface PaymasterConfig {
     paymasterUrl: string;
     apiKey?: string;
+    /**
+     * This paymaster signs SIMD-0385 v1 transactions. Default false: a
+     * `txVersion: 'v1'` request then goes out as v0. Experimental, devnet only.
+     * Do not set it for kora.devnet.lazorkit.com, which cannot decode v1.
+     */
+    readonly acceptsTxV1?: boolean;
+}
+
+/**
+ * The code a paymaster answers with when it does not sign v1 transactions. It
+ * refuses before signing anything, so nothing was sent.
+ */
+export const TX_V1_REFUSED_CODE = -32051;
+
+/**
+ * Paymaster URLs that refused a v1 transaction (`TX_V1_REFUSED_CODE`) in this
+ * page session. Later 'v1' requests to them go out as v0. No timer and no
+ * storage: a reload clears it.
+ */
+const refusedTxV1 = new Set<string>();
+
+/** The configuration each paymaster was made with. */
+const configs = new WeakMap<Paymaster, PaymasterConfig>();
+
+/**
+ * Whether a 'v1' request may go to this paymaster: it declared `acceptsTxV1`,
+ * and it has not refused a v1 transaction in this page session.
+ */
+export function txV1Availability(paymaster: Paymaster): 'available' | 'paymaster' | 'refused' {
+    const config = configs.get(paymaster);
+    if (config?.acceptsTxV1 !== true) return 'paymaster';
+    if (refusedTxV1.has(config.paymasterUrl)) return 'refused';
+    return 'available';
 }
 
 /** How long a `signAndSendTransaction` request may take: a paymaster may hold it until the transaction is confirmed. */
@@ -78,6 +111,7 @@ export class Paymaster {
     constructor(config: PaymasterConfig) {
         this.endpoint = config.paymasterUrl;
         this.apiKey = config.apiKey;
+        configs.set(this, config);
     }
 
     private getHeaders(): HeadersInit {
@@ -254,11 +288,14 @@ export class Paymaster {
      *   authorization expired, or an inner program's error with that code)
      *   and no earlier attempt may have been sent: the `PaymasterError`.
      *   Whose 3014 it was is told by the caller (`executeBeforeExpiry`).
+     * - `stopIf` holds for the error: that `PaymasterError`, with `maybeSent`
+     *   set when this or an earlier attempt may have been sent.
      */
     private async sendWithRetries(
         attemptSend: () => Promise<string>,
         maxRetries: number,
         baseDelay: number,
+        stopIf?: (error: PaymasterError) => boolean,
     ): Promise<string> {
         let maybeSent = false;
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -280,6 +317,10 @@ export class Paymaster {
                 // DeferredAuthorizationExpired (3014): the slot only moves on,
                 // so the same bytes can never pass again.
                 if (!maybeSent && hasDeferredExpiredCode(error)) throw error;
+                if (stopIf?.(error)) {
+                    error.maybeSent = maybeSent;
+                    throw error;
+                }
                 if (attempt === maxRetries) {
                     this.logger.error('All retry attempts failed', error);
                     // A later refusal does not undo an earlier attempt whose
@@ -345,5 +386,43 @@ export class Paymaster {
         const feePayerKey = transaction.message.staticAccountKeys[0];
         const serialized = Buffer.from(transaction.serialize()).toString('base64');
         return this.sendWithRetries(() => this.sendOnce(serialized, feePayerKey), maxRetries, baseDelay);
+    }
+
+    /**
+     * Sign and send a transaction that is already encoded (any version), with
+     * the retries and error mapping of `signAndSendVersionedTransaction`: a
+     * retry sends the same bytes, a 3006 is `SignatureReusedError`, a 3014 or
+     * an already-processed answer is not retried, and `maybeSent` says when an
+     * attempt may have been sent.
+     *
+     * A refusal with code -32051 (the paymaster does not sign v1
+     * transactions, and refused before signing) is not retried. This
+     * paymaster's later 'v1' requests in the page session then go out as v0;
+     * the refused transaction itself is never resent in another format.
+     *
+     * @param transaction The wire bytes, with the fee payer's signature slot empty
+     * @param feePayer The fee payer the transaction names, sent as `signer_key`
+     * @returns Transaction signature
+     */
+    async signAndSendRaw(
+        transaction: Uint8Array,
+        feePayer: PublicKey,
+        maxRetries: number = 3,
+        baseDelay: number = 1000,
+    ): Promise<string> {
+        const serialized = Buffer.from(transaction).toString('base64');
+        try {
+            return await this.sendWithRetries(
+                () => this.sendOnce(serialized, feePayer),
+                maxRetries,
+                baseDelay,
+                (error) => error.code === TX_V1_REFUSED_CODE,
+            );
+        } catch (error) {
+            if (error instanceof PaymasterError && error.code === TX_V1_REFUSED_CODE) {
+                refusedTxV1.add(this.endpoint);
+            }
+            throw error;
+        }
     }
 }

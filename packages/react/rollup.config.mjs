@@ -13,6 +13,10 @@ export default createRollupConfig({
         'react-dom',
         'react/jsx-runtime',
         '@solana/web3.js',
+        // A dependency's subpath is not matched by its name above: without
+        // this, the v1 writer's signer would be bundled in, beside the copy
+        // @solana/web3.js already brings.
+        '@noble/curves/ed25519',
         'buffer',
         'crypto'
     ]
