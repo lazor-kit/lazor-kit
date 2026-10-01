@@ -203,6 +203,8 @@ function planLocallySignedTxV1(params: {
         paymaster: params.paymaster,
         feePayer: params.feePayer,
         inner: params.payload.instructions,
+        // A session's or an Ed25519 authority's Execute.
+        execute: 'ed25519',
         drafts: [
             {
                 transaction: 'single',
@@ -248,6 +250,8 @@ async function planDeferredPairTxV1(params: {
         paymaster: params.paymaster,
         feePayer,
         inner: payload.instructions,
+        // TX2, ExecuteDeferred, runs the payload.
+        execute: 'deferred',
         drafts: [
             { transaction: 'tx1', instructions: tx1.instructions, shortest: tx1Shortest.instructions },
             {
@@ -456,6 +460,7 @@ export const signAndSendTransactionAction = async (
                           paymaster,
                           feePayer,
                           inner: payload.instructions,
+                          execute: 'secp256r1',
                           drafts: [
                               {
                                   transaction: 'single',
@@ -1229,6 +1234,7 @@ export const executeDeferredAction = async (
                       paymaster,
                       feePayer,
                       inner: innerInstructionsOf(deferredPayload.compactInstructions),
+                      execute: 'deferred',
                       drafts: [{ transaction: 'tx2', instructions, addressLookupTables: options.addressLookupTableAccounts }],
                       options,
                   })

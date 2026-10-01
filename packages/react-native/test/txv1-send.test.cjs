@@ -512,6 +512,75 @@ test('authorizeDeferred, then executeDeferred: both v1', async () => {
   assert.equal(w.ledger.accounts.has(authorized.value.deferredExecPda.toBase58()), false);
 });
 
+// ─── The program ceilings, and the limits of a v0 fallback ───────────────────
+
+/** A Noop instruction with `metas` account metas over 4 accounts (repeated), 8 bytes of data. */
+const repeated = (metas) =>
+  new TransactionInstruction({
+    programId: NOOP,
+    keys: Array.from({ length: metas }, (_, i) => ({ pubkey: new PublicKey(Buffer.alloc(32, 1 + (i % 4))), isSigner: false, isWritable: false })),
+    data: Buffer.alloc(8, 7),
+  });
+const sixteenBySixteen = () => Array.from({ length: 16 }, () => repeated(16));
+
+test("the program's heap: what the instruction that runs the payload allocates decides, before the portal opens", async () => {
+  // A passkey Execute of 16 x 16: none wider than 64, yet out of memory on the deployed program.
+  const w = world();
+  const a = await execute(w, sixteenBySixteen(), { txVersion: 'v1' });
+  assert.ok(a.error instanceof M.PayloadExceedsProgramLimitsError, `${a.error?.name}: ${a.error?.message}`);
+  assert.equal(a.error.limit, 'heap');
+  assert.ok(a.error.heapBytes > 32_760, String(a.error.heapBytes));
+  // The deferred pair: TX2 (ExecuteDeferred) would run out, so TX1 is never sent.
+  for (const flow of ['authorizeAndExecute', 'authorizeDeferred']) {
+    const S = use(w, { acceptsTxV1: true });
+    const b = await captureConsole(() => S[flow]({ instructions: sixteenBySixteen(), transactionOptions: { txVersion: 'v1' } }, SIGN));
+    assert.ok(b.error instanceof M.PayloadExceedsProgramLimitsError, `${flow}: ${b.error?.name}: ${b.error?.message}`);
+    assert.equal(b.error.limit, 'heap');
+  }
+  assertNothingSent(w);
+
+  // A session's Execute allocates less (no accounts hash): it runs 16 x 16
+  // and one instruction of 128, and not one of 129.
+  for (const [instructions, runs] of [
+    [sixteenBySixteen(), true],
+    [[repeated(128)], true],
+    [[repeated(129)], false],
+  ]) {
+    const s = world();
+    const S = use(s, { acceptsTxV1: true });
+    const r = await captureConsole(() =>
+      S.signAndSendWithSession({ sessionKeypair: s.sessionKey, sessionPda: s.sessionPda, instructions, transactionOptions: { txVersion: 'v1' } }, {}),
+    );
+    if (runs) {
+      assert.equal(r.error, undefined, r.error?.message);
+      assert.equal(s.sent()[0].version, 1);
+    } else {
+      assert.ok(r.error instanceof M.PayloadExceedsProgramLimitsError, `${r.error?.name}: ${r.error?.message}`);
+      assert.equal(r.error.limit, 'heap');
+      assert.equal(sends(s).length, 0);
+    }
+  }
+});
+
+test("a 'v1' request that goes out as v0 does not check the v1 limits, nor the devnet program's ceilings off devnet", async () => {
+  for (const [why, make, accepts] of [
+    ['paymaster', () => world(), null],
+    ['not-devnet-v2', () => world({ cluster: 'mainnet' }), true],
+  ]) {
+    for (const limits of [{ computeUnitLimit: 2_000_000 }, { loadedAccountsDataSizeLimit: 100_000 }]) {
+      const w = make();
+      const { error } = await execute(w, [w.transfer()], { txVersion: 'v1', ...limits }, accepts);
+      assert.equal(error, undefined, `${why} ${JSON.stringify(limits)}: ${error?.name}: ${error?.message}`);
+      assert.equal(w.sent()[0].version, 0);
+    }
+  }
+  // Another LazorKit program decides what it can run, as for a 'v0' request.
+  const m = world({ cluster: 'mainnet' });
+  const r = await execute(m, [repeated(128)], { txVersion: 'v1' });
+  assert.equal(r.error, undefined, `${r.error?.name}: ${r.error?.message}`);
+  assert.equal(m.sent()[0].version, 0);
+});
+
 // ─── Logs of a landed v1 transaction (U10) ──────────────────────────────────
 
 const lazorkitFirst = [

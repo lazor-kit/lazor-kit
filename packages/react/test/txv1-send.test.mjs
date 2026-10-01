@@ -287,21 +287,62 @@ test("U5: limits out of range are a RangeError before the prompt, for 'v1' only"
   });
 });
 
-test('U5: payloads over the program ceilings (17 instructions; the heap rule) are refused before the prompt or the local signature', async () => {
-  for (const [name, limit] of [
-    ['inner17', 'inner-instructions'],
-    ['heap128', 'heap'],
+test("U5: a 'v1' request that goes out as v0 does not check the v1 limits: they are the v1 config's, and v0 ignores them", async () => {
+  for (const [why, options] of [
+    ['paymaster', {}],
+    ['not-devnet-v2', { programId: sdk.PROGRAM_ID_MAINNET, cluster: 'mainnet', paymasterConfig: ACCEPTS }],
   ]) {
-    for (const flow of ['signAndSendTransaction', 'signAndSendWithSession']) {
-      await withCase({ paymasterConfig: ACCEPTS }, async (c) => {
-        const error = await rejects(c.S()[flow](request(c, name, V1)));
-        assert.ok(error instanceof W.PayloadExceedsProgramLimitsError, `${name} ${flow}: ${error.name}: ${error.message}`);
-        assert.equal(error.limit, limit);
-        if (name === 'inner17') assert.equal(error.innerInstructions, 17);
-        else assert.deepEqual([error.maxMetas, error.totalMetas], [128, 129]);
-        assertRefusedBeforeAnything(c, error);
+    for (const limits of [{ computeUnitLimit: 2_000_000 }, { computeUnitLimit: 0 }, { loadedAccountsDataSizeLimit: 100_000 }]) {
+      await withCase(options, async (c) => {
+        await c.S().signAndSendTransaction(request(c, 'transfer1', { ...V1, ...limits }));
+        assert.equal(landed(c)[0].version, 0, `${why} ${JSON.stringify(limits)}`);
+        assert.equal(c.S().error, null);
       });
     }
+  }
+});
+
+test("U5: the program ceilings are the devnet v2 program's: a 'v1' request for another LazorKit program is sent as a 'v0' one would be", async () => {
+  await withCase({ programId: sdk.PROGRAM_ID_MAINNET, cluster: 'mainnet', paymasterConfig: ACCEPTS }, async (c) => {
+    await c.S().signAndSendTransaction(request(c, 'heap128', V1));
+    assert.equal(landed(c)[0].version, 0);
+  });
+  // On devnet v2 they hold whether or not v1 is available: that program cannot run it in any format.
+  await withCase({}, async (c) => {
+    const error = await rejects(c.S().signAndSendTransaction(request(c, 'heap128', V1)));
+    assert.ok(error instanceof W.PayloadExceedsProgramLimitsError, `${error.name}: ${error.message}`);
+    assertRefusedBeforeAnything(c, error);
+  });
+});
+
+test('U5: payloads over the program ceilings (17 instructions; its heap) are refused before the prompt or the local signature', async () => {
+  for (const [flow, name, limit] of [
+    ['signAndSendTransaction', 'inner17', 'inner-instructions'],
+    ['signAndSendTransaction', 'heap128', 'heap'],
+    // No instruction wider than 64 accounts: the rule before passed it.
+    ['signAndSendTransaction', 'heap16x16', 'heap'],
+    ['signAndSendWithSession', 'inner17', 'inner-instructions'],
+    ['signAndSendWithSession', 'heap129', 'heap'],
+    // TX2 (ExecuteDeferred) would run out: the pair is refused, TX1 never sent.
+    ['authorizeAndExecute', 'heap16x16', 'heap'],
+    ['authorizeDeferred', 'heap128', 'heap'],
+  ]) {
+    await withCase({ paymasterConfig: ACCEPTS }, async (c) => {
+      const error = await rejects(c.S()[flow](request(c, name, V1)));
+      assert.ok(error instanceof W.PayloadExceedsProgramLimitsError, `${name} ${flow}: ${error.name}: ${error.message}`);
+      assert.equal(error.limit, limit);
+      if (name === 'inner17') assert.equal(error.innerInstructions, 17);
+      else assert.ok(error.heapBytes > 32_760, `${name} ${flow}: ${error.heapBytes}`);
+      if (name === 'heap128') assert.deepEqual([error.maxMetas, error.totalMetas], [128, 129]);
+      assertRefusedBeforeAnything(c, error);
+    });
+  }
+  // A session's Execute allocates less (no accounts hash): it runs these.
+  for (const name of ['heap128', 'heap16x16']) {
+    await withCase({ paymasterConfig: ACCEPTS }, async (c) => {
+      await c.S().signAndSendWithSession(request(c, name, V1));
+      assertV1(landed(c)[0], [LAZORKIT]);
+    });
   }
 });
 

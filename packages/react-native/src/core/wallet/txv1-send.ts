@@ -63,6 +63,7 @@ import {
   placeholderWebAuthn,
   signTransactionV1,
   type CompiledTransactionV1,
+  type LazorKitExecutePath,
   type TxV1Config,
   type TxV1LimitOptions,
   type TxV1LimitsSource,
@@ -134,7 +135,10 @@ export interface TxV1Request extends TxV1LimitOptions {
   readonly decision?: TxV1Decision;
   /** Which transaction of a deferred pair. Default `'single'`. */
   readonly transaction?: 'single' | 'tx1' | 'tx2';
-  /** The caller's inner instructions, checked against the program's ceilings when no plan was made. */
+  /**
+   * A session send's inner instructions, checked against the program's
+   * ceilings (as a session's Execute runs them) when no plan was made.
+   */
   readonly payload?: readonly TransactionInstruction[];
   /** The passkey lane's floor: the simulation is read from a node at or past it. */
   readonly minContextSlot?: number;
@@ -183,11 +187,16 @@ export function gateTxV1(params: {
   if (params.paymaster.acceptsTxV1 !== true) return { v1: false, reason: 'paymaster' };
   if (refusedTxV1.has(params.paymaster.paymasterUrl)) return { v1: false, reason: 'refused' };
   if (params.feeToken) return { v1: false, reason: 'fee-token' };
-  const programs = params.instructions.map((ix) => ix.programId);
+  if (!targetsDevnetV2(params.instructions)) return { v1: false, reason: 'not-devnet-v2' };
+  return { v1: true };
+}
+
+/** A top-level instruction targets the devnet v2 program, and none another LazorKit program (the gate's program rule). */
+function targetsDevnetV2(instructions: readonly TransactionInstruction[]): boolean {
+  const programs = instructions.map((ix) => ix.programId);
   const devnetV2 = programs.some((id) => id.equals(PROGRAM_ID_DEVNET));
   const other = programs.some((id) => NOT_V1_PROGRAMS.some((not) => not.equals(id)));
-  if (!devnetV2 || other) return { v1: false, reason: 'not-devnet-v2' };
-  return { v1: true };
+  return devnetV2 && !other;
 }
 
 /**
@@ -264,9 +273,13 @@ function originOf(url: string): string {
 /**
  * Decide a passkey flow's format and measure it before the portal opens.
  * Throws, and nothing is signed or sent:
- * - RangeError for a limit out of range;
- * - PayloadExceedsProgramLimitsError when the payload is over the LazorKit
- *   program's ceilings;
+ * - RangeError for a limit out of range, when the request goes out as v1
+ *   (the limits are its config; v0 ignores them, as for a 'v0' request);
+ * - PayloadExceedsProgramLimitsError when the payload is over the devnet v2
+ *   program's ceilings (16 inner instructions, its heap, by what `execute`
+ *   allocates), whether or not v1 is available. A request for another
+ *   LazorKit program (mainnet, protocol v1) is not held to them: that
+ *   program decides, as for a 'v0' request;
  * - TransactionTooLargeError (stage 'before-signing') when the transaction,
  *   or a deferred pair's TX2, cannot be sent in the format decided.
  *
@@ -285,6 +298,8 @@ export async function planTxV1BeforePrompt(params: {
   options: TxV1LimitOptions & { readonly feeToken?: string };
   /** The caller's inner instructions. */
   payload: readonly TransactionInstruction[];
+  /** The LazorKit instruction that runs `payload`, which decides what it allocates. */
+  execute: LazorKitExecutePath;
   payer: PublicKey;
   portalUrl: string;
   draft: (webAuthn: WebAuthnPlaceholder) => readonly TransactionInstruction[];
@@ -295,17 +310,19 @@ export async function planTxV1BeforePrompt(params: {
     addressLookupTables?: readonly AddressLookupTableAccount[];
   }>;
 }): Promise<TxV1Decision> {
-  assertTxV1LimitOptions({
-    computeUnitLimit: params.options.computeUnitLimit,
-    loadedAccountsDataSizeLimit: params.options.loadedAccountsDataSizeLimit,
-  });
-  checkProgramCeilings(params.payload);
   const draft = params.draft(placeholderFor(params.portalUrl));
   const decision = gateTxV1({
     paymaster: params.paymaster,
     instructions: draft,
     feeToken: params.options.feeToken,
   });
+  if (decision.v1) {
+    assertTxV1LimitOptions({
+      computeUnitLimit: params.options.computeUnitLimit,
+      loadedAccountsDataSizeLimit: params.options.loadedAccountsDataSizeLimit,
+    });
+  }
+  if (targetsDevnetV2(draft)) checkProgramCeilings(params.payload, params.execute);
   const measured = {
     decision,
     payer: params.payer,
@@ -413,10 +430,10 @@ export async function sendViaPaymasterTxV1(
   const stage = request.decision ? 'after-signing' : 'before-signing';
   let decision = request.decision;
   if (!decision) {
-    const strip = stripComputeBudget(params.instructions);
-    assertTxV1LimitOptions(callerLimits(request, strip));
-    if (request.payload) checkProgramCeilings(request.payload);
     decision = gateTxV1({ paymaster: params.paymaster, instructions: params.instructions, feeToken: params.feeToken });
+    // The limits are the v1 config's: a request that goes out as v0 ignores them, as a 'v0' request does.
+    if (decision.v1) assertTxV1LimitOptions(callerLimits(request, stripComputeBudget(params.instructions)));
+    if (request.payload && targetsDevnetV2(params.instructions)) checkProgramCeilings(request.payload, 'ed25519');
   }
   measure({
     decision,

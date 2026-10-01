@@ -254,6 +254,8 @@ function planAuthorizeTxV1(params: {
     paymaster: paymasterFor(params.config, params.version),
     options: params.options,
     payload: params.instructions,
+    // TX2, ExecuteDeferred, runs the payload.
+    execute: 'deferred',
     payer: params.feePayer,
     portalUrl: params.config.portalUrl,
     draft: (webAuthn) => params.client.finalizeAuthorize(params.prepared, webAuthn).instructions,
@@ -523,6 +525,7 @@ async function performPasskeyExecute(
             paymaster: paymasterFor(config, version),
             options: txOptions,
             payload: payload.instructions,
+            execute: 'secp256r1',
             payer: feePayer,
             portalUrl: config.portalUrl,
             draft: (webAuthn) =>

@@ -41,6 +41,7 @@ import { type AuthorityTurn, sendAndConfirm } from './sequence';
 import {
     TX_V1_CEILING_CONFIG,
     TransactionTooLargeError,
+    type LazorKitExecutePath,
     assertTxV1LimitOptions,
     assertV1Instructions,
     checkProgramCeilings,
@@ -98,11 +99,16 @@ export function gateTxV1(params: {
 }): TxV1Decision {
     const availability = txV1Availability(params.paymaster);
     if (availability !== 'available') return { v1: false, reason: availability };
-    const programs = params.instructions.map((ix) => ix.programId);
+    if (!targetsDevnetV2(params.instructions)) return { v1: false, reason: 'not-devnet-v2' };
+    return { v1: true, lazorkitProgramId: PROGRAM_ID_DEVNET };
+}
+
+/** Some instruction targets the devnet v2 program, and none another LazorKit program (the gate's program rule). */
+function targetsDevnetV2(instructions: readonly TransactionInstruction[]): boolean {
+    const programs = instructions.map((ix) => ix.programId);
     const devnetV2 = programs.some((id) => id.equals(PROGRAM_ID_DEVNET));
     const elsewhere = programs.some((id) => LAZORKIT_ELSEWHERE.some((other) => id.equals(other)));
-    if (!devnetV2 || elsewhere) return { v1: false, reason: 'not-devnet-v2' };
-    return { v1: true, lazorkitProgramId: PROGRAM_ID_DEVNET };
+    return devnetV2 && !elsewhere;
 }
 
 // ─── Measuring ──────────────────────────────────────────────────────────────
@@ -181,11 +187,14 @@ export interface TxV1RequestOptions {
 /** What a 'v1' request was decided to be, before anything was signed. */
 export interface TxV1Plan {
     readonly decision: TxV1Decision;
-    /** The caller's limits, already range-checked. */
+    /** The caller's limits, range-checked; empty when the request goes out as v0, which does not use them. */
     readonly limits: TxV1LimitOptions;
 }
 
-/** The inner instructions of a deferred payload, shaped for `checkProgramCeilings` (only their account counts matter). */
+/**
+ * The inner instructions of a deferred payload, shaped for `checkProgramCeilings`
+ * on the 'deferred' path, which counts only their accounts.
+ */
 export function innerInstructionsOf(
     compactInstructions: readonly { readonly accountIndexes: readonly number[] }[],
 ): TransactionInstruction[] {
@@ -203,11 +212,17 @@ export function innerInstructionsOf(
  * Plan a 'v1' request before anything is signed: before the passkey prompt
  * (whose WebAuthn bytes `placeholderForPrompt` stands in for), or before the
  * local key signs (session, Ed25519 authority, ExecuteDeferred). Local, no
- * network call. Throws, so that nothing is prompted, signed or sent:
+ * network call. The gate decides first. Throws, so that nothing is prompted,
+ * signed or sent:
  *
- * - `RangeError` for a `computeUnitLimit` or `loadedAccountsDataSizeLimit` out of range;
- * - `PayloadExceedsProgramLimitsError` for an inner payload the program cannot
- *   run (more than 16 instructions, or the heap rule), in any format;
+ * - `RangeError` for a `computeUnitLimit` or `loadedAccountsDataSizeLimit` out
+ *   of range, when the request goes out as v1 (they are its config; v0
+ *   ignores them, as for a 'v0' request);
+ * - `PayloadExceedsProgramLimitsError` for an inner payload the devnet v2
+ *   program cannot run (more than 16 instructions, or more heap than it has,
+ *   by what `execute` allocates), whether or not v1 is available. A request
+ *   for another LazorKit program (mainnet, protocol v1) is not held to them:
+ *   that program decides, as for a 'v0' request;
  * - `TransactionTooLargeError` (stage 'before-signing') for a transaction
  *   that does not fit the chosen format: v1 when the gate passes, measured
  *   with the longest WebAuthn response, so the user is never asked to approve
@@ -221,20 +236,22 @@ export function planTxV1(params: {
     feePayer: PublicKey;
     /** The payload's inner instructions (what the LazorKit instruction executes). */
     inner: readonly TransactionInstruction[];
+    /** The LazorKit instruction that runs `inner`, which decides what it allocates. */
+    execute: LazorKitExecutePath;
     /** Every transaction of the request, in send order. */
     drafts: readonly TxV1Draft[];
     options?: TxV1RequestOptions;
 }): TxV1Plan {
-    const limits: TxV1LimitOptions = {
-        computeUnitLimit: params.options?.computeUnitLimit,
-        loadedAccountsDataSizeLimit: params.options?.loadedAccountsDataSizeLimit,
-    };
+    const instructions = params.drafts.flatMap((draft) => draft.instructions);
+    const decision = gateTxV1({ paymaster: params.paymaster, instructions });
+    const limits: TxV1LimitOptions = decision.v1
+        ? {
+              computeUnitLimit: params.options?.computeUnitLimit,
+              loadedAccountsDataSizeLimit: params.options?.loadedAccountsDataSizeLimit,
+          }
+        : {};
     assertTxV1LimitOptions(limits);
-    checkProgramCeilings(params.inner);
-    const decision = gateTxV1({
-        paymaster: params.paymaster,
-        instructions: params.drafts.flatMap((draft) => draft.instructions),
-    });
+    if (targetsDevnetV2(instructions)) checkProgramCeilings(params.inner, params.execute);
     for (const draft of params.drafts) assertFits(decision, params.feePayer, draft, 'before-signing');
     return { decision, limits };
 }

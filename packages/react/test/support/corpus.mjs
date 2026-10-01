@@ -157,10 +157,31 @@ export function makeCorpus({ web3, sdk, p256, programId = sdk.PROGRAM_ID_DEVNET 
       instructions: () => Array.from({ length: 17 }, () => transfer()),
       lookupTables: [],
     },
-    /** One inner instruction with 128 metas (a repeated account): the program's heap runs out. */
+    /**
+     * One inner instruction with 128 metas (a repeated account): the deployed
+     * devnet program's heap runs out under a passkey Execute or an
+     * ExecuteDeferred; a session's Execute runs it.
+     */
     heap128: {
       describe: 'Noop ix with 128 metas over 4 accounts',
       instructions: () => [noopIx(metasFrom(Array.from({ length: 128 }, (_, i) => freshAccounts('heap', 4)[i % 4]), 1), 'payload/heap', 8)],
+      lookupTables: [],
+    },
+    /** One more meta: a session's Execute runs out of heap too. */
+    heap129: {
+      describe: 'Noop ix with 129 metas over 4 accounts',
+      instructions: () => [noopIx(metasFrom(Array.from({ length: 129 }, (_, i) => freshAccounts('heap', 4)[i % 4]), 1), 'payload/heap', 8)],
+      lookupTables: [],
+    },
+    /**
+     * 16 inner instructions of 16 metas: none wider than 64, yet the deployed
+     * devnet program's heap runs out under a passkey Execute or an
+     * ExecuteDeferred (the accounts-hash preimage doubles to 16,896 bytes).
+     */
+    heap16x16: {
+      describe: '16 Noop ixs, each with 16 metas over 4 accounts',
+      instructions: () =>
+        Array.from({ length: 16 }, () => noopIx(metasFrom(Array.from({ length: 16 }, (_, i) => freshAccounts('heap', 4)[i % 4]), 1), 'payload/heap', 8)),
       lookupTables: [],
     },
     /** v1 near its byte limit: 20 accounts and `dataLength` bytes of data. */
