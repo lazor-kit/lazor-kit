@@ -639,6 +639,38 @@ test("a 'v1' request that goes out as v0 does not check the v1 limits, nor the d
   assert.equal(m.sent()[0].version, 0);
 });
 
+test("acceptsTxV1 is this run's: last run's storage, read after the app set its config, does not turn v1 back on", async () => {
+  const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+  for (const thisRun of [undefined, false, true]) {
+    const w = world();
+    // This run's config, as the provider sets it on mount.
+    use(w, { acceptsTxV1: thisRun });
+    // Storage then answers with last run's: the same paymaster, declared v1-capable,
+    // and a v1 paymaster declared so too.
+    const stored = JSON.parse(await AsyncStorage.getItem('lazor-wallet-store'));
+    stored.state.config.configPaymaster = { ...stored.state.config.configPaymaster, acceptsTxV1: true };
+    stored.state.config.v1ConfigPaymaster = { paymasterUrl: 'http://v1-paymaster.test/', acceptsTxV1: true };
+    await AsyncStorage.setItem('lazor-wallet-store', JSON.stringify(stored));
+    await M.useWalletStore.persist.rehydrate();
+    const { config } = M.useWalletStore.getState();
+    assert.equal(config.configPaymaster.acceptsTxV1, thisRun, `this run: ${thisRun}`);
+    assert.equal(config.v1ConfigPaymaster?.acceptsTxV1, undefined);
+    const { error } = await captureConsole(() =>
+      M.useWalletStore.getState().signAndExecuteTransaction({ instructions: [w.transfer()], transactionOptions: { txVersion: 'v1' } }, SIGN),
+    );
+    assert.equal(error, undefined, error?.message);
+    assert.equal(w.sent()[0].version, thisRun === true ? 1 : 0, `this run: ${thisRun}`);
+  }
+  // A paymaster other than this run's does not take this run's declaration.
+  const o = world();
+  use(o, { acceptsTxV1: true });
+  const stored = JSON.parse(await AsyncStorage.getItem('lazor-wallet-store'));
+  stored.state.config.configPaymaster = { paymasterUrl: 'http://another-paymaster.test/' };
+  await AsyncStorage.setItem('lazor-wallet-store', JSON.stringify(stored));
+  await M.useWalletStore.persist.rehydrate();
+  assert.deepEqual(M.useWalletStore.getState().config.configPaymaster, { paymasterUrl: 'http://another-paymaster.test/' });
+});
+
 // ─── Logs of a landed v1 transaction (U10) ──────────────────────────────────
 
 const lazorkitFirst = [
