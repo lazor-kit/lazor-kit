@@ -562,6 +562,30 @@ test("when v1 is used, the portal previews every account: the caller's lookup ta
   const bytes = assertPreviewShowsEveryAccount(w.rec.portal[0], sent);
   assert.ok(bytes.length > 1232, `${bytes.length} bytes`);
 
+  // Forged tables: the caller's table at the chain's table address, with other accounts. The
+  // portal resolves a preview's lookups on chain, so a preview compiled with it would pay the
+  // chain's entry while the v1 transaction pays the caller's. The preview names the signed recipient.
+  {
+    const f = world();
+    const real = f.lookupTable(48, 'real');
+    const forged = new web3.AddressLookupTableAccount({
+      key: real.key,
+      state: { ...real.state, addresses: Array.from({ length: 48 }, (_, i) => Keypair.fromSeed(Buffer.alloc(32, 100 + i)).publicKey) },
+    });
+    const recipient = forged.state.addresses[47];
+    const instructions = [
+      web3.SystemProgram.transfer({ fromPubkey: f.vaultPda, toPubkey: recipient, lamports: 1_000_000 }),
+      f.noopFrom(forged, 40, 8),
+    ];
+    const r = await execute(f, instructions, { txVersion: 'v1', addressLookupTableAccounts: [forged] });
+    assert.equal(r.error, undefined, r.error?.message);
+    assert.equal(f.sent()[0].version, 1);
+    assertPreviewShowsEveryAccount(f.rec.portal[0], instructions);
+    const { message } = web3.VersionedTransaction.deserialize(Buffer.from(f.rec.portal[0].transaction, 'base64'));
+    const [transfer] = message.compiledInstructions;
+    assert.equal(message.staticAccountKeys[transfer.accountKeyIndexes[1]].toBase58(), recipient.toBase58(), 'the preview pays whom the v1 transaction pays');
+  }
+
   // The deferred pair previews the same instructions.
   for (const flow of ['authorizeAndExecute', 'authorizeDeferred']) {
     const d = world();

@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BLOCK_HEIGHT0, COUNTER0, NOOP_PROGRAM } from './support/corpus.mjs';
+import { BLOCK_HEIGHT0, COUNTER0, NOOP_PROGRAM, h } from './support/corpus.mjs';
 import { setHandlers } from './support/env.mjs';
 import { compact, runCase } from './support/flagoff.mjs';
 import { loadWallet, portal, router, sdk, setup, web3 } from './support/wallet.mjs';
@@ -182,6 +182,35 @@ test("U5: when v1 is used, the passkey approves a preview of every account: the 
     const preview = Buffer.from(portal.opens[0].params.transaction, 'base64');
     assert.ok(preview.length > 1232, `${preview.length} bytes`);
     assertPreviewShowsEveryAccount(preview, sent.instructions);
+  });
+  // The caller's tables need not hold what the chain holds at their addresses, and the portal
+  // resolves a preview's lookups on chain: with forged tables, a preview compiled with them would
+  // pay an account the chain's table lists, while the v1 transaction pays the caller's own. The
+  // preview names the accounts the passkey signs, the transfer's recipient included.
+  await withCase({ paymasterConfig: ACCEPTS }, async (c) => {
+    const forged = (table, label) =>
+      new web3.AddressLookupTableAccount({
+        key: table.key,
+        state: { ...table.state, addresses: Array.from({ length: 32 }, (_, i) => new web3.PublicKey(h(`forged/${label}/${i}`))) },
+      });
+    const [fA, fB] = Object.values(c.corpus.lookupTables).map((table, i) => forged(table, i));
+    const recipient = fA.state.addresses[0];
+    const metas = [...fA.state.addresses.slice(1, 25), ...fB.state.addresses.slice(0, 16)];
+    const instructions = [
+      SystemProgram.transfer({ fromPubkey: c.corpus.vaultPda, toPubkey: recipient, lamports: 1_000_000 }),
+      new web3.TransactionInstruction({
+        programId: new web3.PublicKey(NOOP_PROGRAM),
+        keys: metas.map((pubkey, i) => ({ pubkey, isSigner: false, isWritable: i < 4 })),
+        data: Buffer.alloc(8, 1),
+      }),
+    ];
+    await c.S().signAndSendTransaction({ instructions, transactionOptions: { ...V1, addressLookupTableAccounts: [fA, fB] } });
+    assert.equal(landed(c)[0].version, 1);
+    const previewBytes = Buffer.from(portal.opens[0].params.transaction, 'base64');
+    assertPreviewShowsEveryAccount(previewBytes, instructions);
+    const { message } = VersionedTransaction.deserialize(previewBytes);
+    const [transfer] = message.compiledInstructions;
+    assert.equal(message.staticAccountKeys[transfer.accountKeyIndexes[1]].toBase58(), recipient.toBase58(), 'the preview pays whom the v1 transaction pays');
   });
   // A request that goes out as v0 is sent with the tables, and previewed with them, as a 'v0' request is.
   await withCase({}, async (c) => {
