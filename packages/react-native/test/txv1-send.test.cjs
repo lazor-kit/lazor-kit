@@ -512,7 +512,65 @@ test('authorizeDeferred, then executeDeferred: both v1', async () => {
   assert.equal(w.ledger.accounts.has(authorized.value.deferredExecPda.toBase58()), false);
 });
 
-// ─── The program ceilings, and the limits of a v0 fallback ───────────────────
+// ─── The preview, the program ceilings, the limits of a v0 fallback ──────────
+
+/**
+ * The preview the portal was opened with (its `transaction` parameter): a v0
+ * transaction with no lookup into a table, so that every program and account
+ * of `instructions` is in its message.
+ */
+function assertPreviewShowsEveryAccount(portalParams, instructions) {
+  const bytes = Buffer.from(portalParams.transaction, 'base64');
+  const preview = web3.VersionedTransaction.deserialize(bytes);
+  assert.equal(preview.version, 0);
+  assert.deepEqual(preview.message.addressTableLookups, [], 'no account hidden in a lookup table');
+  const shown = new Set(preview.message.staticAccountKeys.map((k) => k.toBase58()));
+  for (const ix of instructions) {
+    for (const address of [ix.programId, ...ix.keys.map((k) => k.pubkey)]) {
+      assert.ok(shown.has(address.toBase58()), `${address.toBase58()} is in the preview`);
+    }
+  }
+  return bytes;
+}
+
+test("when v1 is used, the portal previews every account: the caller's lookup tables, which v1 does not use, are left out", async () => {
+  // 40 table accounts: over 1232 bytes as a preview without the table. With
+  // it, the preview would show table indexes the portal resolves on chain,
+  // while the v1 transactions carry the caller's own addresses.
+  const payload = (w, table) => [w.transfer(), w.noopFrom(table, 40, 8)];
+  const w = world();
+  const table = w.lookupTable(48);
+  const sent = payload(w, table);
+  const { error } = await execute(w, sent, { txVersion: 'v1', addressLookupTableAccounts: [table] });
+  assert.equal(error, undefined);
+  assert.equal(w.sent()[0].version, 1);
+  const bytes = assertPreviewShowsEveryAccount(w.rec.portal[0], sent);
+  assert.ok(bytes.length > 1232, `${bytes.length} bytes`);
+
+  // The deferred pair previews the same instructions.
+  for (const flow of ['authorizeAndExecute', 'authorizeDeferred']) {
+    const d = world();
+    const t = d.lookupTable(48);
+    const instructions = payload(d, t);
+    const S = use(d, { acceptsTxV1: true });
+    const r = await captureConsole(() => S[flow]({ instructions, transactionOptions: { txVersion: 'v1', addressLookupTableAccounts: [t] } }, SIGN));
+    assert.equal(r.error, undefined, `${flow}: ${r.error?.message}`);
+    assert.equal(d.sent()[0].version, 1);
+    assertPreviewShowsEveryAccount(d.rec.portal[0], instructions);
+  }
+
+  // A request that goes out as v0 is sent with the table and previewed with it, as a 'v0' request is.
+  for (const options of [{ txVersion: 'v1' }, { txVersion: 'v0' }, {}]) {
+    const g = world();
+    const t = g.lookupTable(48);
+    const r = await execute(g, payload(g, t), { ...options, addressLookupTableAccounts: [t] }, null);
+    assert.equal(r.error, undefined);
+    assert.equal(g.sent()[0].version, 0);
+    assert.equal(g.sent()[0].tx.message.addressTableLookups.length, 1);
+    const preview = web3.VersionedTransaction.deserialize(Buffer.from(g.rec.portal[0].transaction, 'base64'));
+    assert.equal(preview.message.addressTableLookups.length, 1, JSON.stringify(options));
+  }
+});
 
 /** A Noop instruction with `metas` account metas over 4 accounts (repeated), 8 bytes of data. */
 const repeated = (metas) =>

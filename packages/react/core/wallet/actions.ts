@@ -483,7 +483,13 @@ export const signAndSendTransactionAction = async (
                 feePayer,
                 recentBlockhash: latest.blockhash,
                 instructions: payload.instructions,
-                addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+                // A v1 transaction is sent without the caller's lookup tables,
+                // so its preview is built without them too: the portal then
+                // shows every account the passkey approves, rather than table
+                // entries it would resolve on chain.
+                addressLookupTables: v1Plan?.decision.v1
+                    ? undefined
+                    : payload.transactionOptions?.addressLookupTableAccounts,
             });
 
             const dialogManager = createDialogManager(config);

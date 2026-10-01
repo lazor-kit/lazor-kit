@@ -118,6 +118,22 @@ function assertV1(tx, programs) {
   assert.ok(tx.bytes <= 4096);
 }
 
+/**
+ * The portal's preview: a v0 transaction with no lookup into a table, so that
+ * every program and account of the caller's instructions is in its message.
+ */
+function assertPreviewShowsEveryAccount(previewBytes, instructions) {
+  const preview = VersionedTransaction.deserialize(previewBytes);
+  assert.equal(preview.version, 0);
+  assert.deepEqual(preview.message.addressTableLookups, [], 'no account hidden in a lookup table');
+  const shown = new Set(preview.message.staticAccountKeys.map((k) => k.toBase58()));
+  for (const ix of instructions) {
+    for (const address of [ix.programId, ...ix.keys.map((k) => k.pubkey)]) {
+      assert.ok(shown.has(address.toBase58()), `${address.toBase58()} is in the preview`);
+    }
+  }
+}
+
 // ── U5: path selection ──────────────────────────────────────────────────
 
 test('U5: with a paymaster that accepts v1, a passkey Execute goes out as v1 with both limits set, and lands', async () => {
@@ -140,16 +156,49 @@ test('U5: with a paymaster that accepts v1, a passkey Execute goes out as v1 wit
   });
 });
 
-test('U5: a 2.2 KB payload that no v0 form can carry goes out as v1; lookup tables only serve the preview', async () => {
+test('U5: a 2.2 KB payload that no v0 form can carry goes out as v1; the caller\'s lookup tables are not used', async () => {
   await withCase({ paymasterConfig: ACCEPTS }, async (c) => {
-    await c.S().signAndSendTransaction(request(c, 'payload2k2', V1));
+    const sent = request(c, 'payload2k2', V1);
+    await c.S().signAndSendTransaction(sent);
     const [tx] = landed(c);
     assertV1(tx, [SECP256R1, LAZORKIT]);
     assert.ok(tx.bytes > 1232, `${tx.bytes} bytes`);
     assert.equal(tx.lookups, undefined);
+    // Nor by the preview: it is over 1232 bytes, and lists every account.
+    const preview = Buffer.from(portal.opens[0].params.transaction, 'base64');
+    assert.ok(preview.length > 1232, `${preview.length} bytes`);
+    assertPreviewShowsEveryAccount(preview, sent.instructions);
   });
   // The same payload as v0 fails, as 3.2.1 fails it.
   assert.equal(golden.cases['web/execute/payload2k2/v0'].steps[0].ok, false);
+});
+
+test("U5: when v1 is used, the passkey approves a preview of every account: the caller's lookup tables, which v1 does not use, are left out", async () => {
+  // lut40's preview is over 1232 bytes without its lookup tables. Compiled
+  // with them, it would show table indexes that the portal resolves on chain,
+  // while the v1 transaction carries the caller's own addresses.
+  await withCase({ paymasterConfig: ACCEPTS }, async (c) => {
+    const sent = request(c, 'lut40', V1);
+    await c.S().signAndSendTransaction(sent);
+    assert.equal(landed(c)[0].version, 1);
+    const preview = Buffer.from(portal.opens[0].params.transaction, 'base64');
+    assert.ok(preview.length > 1232, `${preview.length} bytes`);
+    assertPreviewShowsEveryAccount(preview, sent.instructions);
+  });
+  // A request that goes out as v0 is sent with the tables, and previewed with them, as a 'v0' request is.
+  await withCase({}, async (c) => {
+    await c.S().signAndSendTransaction(request(c, 'lut40', V1));
+    const [tx] = landed(c);
+    assert.equal(tx.version, 0);
+    assert.equal(tx.lookups.length, 2);
+    const preview = VersionedTransaction.deserialize(Buffer.from(portal.opens[0].params.transaction, 'base64'));
+    assert.equal(preview.message.addressTableLookups.length, 2);
+  });
+  await withCase({}, async (c) => {
+    await c.S().signAndSendTransaction(request(c, 'lut40', { txVersion: 'v0' }));
+    const preview = VersionedTransaction.deserialize(Buffer.from(portal.opens[0].params.transaction, 'base64'));
+    assert.equal(preview.message.addressTableLookups.length, 2);
+  });
 });
 
 test('U5: 65 addresses fit no format: TransactionTooLargeError before the prompt, nothing sent', async () => {

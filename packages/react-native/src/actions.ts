@@ -538,7 +538,10 @@ async function performPasskeyExecute(
       connection,
       feePayer,
       instructions: payload.instructions,
-      addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+      // A v1 transaction is sent without the caller's lookup tables, so its
+      // preview is built without them too: the portal then shows every
+      // account the passkey approves, not table entries it resolves on chain.
+      addressLookupTables: v1?.v1 ? undefined : payload.transactionOptions?.addressLookupTableAccounts,
     });
 
     const webAuthnResponse = await signChallengeViaPortal({
@@ -973,12 +976,13 @@ export const authorizeAndExecuteAction = async (
 
         // What the user approves: the inner instructions, compiled with the
         // lookup tables TX2 is sent with (the payloads this flow exists for
-        // are over the packet limit without them).
+        // are over the packet limit without them). A v1 TX2 is sent without
+        // them, and so is its preview, which then lists every account.
         const previewBase64Tx = await buildPreviewTransactionBase64({
           connection,
           feePayer,
           instructions: payload.instructions,
-          addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+          addressLookupTables: v1?.v1 ? undefined : payload.transactionOptions?.addressLookupTableAccounts,
         });
 
         const response = await signChallengeViaPortal({
@@ -1116,7 +1120,8 @@ export const authorizeDeferredAction = async (
           connection,
           feePayer,
           instructions: payload.instructions,
-          addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+          // As in authorizeAndExecute: a v1 TX2 goes without the lookup tables.
+          addressLookupTables: v1?.v1 ? undefined : payload.transactionOptions?.addressLookupTableAccounts,
         });
 
         const response = await signChallengeViaPortal({

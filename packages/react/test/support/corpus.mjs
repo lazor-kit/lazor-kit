@@ -145,6 +145,18 @@ export function makeCorpus({ web3, sdk, p256, programId = sdk.PROGRAM_ID_DEVNET 
       lookupTables: [],
     },
     // ── payloads only a 'v1' request uses (test/txv1-send.test.mjs) ──
+    /**
+     * 40 accounts from tables A and B, 8 B of data: as a preview, over 1,232 B
+     * without the tables and under it with them; as v0, sent with them.
+     */
+    lut40: {
+      describe: 'transfer + Noop ix with 40 accounts (24 from table A, 16 from table B; 4 writable) and 8 B data; lookup tables A and B',
+      instructions: () => [
+        transfer(),
+        noopIx(metasFrom([...lutA.state.addresses.slice(0, 24), ...lutB.state.addresses.slice(0, 16)], 4), 'payload/lut40', 8),
+      ],
+      lookupTables: [lutA, lutB],
+    },
     /** 54 inner addresses: with the passkey Execute's 11 fixed ones, 65 — over v1's 64 (and v0's 64 locks). */
     addresses65: {
       describe: 'transfer + Noop ix with 52 fresh accounts: 65 addresses as a passkey Execute',
