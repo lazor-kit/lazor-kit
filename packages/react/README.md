@@ -139,8 +139,8 @@ wallet gets is always one a signature from this connect verifies against:
   (`resolvePasskeyPublicKey`, `@lazorkit/sdk-legacy` 1.3.0). The two are the
   ownership proof and the connect reply's signature, or one more portal sign
   when the reply has none: **one extra passkey prompt** over the case above,
-  a portal "sign" over a random challenge, with no transaction, for the same
-  passkey.
+  a portal "sign" over a fresh ownership-proof challenge, with no
+  transaction, for the same passkey.
 
 So an existing passkey with no wallet now gets one, for its real key. Closing
 that extra prompt rejects `connect` with `PortalCancelledError`. If the
@@ -256,7 +256,9 @@ or your own handler there.
 Finding wallets yourself with `@lazorkit/sdk-legacy`? Do not take the first
 wallet `findWalletsByAuthority(credentialIdHash)` returns — anyone can plant
 one there. Use `LazorKitClient.findOwnPasskeyWallet` with a proof over
-`createOwnershipChallenge()`; `pickOwnWallet`, `verifyOwnershipProof` and
+`createOwnershipChallenge()` from this package, which is domain-separated
+(see [Signing messages](#signing-messages)) where sdk-legacy's own gives bare
+random bytes; `pickOwnWallet`, `verifyOwnershipProof` and
 `selectWalletByAddress` are re-exported here. To create a wallet for a passkey
 whose key you do not have, see `resolvePasskeyPublicKey` in
 `@lazorkit/sdk-legacy`, and its notes on where the signatures must come from.
@@ -582,6 +584,98 @@ tests check this byte for byte). Safari signs with a random nonce instead, so
 the same message gets a different signature each time. Each one is valid, and
 nothing in the SDK depends on the signature bytes.
 
+## Signing messages
+
+`signMessage` (the hook and the store), `LazorkitWalletAdapter.signMessage`
+and the Wallet Standard `solana:signMessage` never sign the app's bytes as the
+passkey's WebAuthn challenge. Message signatures are domain-separated from
+every other passkey challenge: they sign this challenge instead (format v1):
+
+```
+tag       = UTF-8 "LazorKit signed message v1"     (26 bytes)
+challenge = tag || SHA-256(tag || message)        (58 bytes)
+```
+
+`message` is the UTF-8 bytes of a string, or the bytes given.
+`signedMessageChallenge(message)` computes it, and `SIGNED_MESSAGE_DOMAIN` is
+the tag. The other challenges the SDK asks a passkey for have shapes of their
+own, so no challenge of one kind can be another:
+
+| Challenge | Shape |
+|---|---|
+| Transaction (what the programs verify) | a 32-byte hash |
+| Message | 58 bytes, starting with `LazorKit signed message v1` |
+| Ownership proof (connect) | 59 bytes: `LazorKit ownership proof v1` then 32 random bytes (`createOwnershipChallenge()`, `OWNERSHIP_PROOF_DOMAIN`) |
+
+The portal gets the challenge as `message` and the text to show as
+`displayMessage` (a string, or bytes that are valid UTF-8); a portal that
+shows `displayMessage` checks that `message` is its challenge. The SDK checks
+the portal's reply: one over any other challenge is refused.
+
+**What comes back.** The hook and the store resolve with a
+`SignMessageResult`:
+
+| Field | What it is |
+|---|---|
+| `signature` | The P-256 signature, 64 bytes (r \|\| s, low-S), base64. |
+| `signedPayload` | What the passkey signed: authenticatorData \|\| SHA-256(clientDataJSON), base64. |
+| `clientDataJsonBase64` | The WebAuthn clientDataJSON, base64. Its `challenge` is base64url(challenge). |
+| `authenticatorDataBase64` | The WebAuthn authenticatorData, base64. |
+
+`LazorkitWalletAdapter.signMessage` and the Wallet Standard `signature` are,
+as before, the UTF-8 bytes of a JSON object, now with these four fields. They
+are not a 64-byte Ed25519 signature: a LazorKit wallet's address is a program
+account, with no key to sign with, so the signer is the wallet's passkey.
+
+**Checking one: which wallet signed.** A message signature proves that a
+passkey key signed the message, not which wallet that key belongs to. To
+authenticate a wallet, read the key from the chain, never from the client: a
+server that takes the key from the request accepts anyone's passkey for any
+wallet they name. `verifyWalletMessage` does the lookup:
+
+```ts
+import { Connection } from '@solana/web3.js';
+import { verifyWalletMessage } from '@lazorkit/wallet';
+
+// In the app
+const result = await signMessage('Sign in to example.com\nNonce: 8f2c…');
+// send { wallet: wallet.vaultPda, credentialId: wallet.credentialId, ...result }
+
+// On the server
+const ok = await verifyWalletMessage({
+  connection: new Connection(RPC_URL),
+  cluster: 'mainnet',              // when RPC_URL does not say which cluster
+  wallet,                          // the wallet the client claims (vault or wallet address)
+  credentialId,                    // the passkey's credential id, base64
+  rpId: 'portal.lazor.sh',         // the passkey's relying party: the portal's hostname
+  message: 'Sign in to example.com\nNonce: 8f2c…',
+  ...result,                       // signature, clientDataJsonBase64, authenticatorDataBase64, signedPayload
+  origin: 'https://portal.lazor.sh', // optional: the page that ran the passkey
+});
+```
+
+It is `true` only when the signature is over `signedMessageChallenge(message)`
+(a `webauthn.get` with the user present, under `rpId`) and verifies against
+the key stored on chain in an Owner authority of `wallet` for `credentialId`
+(v2 or v1), and the wallet account still exists. It reads the chain with one
+`getProgramAccounts` per program, as connect does, so use an RPC endpoint that
+allows it. It rejects when the chain cannot be read (treat that as not
+verified). For an adapter or Wallet Standard signature, pass
+`...JSON.parse(new TextDecoder().decode(signature))` instead of `...result`.
+Put your domain and a fresh nonce in the message, and check them, as with any
+sign-in message.
+
+`verifySignedMessage({ message, publicKey, ...result })` is the offline part
+of that check, with no RPC: `true` only when `publicKey`'s passkey signed
+`signedMessageChallenge(message)`, and `false` for any other challenge, the
+raw message bytes included. It never throws. Use it alone only with a key you
+read from the claimed wallet's authority on chain yourself.
+
+`useWallet().verifyMessage` and `verifySignatureBrowser` are deprecated and
+must not be used for authentication: they check only that `signature` is over
+`signedPayload`, not which message was signed, so any assertion the passkey
+ever made passes.
+
 ## API Reference
 
 ### `useWallet()`
@@ -629,18 +723,21 @@ app stays connected (see
 
 #### `signMessage(message, options?)`
 
-Signs a message string key.
+Signs a message with the passkey. The passkey signs
+`signedMessageChallenge(message)`, never the message's bytes (see
+[Signing messages](#signing-messages)).
 
 **Parameters**
 
 | Param | Type | Description |
 |---|---|---|
-| `message` | `string` | Message content |
-| `options.onSuccess` | `(result: { signature: string, signedPayload: string }) => void` | Runs once `isSigning` is `false`, right before the promise resolves (see [Callbacks](#sending-transactions)). |
+| `message` | `string` | Message content, signed as its UTF-8 bytes |
+| `options.onSuccess` | `(result: SignMessageResult) => void` | Runs once `isSigning` is `false`, right before the promise resolves (see [Callbacks](#sending-transactions)). |
 | `options.onFail` | `(error: Error) => void` | Runs with the error the promise rejects with. |
 
 **Returns**
-`Promise<{ signature: string, signedPayload: string }>`
+`Promise<SignMessageResult>`: `{ signature, signedPayload, clientDataJsonBase64, authenticatorDataBase64 }`,
+all base64. Check it with `verifyWalletMessage`.
 
 #### `signAndSendTransaction(payload)`
 
@@ -662,6 +759,50 @@ Signs and sends transaction via Paymaster.
 **Returns**
 `Promise<string>` - Transaction signature, once the transaction is confirmed
 (see [Sending transactions](#sending-transactions)).
+
+### `verifyWalletMessage(params)`
+
+A function the package exports. Resolves `true` when `params.wallet` signed
+`params.message`: the signature is over `signedMessageChallenge(message)` and
+verifies against the key stored on chain in an Owner authority of the wallet
+for `credentialId`, created under `rpId`, and the wallet account still exists.
+A key the client sends is never used. Rejects when the chain cannot be read.
+See [Signing messages](#signing-messages).
+
+| Param | Type | Description |
+|---|---|---|
+| `connection` | `Connection` | The cluster the wallet lives on. |
+| `wallet` | `string \| PublicKey` | The wallet the signer claims: its vault address or wallet PDA. |
+| `credentialId` | `string` | The passkey's credential id, base64. |
+| `rpId` | `string` | The passkey's relying party: the portal's hostname. |
+| `cluster` | `'mainnet' \| 'devnet'` | Optional, for an RPC URL that does not say. |
+| `message`, `signature`, `clientDataJsonBase64`, `authenticatorDataBase64`, `signedPayload`, `origin` | | As for `verifySignedMessage`. |
+
+**Returns**
+`Promise<boolean>`
+
+### `verifySignedMessage(params)`
+
+A function the package exports. `true` when `params.publicKey`'s passkey
+signed a `webauthn.get` over `signedMessageChallenge(params.message)` with the
+user present, and `false` otherwise; it never throws. It says nothing about
+which wallet the key belongs to: to authenticate a wallet, use
+`verifyWalletMessage`, or pass a key read from the wallet's authority on
+chain. See [Signing messages](#signing-messages).
+
+| Param | Type | Description |
+|---|---|---|
+| `message` | `string \| Uint8Array` | The message that was signed. |
+| `publicKey` | `string \| Uint8Array \| number[]` | The passkey's P-256 key, read from chain: 33 bytes (compressed), 65 or 64, or their base64. |
+| `signature` | `string \| Uint8Array` | The 64-byte signature, or its base64. |
+| `clientDataJsonBase64` | `string` | From the `SignMessageResult`. |
+| `authenticatorDataBase64` | `string` | From the `SignMessageResult`. |
+| `signedPayload` | `string` | Optional; checked when given. |
+| `rpId` | `string` | Optional: the authenticatorData's rpIdHash must be its SHA-256. |
+| `origin` | `string` | Optional: clientDataJSON's `origin` must equal it. |
+
+**Returns**
+`boolean`
 
 ### `forgetStoredKeys()`
 

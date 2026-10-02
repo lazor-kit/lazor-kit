@@ -38,6 +38,7 @@ import { sendAndConfirm, withAuthority } from '../wallet/sequence';
 import { buildPreviewTransactionBase64 } from '../wallet/preview';
 import { clearPendingConfirmation, connectAbandoned, connectFreshWallet } from '../wallet/resolveWallet';
 import type { OnConfirmWallet } from '../wallet/confirmation';
+import type { SignMessageResult } from '../message/signedMessage';
 import { wipeKey } from '../keys';
 import type { DisconnectOptions } from '../types';
 import { Buffer } from 'buffer';
@@ -598,24 +599,32 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         throw new WalletSignTransactionError('Lazorkit Wallet does not support signAllTransactions. Please use sendTransaction or signAndSendTransaction.');
     }
 
+    /**
+     * Signs `message` with the passkey. The passkey signs
+     * `signedMessageChallenge(message)`, never the message's own bytes, so the
+     * signature cannot pass for a transaction approval.
+     *
+     * Resolves with the UTF-8 bytes of a JSON object: a `SignMessageResult`
+     * (`signature`, `signedPayload`, `clientDataJsonBase64`,
+     * `authenticatorDataBase64`). It is not a 64-byte Ed25519 signature: the
+     * wallet's address is a program account, not a key. Check it with
+     * `verifyWalletMessage({ connection, wallet, credentialId, rpId, message,
+     * ...JSON.parse(text) })`, which reads the passkey's key from chain.
+     */
     async signMessage(message: Uint8Array): Promise<Uint8Array> {
         const dialogManager = this._createDialogManager();
         try {
             if (!this._wallet || !this._publicKey) throw new WalletDisconnectedError();
-            const messageBase64 = Buffer.from(message).toString('base64');
-            const signResult = await dialogManager.openSign(
-                messageBase64,
-                '',
-                this._wallet.credentialId,
-                this._config.clusterSimulation,
-            );
+            const signResult = await dialogManager.openSignMessage(message, this._wallet.credentialId);
 
-            const encoded = JSON.stringify({
+            const result: SignMessageResult = {
                 signature: signResult.signature,
                 signedPayload: signResult.signedPayload,
-            });
+                clientDataJsonBase64: signResult.clientDataJsonBase64,
+                authenticatorDataBase64: signResult.authenticatorDataBase64,
+            };
 
-            return new Uint8Array(Buffer.from(encoded));
+            return new Uint8Array(Buffer.from(JSON.stringify(result)));
         } catch (error: any) {
             this.emit('error', error);
             throw error;
