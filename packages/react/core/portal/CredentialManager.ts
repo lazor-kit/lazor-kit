@@ -5,12 +5,36 @@
 import { EventEmitter } from 'eventemitter3';
 import { CredentialData } from './types/DialogTypes';
 
+/**
+ * The origin of `portalUrl`, the only page the credentials may reach. Null
+ * when it has none to address (not an absolute URL, or an opaque origin such
+ * as a `data:` URL's): then nothing is sent.
+ */
+function originOf(portalUrl: string): string | null {
+  try {
+    const { origin } = new URL(portalUrl);
+    return origin && origin !== 'null' ? origin : null;
+  } catch {
+    return null;
+  }
+}
+
 export class CredentialManager extends EventEmitter {
   private iframeRef: HTMLIFrameElement | null = null;
   private retryDelays = [200, 400, 800, 1500, 3000];
+  /**
+   * Where the credentials go: the portal's origin. The iframe's window gets
+   * them only while it shows a page of that origin, so a frame navigated (or
+   * redirected) anywhere else receives nothing. Never `'*'`, which handed the
+   * credential id, passkey public key and wallet address to whatever page the
+   * iframe showed.
+   */
+  private readonly targetOrigin: string | null;
 
-  constructor() {
+  /** @param portalUrl - The portal the dialog's iframe shows (`DialogManagerConfig.portalUrl`). */
+  constructor(portalUrl: string) {
     super();
+    this.targetOrigin = originOf(portalUrl);
   }
 
   /**
@@ -63,8 +87,9 @@ export class CredentialManager extends EventEmitter {
   private performCredentialSync(force: boolean): void {
     if (!this.iframeRef?.contentWindow) {
       throw new Error('Cannot sync credentials: iframe reference not available');
-      return;
     }
+    const targetOrigin = this.targetOrigin;
+    if (!targetOrigin) return;
 
     // Get credentials from localStorage
     const credentialId = localStorage.getItem('CREDENTIAL_ID') || '';
@@ -87,14 +112,14 @@ export class CredentialManager extends EventEmitter {
     };
 
     try {
-      this.iframeRef.contentWindow.postMessage(message, '*');
+      this.iframeRef.contentWindow.postMessage(message, targetOrigin);
 
       // Retry sync multiple times to ensure delivery
       this.retryDelays.forEach((delay) => {
         setTimeout(() => {
           try {
             if (this.iframeRef?.contentWindow) {
-              this.iframeRef.contentWindow.postMessage(message, '*');
+              this.iframeRef.contentWindow.postMessage(message, targetOrigin);
             }
           } catch (err) {
             // Ignore errors during retry

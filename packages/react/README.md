@@ -244,6 +244,9 @@ LazorkitWalletAdapter({ onConfirmWallet, trustedAuthorities, watchMints, ...
 `'throw'`, catch the error (wallet-adapter's `onError`), then set
 `adapter.confirmWallet = choice.vault` and connect again. A second `connect`
 while one is running waits for it rather than opening another portal.
+`adapter.disconnect()` deletes the session key the SDK keeps, as the store's
+`disconnect()` does; `adapter.disconnect({ keepSessionKeys: true })` keeps it
+(see [Session and authority keys](#session-and-authority-keys)).
 
 `registerLazorkitWallet({ ... })` (the Wallet Standard wallet) takes the same
 options except `onConfirmWallet: 'throw'`, which it rejects: `standard:connect`
@@ -528,6 +531,13 @@ function SignOutButton() {
   session's too). If IndexedDB fails to delete it, `disconnect` still succeeds
   and logs a warning; the key stays bound to its wallet. `forgetStoredKeys()`
   rejects instead, for a sign-out that must know.
+- `LazorkitWalletAdapter.disconnect()` (what a wallet-adapter UI's Disconnect
+  calls) and the Wallet Standard `standard:disconnect` delete the session key
+  the same way: from IndexedDB, this page's memory and any plaintext, whatever
+  `keyStorage` the provider uses. `adapter.disconnect({ keepSessionKeys: true
+  })` keeps it; `standard:disconnect` takes no options, so it always deletes
+  it. They keep the authority key, as `disconnect()` does. (Earlier releases
+  left the session key in place on these two paths.)
 - `disconnect` keeps the authority key. Like a kept session key, it signs only
   once the wallet it was registered for is connected again (see above). On a
   shared computer, call `forgetStoredKeys()` at sign-out.

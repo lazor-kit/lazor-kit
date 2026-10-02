@@ -106,7 +106,7 @@ export class DialogManager extends EventEmitter {
   constructor(config: DialogManagerConfig) {
     super();
     this.config = config;
-    this.credentialManager = new CredentialManager();
+    this.credentialManager = new CredentialManager(config.portalUrl);
     this.logger.debug('Created dialog manager');
     this.setupMessageListener();
   }

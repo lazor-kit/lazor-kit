@@ -39,6 +39,8 @@ import { buildPreviewTransactionBase64 } from '../wallet/preview';
 import { clearPendingConfirmation, connectAbandoned, connectFreshWallet } from '../wallet/resolveWallet';
 import type { OnConfirmWallet } from '../wallet/confirmation';
 import type { SignMessageResult } from '../message/signedMessage';
+import { wipeKey } from '../keys';
+import type { DisconnectOptions } from '../types';
 import { Buffer } from 'buffer';
 import { DEFAULTS, DEFAULT_COMMITMENT } from '../../config';
 
@@ -104,6 +106,13 @@ export const DEFAULT_CONFIG: LazorkitAdapterConfig = {
         paymasterUrl: DEFAULTS.PAYMASTER_URL,
     },
 };
+
+/**
+ * `LazorkitWalletAdapter.disconnect`'s options: `keepSessionKeys`, as the
+ * store's `disconnect` takes it. wallet-adapter UIs call `disconnect()`
+ * without any, which deletes the session key.
+ */
+export type LazorkitAdapterDisconnectOptions = Pick<DisconnectOptions, 'keepSessionKeys'>;
 
 export interface LazorkitSendTransactionOptions extends SendTransactionOptions {
     extraInstructions?: TransactionInstruction[];
@@ -400,7 +409,18 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         return { connection, paymaster, client };
     }
 
-    async disconnect(): Promise<void> {
+    /**
+     * Disconnects the wallet, as the store's `disconnect` does: the session
+     * key the SDK keeps (`createSession`) is deleted — from IndexedDB, this
+     * page's memory and any plaintext an earlier release left, whichever
+     * wallet it is for — unless `options.keepSessionKeys`. The stored wallet
+     * is shared with the store, so a session key left behind would outlive
+     * the sign-out the user asked for. The authority key is kept, and signs
+     * only once its wallet is connected again. A key that cannot be deleted
+     * is logged, not thrown. The Wallet Standard `standard:disconnect` takes
+     * no options, so it always deletes it.
+     */
+    async disconnect(options?: LazorkitAdapterDisconnectOptions): Promise<void> {
         // A connect still running is abandoned: its portal or chooser closes,
         // and it connects nothing (see connect).
         const running = this._connectAttempt;
@@ -409,7 +429,15 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         running?.abort.abort();
         clearPendingConfirmation();
         this.confirmWallet = undefined;
-        await StorageManager.clearWallet();
+        try {
+            await StorageManager.clearWallet();
+        } finally {
+            // Whatever else failed: the session key goes with the wallet, and
+            // is gone before any 'disconnect' listener runs. Where the store
+            // keeps it (`keyStorage`) is not known here, so every place is
+            // cleared ('memory' clears a subset of what 'auto' does).
+            if (!options?.keepSessionKeys) await wipeKey('auto', 'session');
+        }
         this._wallet = null;
         this._publicKey = null;
         this._emitToApp('disconnect');
