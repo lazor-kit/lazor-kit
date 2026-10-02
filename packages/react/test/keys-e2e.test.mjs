@@ -12,8 +12,9 @@
 // refused unless its own wallet is connected. A session or authority that
 // lands after the sign-out keeps no key, a key stored later is not written
 // back once deleted, a stored record that names another wallet is not
-// trusted, and addAuthority's role is checked before anything is read. Run
-// with `pnpm test`.
+// trusted, and addAuthority's role is checked before anything is read. The
+// wallet-adapter's and the Wallet Standard's disconnect delete the session key
+// as the store's does. Run with `pnpm test`.
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import { test, beforeEach, after } from 'node:test';
@@ -734,6 +735,115 @@ test('addAuthority → disconnect → connect again: the authority key is kept, 
     await W.useWalletStore.getState().signAndSendWithAuthority({ instructions: transfer() });
     assert.equal(approvals.length, before, 'no passkey prompt');
     assertSignedBy(sent.at(-1), new PublicKey(authorityPublicKey));
+    assertNoPlaintext();
+});
+
+// ─── The wallet-adapter and Wallet Standard disconnect ──────────────────────
+
+const adapterConfig = { rpcUrl: RPC, portalUrl: PORTAL, paymasterConfig, cluster: 'devnet' };
+
+/** A `LazorkitWalletAdapter` connected to `walletPda`, saved as connect saves it. */
+async function connectedAdapter(W, walletPda = WALLET) {
+    await W.StorageManager.saveWallet(walletRecord(W, walletPda));
+    const adapter = new W.LazorkitWalletAdapter(adapterConfig);
+    await adapter.connect();
+    assert.equal(adapter.connected, true);
+    return adapter;
+}
+
+/** A session created through the store, its key kept in IndexedDB. */
+async function keptSession(W) {
+    connect(W);
+    const created = await W.useWalletStore.getState().createSession({ unrestricted: true });
+    landed(created.sessionPda);
+    assert.equal((await storedRecord('session')).publicKey, created.sessionPublicKey);
+    return created;
+}
+
+test("LazorkitWalletAdapter.disconnect() deletes the session key, as the store's disconnect does, before 'disconnect' is emitted", async () => {
+    const W = await load();
+    await keptSession(W);
+    const adapter = await connectedAdapter(W);
+    let atEvent;
+    adapter.once('disconnect', () => (atEvent = storedRecord('session')));
+
+    await adapter.disconnect();
+    assert.equal(adapter.connected, false);
+    assert.equal(await atEvent, undefined, "gone when 'disconnect' is emitted");
+    assert.equal(await storedRecord('session'), undefined, 'deleted from IndexedDB');
+    // The store on the same page has nothing left to sign with.
+    await assert.rejects(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /No session key found/);
+    assert.equal(sent.length, 1, 'only the createSession');
+    assertNoPlaintext();
+});
+
+test('LazorkitWalletAdapter.disconnect({ keepSessionKeys: true }) keeps the session key, which signs for its wallet again', async () => {
+    const W = await load();
+    const { sessionPublicKey } = await keptSession(W);
+    const adapter = await connectedAdapter(W);
+
+    await adapter.disconnect({ keepSessionKeys: true });
+    assert.equal(adapter.connected, false);
+    assert.equal((await storedRecord('session')).publicKey, sessionPublicKey, 'kept');
+
+    await reconnect(W, WALLET);
+    await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+    assertSignedBy(sent.at(-1), new PublicKey(sessionPublicKey));
+    assertNoPlaintext();
+});
+
+test('LazorkitWalletAdapter.disconnect() keeps the authority key, as the store does', async () => {
+    const W = await load();
+    connect(W);
+    const { authorityPda, authorityPublicKey } = await W.useWalletStore.getState().addAuthority({ role: W.ROLE_ADMIN });
+    landed(authorityPda);
+    const adapter = await connectedAdapter(W);
+    await adapter.disconnect();
+    assert.equal((await storedRecord('authority')).publicKey, authorityPublicKey);
+});
+
+test("keyStorage='memory': LazorkitWalletAdapter.disconnect() deletes the session key this page holds in memory", async () => {
+    const W = await load({ keyStorage: 'memory' });
+    connect(W);
+    const { sessionPda } = await W.useWalletStore.getState().createSession({ unrestricted: true });
+    landed(sessionPda);
+    await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+    const adapter = await connectedAdapter(W);
+
+    await adapter.disconnect();
+    await assert.rejects(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /No session key found/);
+    assertNoPlaintext();
+});
+
+/** The Wallet Standard wallet `registerLazorkitWallet` registers, as an app that loads after it receives it. */
+function registeredStandardWallet(W) {
+    // registerWallet's own announcement is a Node `Event`, which jsdom's
+    // window refuses (and logs); an app that loads later asks again with
+    // 'wallet-standard:app-ready', which is how this page receives it.
+    const error = console.error;
+    console.error = () => {};
+    try {
+        W.registerLazorkitWallet(adapterConfig);
+    } finally {
+        console.error = error;
+    }
+    const registered = [];
+    window.dispatchEvent(new window.CustomEvent('wallet-standard:app-ready', { detail: { register: (wallet) => registered.push(wallet) } }));
+    return registered.at(-1);
+}
+
+test('the Wallet Standard standard:disconnect deletes the session key', async () => {
+    const W = await load();
+    await keptSession(W);
+    await W.StorageManager.saveWallet(walletRecord(W, WALLET));
+    const wallet = registeredStandardWallet(W);
+    const { accounts } = await wallet.features['standard:connect'].connect();
+    assert.equal(accounts.length, 1);
+
+    await wallet.features['standard:disconnect'].disconnect();
+    assert.deepEqual(wallet.accounts, []);
+    assert.equal(await storedRecord('session'), undefined, 'deleted from IndexedDB');
+    await assert.rejects(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /No session key found/);
     assertNoPlaintext();
 });
 

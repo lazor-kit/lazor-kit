@@ -7,6 +7,7 @@ import {
   TransactionInstruction,
 } from '@solana/web3.js';
 import type { DeferredPayload, OwnershipProof, SessionAction, WebAuthnResponse } from './program';
+import type { SignMessageResult } from './core/message/signedMessage';
 
 /**
  * Core wallet types
@@ -486,7 +487,7 @@ export interface WalletStateClient {
   connect: (options: ConnectOptions) => Promise<WalletInfo>;
   disconnect: (options?: DisconnectOptions) => Promise<void>;
   signAndExecuteTransaction: (payload: SignAndSendTransactionPayload, options: SignOptions) => Promise<string>;
-  signMessage: (message: string, options: SignOptions) => Promise<{ signature: string; signedPayload: string }>;
+  signMessage: (message: string, options: SignOptions) => Promise<SignMessageResult>;
   createSession: (
     payload: CreateSessionPayload,
     options: SignOptions,
@@ -561,7 +562,12 @@ export interface LazorWalletHook {
   connect: (options: ConnectOptions) => Promise<WalletInfo>;
   disconnect: (options?: DisconnectOptions) => Promise<void>;
   signAndSendTransaction: (payload: SignAndSendTransactionPayload, options: SignOptions) => Promise<string>;
-  signMessage: (message: string, options: SignOptions) => Promise<{ signature: string; signedPayload: string }>;
+  /**
+   * The passkey signs `signedMessageChallenge(message)`, not the message's
+   * bytes. Check the result with `verifyWalletMessage`, which reads the
+   * passkey's key from chain.
+   */
+  signMessage: (message: string, options: SignOptions) => Promise<SignMessageResult>;
 
   // Session
   createSession: (
