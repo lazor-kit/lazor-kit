@@ -146,8 +146,18 @@ class LazorkitWalletStandard implements Wallet {
         };
     }
 
+    /**
+     * Calls the dApp's listeners, each on its own: what one throws is logged,
+     * and neither stops the others nor fails the connect or disconnect that
+     * raised the event.
+     */
     private _emit(event: string, ...args: any[]) {
-        // @ts-ignore
-        this._listeners[event]?.forEach((l: any) => l(...args));
+        for (const listener of [...(this._listeners[event] ?? [])]) {
+            try {
+                listener(...args);
+            } catch (error) {
+                console.error(`[LazorKit] A Wallet Standard '${event}' listener threw:`, error);
+            }
+        }
     }
 }

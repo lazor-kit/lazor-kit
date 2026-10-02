@@ -1,5 +1,6 @@
 import {
     BaseWalletAdapter,
+    EventEmitter,
     WalletName,
     WalletReadyState,
     WalletConnectionError,
@@ -29,12 +30,10 @@ import {
     clientFor,
     versionOf,
     readPasskeyPubkey,
-    isRetiredDeploymentError,
-    V1WalletRetiredError,
     registerCluster,
     V1WalletMigratedError,
 } from '../program';
-import { getCredentialHash } from '../wallet/utils';
+import { getCredentialHash, toActionError } from '../wallet/utils';
 import { sendAndConfirm, withAuthority } from '../wallet/sequence';
 import { buildPreviewTransactionBase64 } from '../wallet/preview';
 import { clearPendingConfirmation, connectAbandoned, connectFreshWallet } from '../wallet/resolveWallet';
@@ -47,6 +46,22 @@ import { DEFAULTS, DEFAULT_COMMITMENT } from '../../config';
 // ============================================================================
 
 export const LazorkitWalletName = 'Lazorkit Wallet' as WalletName<'Lazorkit Wallet'>;
+
+/** One listener as eventemitter3 stores it (see `_registeredListeners`). */
+interface AppListener {
+    fn: (...args: unknown[]) => void;
+    context: unknown;
+    once: boolean;
+}
+
+function isAppListener(value: unknown): value is AppListener {
+    return (
+        typeof value === 'object' &&
+        value !== null &&
+        typeof (value as AppListener).fn === 'function' &&
+        typeof (value as AppListener).once === 'boolean'
+    );
+}
 
 export interface LazorkitAdapterConfig {
     rpcUrl: string;
@@ -298,7 +313,57 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
     private _updateWalletState(wallet: WalletInfo) {
         this._wallet = wallet;
         this._publicKey = new PublicKey(wallet.vaultPda ?? wallet.smartWallet);
-        this.emit('connect', this._publicKey);
+        const publicKey = this._publicKey;
+        this._emitToApp('connect', publicKey);
+    }
+
+    /**
+     * Tells the app's listeners that the wallet connected or disconnected,
+     * each on its own, as the Wallet Standard wallet does (see standard.ts
+     * `_emit`). What a listener throws is the app's own bug: it is logged, and
+     * it neither stops the listeners after it (wallet-adapter-react's
+     * `WalletProvider` among them, which tracks `connected` from its own
+     * `connect` listener) nor turns a connect or disconnect that has happened
+     * into a failure or an 'error' event.
+     *
+     * Each listener runs as `emit` would run it: in the order registered,
+     * with the `context` given to `on`, a `once` listener removed before it
+     * runs, and the listeners registered when the event fired.
+     */
+    private _emitToApp(event: 'connect' | 'disconnect', ...args: unknown[]): void {
+        const registered = this._registeredListeners(event);
+        if (!registered) {
+            // Not eventemitter3's layout: emit as usual, a throw stops the rest.
+            try {
+                (this as unknown as EventEmitter).emit(event, ...args);
+            } catch (error) {
+                console.error(`[LazorKit] A '${event}' listener threw:`, error);
+            }
+            return;
+        }
+        for (const { fn, context, once } of registered) {
+            if (once) this.removeListener(event, fn, undefined, true);
+            try {
+                fn.apply(context, args);
+            } catch (error) {
+                console.error(`[LazorKit] A '${event}' listener threw:`, error);
+            }
+        }
+    }
+
+    /**
+     * The listeners registered for `event`, as eventemitter3 (v4, v5) keeps
+     * them: one `{ fn, context, once }`, or an array of them. Null when its
+     * storage is not laid out that way.
+     */
+    private _registeredListeners(event: string): AppListener[] | null {
+        const prefixed = (EventEmitter as unknown as { prefixed?: string | boolean }).prefixed;
+        const events = (this as unknown as { _events?: Record<string, unknown> })._events;
+        if (!events || typeof events !== 'object') return null;
+        const stored = events[typeof prefixed === 'string' ? prefixed + event : event];
+        if (stored === undefined) return [];
+        const list = Array.isArray(stored) ? [...stored] : [stored];
+        return list.every(isAppListener) ? list : null;
     }
 
     private _createDialogManager(): DialogManager {
@@ -328,6 +393,7 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
             version === 1
                 ? (this._config.v1PaymasterConfig ?? this._config.paymasterConfig)
                 : this._config.paymasterConfig,
+            { protocolVersion: version },
         );
         const client: LazorKitClient = clientFor(version, connection);
         return { connection, paymaster, client };
@@ -345,7 +411,7 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         await StorageManager.clearWallet();
         this._wallet = null;
         this._publicKey = null;
-        this.emit('disconnect');
+        this._emitToApp('disconnect');
     }
 
     /**
@@ -489,9 +555,8 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
             });
 
         } catch (error: any) {
-            const err = isRetiredDeploymentError(error, this._wallet ? versionOf(this._wallet) : undefined)
-                ? new V1WalletRetiredError(error)
-                : error;
+            // A retired v1 wallet's failure as `V1WalletRetiredError`, once.
+            const err: any = toActionError(error, this._wallet ? versionOf(this._wallet) : undefined);
             this.emit('error', err);
             throw err;
         }

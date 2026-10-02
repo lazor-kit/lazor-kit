@@ -12,6 +12,7 @@ import { StorageManager } from '../core/storage';
 import type { ReactNode } from 'react';
 import { useWalletStore } from './store';
 import { DEFAULTS } from '../config';
+import { migrateLegacyKeys } from '../core/keys';
 
 import { PaymasterConfig } from '../core/paymaster/paymaster';
 import type { OnConfirmWallet } from '../core/wallet/confirmation';
@@ -47,6 +48,19 @@ export interface LazorkitProviderProps {
    * handed to someone else is not adopted. Default none.
    */
   watchMints?: string[];
+  /**
+   * Where the SDK keeps the session and authority keys it generates
+   * (`createSession`, `addAuthority`). `'auto'` (default): IndexedDB, which
+   * survives a reload. There the key is a non-extractable WebCrypto key: no
+   * script can read it, though one on the page can make it sign. In browsers
+   * without WebCrypto Ed25519 (iOS 16, Chrome 136 and older) it is a sealed
+   * seed that any script on the page can decrypt. Either way it is at rest in
+   * the browser profile. `'memory'`: this page only, nothing at rest; the key
+   * is gone on reload. Plaintext keys an earlier release left in localStorage
+   * are moved when the provider mounts; `forgetStoredKeys()` deletes them all.
+   * See the README, "Session and authority keys".
+   */
+  keyStorage?: 'auto' | 'memory';
 }
 
 export const LazorkitProvider = (props: LazorkitProviderProps) => {
@@ -60,6 +74,7 @@ export const LazorkitProvider = (props: LazorkitProviderProps) => {
     onConfirmWallet,
     trustedAuthorities,
     watchMints,
+    keyStorage = 'auto',
   } = props;
 
   const { setConfig } = useWalletStore();
@@ -85,6 +100,12 @@ export const LazorkitProvider = (props: LazorkitProviderProps) => {
     };
   }, [wallet, connection]);
 
+  // Session and authority keys an earlier release kept in localStorage as
+  // plaintext: moved now, not only when the app next uses one.
+  useEffect(() => {
+    void migrateLegacyKeys(keyStorage);
+  }, [keyStorage]);
+
   useEffect(() => {
     // Initialize configuration in store
     setConfig({
@@ -96,6 +117,7 @@ export const LazorkitProvider = (props: LazorkitProviderProps) => {
       onConfirmWallet,
       trustedAuthorities,
       watchMints,
+      keyStorage,
     });
   }, [
     rpcUrl,
@@ -106,6 +128,7 @@ export const LazorkitProvider = (props: LazorkitProviderProps) => {
     onConfirmWallet,
     trustedAuthorities,
     watchMints,
+    keyStorage,
     setConfig,
   ]);
 

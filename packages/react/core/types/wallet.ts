@@ -28,11 +28,16 @@ export interface WalletState {
     setError: (error: Error | null) => void;
     clearError: () => void;
 
-    // Actions
+    // Actions. A call's `onSuccess` / `onFail` runs once the action is over
+    // (`isSigning` / `isConnecting` already false), right before its promise
+    // settles the same way; what a callback throws is logged and changes
+    // nothing. A call refused because another is running ('Already signing',
+    // 'Already connecting') calls `onFail` at once, while the flag is still
+    // `true`: it belongs to the call that is running.
     connect: (options?: ConnectOptions & { feeMode?: 'paymaster' | 'user' }) => Promise<WalletInfo>;
-    disconnect: () => Promise<void>;
+    disconnect: (options?: DisconnectOptions) => Promise<void>;
     signAndSendTransaction: (payload: SignAndSendTransactionPayload) => Promise<string>;
-    signMessage: (message: string) => Promise<{ signature: string, signedPayload: string }>;
+    signMessage: (message: string, options?: SignMessageOptions) => Promise<{ signature: string, signedPayload: string }>;
 
     // Session key actions
     createSession: (payload?: CreateSessionPayload) => Promise<{ sessionPda: string; sessionPublicKey: string }>;
@@ -40,8 +45,9 @@ export interface WalletState {
     signAndSendWithSession: (payload: SignAndSendTransactionPayload) => Promise<string>;
 
     // Ed25519 authority actions
-    addAuthority: (payload?: AddAuthorityPayload) => Promise<{ authorityPda: string; authorityPublicKey: string }>;
-    removeAuthority: (targetAuthorityPda: string) => Promise<void>;
+    /** `payload.role` is required: see `AddAuthorityPayload.role`. */
+    addAuthority: (payload: AddAuthorityPayload) => Promise<{ authorityPda: string; authorityPublicKey: string }>;
+    removeAuthority: (targetAuthorityPda: string, options?: RemoveAuthorityOptions) => Promise<void>;
     signAndSendWithAuthority: (payload: SignAndSendTransactionPayload) => Promise<string>;
 
     // Deferred execution
@@ -76,11 +82,12 @@ export interface CreateSessionPayload {
     readonly unrestricted?: boolean;
     /**
      * Optional external session key to register as the authority. When
-     * omitted the SDK generates a fresh keypair client-side and persists
-     * its secretKey to localStorage for later signing. When provided, the
-     * SDK registers this pubkey on-chain without touching localStorage —
-     * useful for delegating to a backend / agent that already holds the
-     * matching private key.
+     * omitted the SDK generates a fresh key client-side and keeps it for
+     * `signAndSendWithSession`: a non-extractable WebCrypto key in IndexedDB
+     * (see `keyStorage` on the provider), not in localStorage. When provided, the
+     * SDK registers this pubkey on-chain and stores nothing — useful for
+     * delegating to a backend / agent that already holds the matching
+     * private key.
      *
      * Accepts a base58 string or a `PublicKey` instance.
      */
@@ -92,11 +99,15 @@ export interface CreateSessionPayload {
 export interface RevokeSessionPayload {
     /**
      * Optional — revoke a *specific* session by its PDA. Accepts base58
-     * or PublicKey. When omitted, the SDK revokes the session it previously
-     * created via `createSession` (tracked in localStorage).
+     * or PublicKey. When omitted, the SDK revokes the session whose key it
+     * keeps (the last `createSession` without `sessionKey`), which must be
+     * the connected wallet's: `KeyWalletMismatchError` otherwise, before the
+     * passkey prompt. A kept key whose session has expired is deleted then,
+     * and the call rejects.
      *
      * Use this when you registered an external session key (e.g. a backend /
-     * agent session) and want to revoke it without touching localStorage.
+     * agent session). The key the SDK keeps is deleted once the session it
+     * belongs to is revoked, and left alone when another session is.
      */
     readonly sessionPda?: import('@solana/web3.js').PublicKey | string;
     readonly onSuccess?: () => void;
@@ -104,7 +115,24 @@ export interface RevokeSessionPayload {
 }
 
 export interface AddAuthorityPayload {
-    readonly role?: number;
+    /**
+     * Required: the rank the new key gets on the wallet. There is no default;
+     * a missing or unknown role throws before the passkey prompt.
+     * - `ROLE_OWNER` (0): adds and removes any authority, other owners
+     *   included (never the last owner), and spends without limit. On a v2
+     *   wallet the protocol SDK adds an owner only with `allowOwner`, which
+     *   this method does not pass, so it refuses `ROLE_OWNER` before the
+     *   prompt.
+     * - `ROLE_ADMIN` (1): adds and removes delegates only, and spends without
+     *   limit: no policy, no expiry, until `removeAuthority`.
+     * - `ROLE_SPENDER` (2), the delegate rank: manages no authority, and
+     *   spends only within its `policy`, which v2 requires for it.
+     *
+     * For a key your app holds, use `ROLE_SPENDER` with a `policy`. The SDK
+     * keeps the key for `signAndSendWithAuthority` (see `keyStorage`), bound to
+     * this wallet.
+     */
+    readonly role: number;
     /**
      * Spending policy, required when the role is ROLE_SPENDER (Delegate) on a
      * v2 wallet. Build it with `serializeActions([...])`. v2 rejects a Delegate
@@ -134,14 +162,57 @@ export interface ConnectOptions {
     readonly confirmWallet?: string;
     /** Overrides the provider's `onConfirmWallet` for this call. */
     readonly onConfirmWallet?: OnConfirmWallet;
+    /**
+     * Called with the connected wallet once `isConnecting` is false again,
+     * right before the promise resolves. What it throws is logged and does
+     * not fail the connect.
+     */
     readonly onSuccess?: (wallet: WalletInfo) => void;
+    /**
+     * Called with the error the promise rejects with, once `isConnecting` is
+     * false again. A refusal because another connect is running ('Already
+     * connecting') calls it at once, while `isConnecting` is still `true`: the
+     * flag belongs to that connect.
+     */
     readonly onFail?: (error: Error) => void;
 }
 
+/**
+ * What an action reports its outcome to: `onSuccess` with what its promise
+ * resolves with, `onFail` with the error it rejects with, refusals included.
+ * Either runs once the action is over, with `isSigning` / `isConnecting`
+ * already false, right before the promise settles. The one exception is a
+ * refusal because another call is running ('Already signing', 'Already
+ * connecting'): its `onFail` runs at once, and the flag stays `true`, since it
+ * belongs to the call that is running. What a callback throws is logged and
+ * changes nothing.
+ */
+export interface ActionCallbacks<T> {
+    readonly onSuccess?: (result: T) => void;
+    readonly onFail?: (error: Error) => void;
+}
+
+/** As with every action: called once the call is over, right before its promise settles; what they throw changes nothing. */
 export interface DisconnectOptions {
+    /**
+     * Keep the session key the SDK keeps (`createSession`). By default
+     * `disconnect` deletes it. A kept one signs only once its wallet is
+     * connected again. The authority key (`addAuthority`) is always kept, on
+     * the same terms; `removeAuthority` or `forgetStoredKeys()` deletes it.
+     */
+    readonly keepSessionKeys?: boolean;
     readonly onSuccess?: () => void;
     readonly onFail?: (error: Error) => void;
 }
+
+/** As with every action: called once the call is over (`isSigning` false), right before its promise settles. */
+export interface RemoveAuthorityOptions {
+    readonly onSuccess?: () => void;
+    readonly onFail?: (error: Error) => void;
+}
+
+/** `signMessage`'s callbacks, as every action's: called once the call is over (`isSigning` false), right before its promise settles. */
+export type SignMessageOptions = ActionCallbacks<{ signature: string; signedPayload: string }>;
 
 export interface SignAndSendTransactionPayload {
     readonly transactionOptions?: {

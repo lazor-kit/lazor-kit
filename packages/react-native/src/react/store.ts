@@ -15,6 +15,7 @@ import {
   WalletConfig,
   PaymasterConfig,
   ConnectOptions,
+  DisconnectOptions,
   SignOptions,
   AddAuthorityPayload,
   AuthorizeExecutePayload,
@@ -198,7 +199,7 @@ export const useWalletStore = create<WalletStateClient>()(
       },
 
       connect: (options: ConnectOptions) => connectAction(get, set, options),
-      disconnect: () => disconnectAction(get, set),
+      disconnect: (options?: DisconnectOptions) => disconnectAction(get, set, options),
       signAndExecuteTransaction: (payload: SignAndSendTransactionPayload, options: SignOptions) =>
         signAndExecuteTransaction(get, set, payload, options),
       signMessage: (message: string, options: SignOptions) => signMessageAction(get, set, message, options),
