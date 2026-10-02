@@ -1,83 +1,79 @@
 /**
- * Lazorkit Provider - Simplified (Mobile Adapter Pattern)
- * 
- * Minimal provider that initializes configuration
- * State management handled by store
+ * LazorkitProvider: configures the page's one wallet store from its props.
+ *
+ * `mode` is required, with no default (D1): `"embedded"` puts the passkey on
+ * the app's own `rpId`; `"portal"` keeps 3.x's hosted portal and its wallets.
+ * A static mistake in the props (no mode, a malformed rpId, Embedded on
+ * mainnet with LazorKit's relayer) throws `LazorkitConfigError` while
+ * rendering. Problems with the page itself (an IP address, plain http, no
+ * WebAuthn) do not: they show as `availability` and as `connect()`'s error.
+ *
+ * The page's first configure runs while the provider renders, so the app's
+ * first render (and its first effects) already see a restored wallet; later
+ * prop changes apply in a layout effect, before paint. On the server nothing
+ * is read; while hydrating, React compares against the store's server
+ * snapshot (disconnected), so there is no mismatch. Render the provider above
+ * anything that reads the wallet.
  */
-
-import { useEffect } from 'react';
+import { useEffect, useLayoutEffect, useMemo, type ReactNode } from 'react';
 import { PublicKey } from '@solana/web3.js';
 import { versionOf } from '../core/program';
-import { StorageManager } from '../core/storage';
-import type { ReactNode } from 'react';
+import { walletRecords } from '../core/storage';
 import { useWalletStore } from './store';
-import { DEFAULTS } from '../config';
 import { migrateLegacyKeys } from '../core/keys';
+import { configureStore, isConfigured } from '../core/client/configure';
+import { type LazorkitClientConfig, type LazorkitOptions, resolveConfig } from '../core/client/validate';
 
-import { PaymasterConfig } from '../core/paymaster/paymaster';
-import type { OnConfirmWallet } from '../core/wallet/confirmation';
+export type { EmbeddedOptions, PortalOptions, LazorkitOptions } from '../core/client/validate';
 
-export interface LazorkitProviderProps {
-  children: ReactNode;
-  rpcUrl?: string;
-  portalUrl?: string;
-  /** The paymaster for v2 wallets. */
-  paymasterConfig?: PaymasterConfig;
-  /**
-   * The paymaster for users whose wallet is still on LazorKit v1 — the relayer
-   * this app used before v2. Defaults to `paymasterConfig`.
-   */
-  v1PaymasterConfig?: PaymasterConfig;
-  /** Which cluster `rpcUrl` serves, if its URL does not say. See WalletConfig. */
-  cluster?: 'mainnet' | 'devnet';
-  /**
-   * How `connect` asks the user to confirm a wallet it will not adopt on its
-   * own: `'builtin'` (default) shows the SDK's chooser, a function shows your
-   * own UI, `'throw'` makes `connect` throw `WalletNeedsConfirmationError`.
-   */
-  onConfirmWallet?: OnConfirmWallet;
-  /**
-   * Your own Ed25519 keys (base58) — a backend admin, session keys you issue.
-   * An authority, session or token approval held by one of them does not stop
-   * a wallet from being adopted. Default none.
-   */
-  trustedAuthorities?: string[];
-  /**
-   * SPL Token mints your app receives (base58), checked on top of wSOL, USDC,
-   * USDT and devnet USDC: a wallet whose vault account for one of them was
-   * handed to someone else is not adopted. Default none.
-   */
-  watchMints?: string[];
-  /**
-   * Where the SDK keeps the session and authority keys it generates
-   * (`createSession`, `addAuthority`). `'auto'` (default): IndexedDB, which
-   * survives a reload. There the key is a non-extractable WebCrypto key: no
-   * script can read it, though one on the page can make it sign. In browsers
-   * without WebCrypto Ed25519 (iOS 16, Chrome 136 and older) it is a sealed
-   * seed that any script on the page can decrypt. Either way it is at rest in
-   * the browser profile. `'memory'`: this page only, nothing at rest; the key
-   * is gone on reload. Plaintext keys an earlier release left in localStorage
-   * are moved when the provider mounts; `forgetStoredKeys()` deletes them all.
-   * See the README, "Session and authority keys".
-   */
-  keyStorage?: 'auto' | 'memory';
-}
+/**
+ * `mode="embedded"` with `rpId` and `appName`, or `mode="portal"`. No default
+ * mode: a 3.x app adds `mode="portal"` to keep its users' wallets.
+ */
+export type LazorkitProviderProps = LazorkitOptions & { children: ReactNode };
+
+const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 
 export const LazorkitProvider = (props: LazorkitProviderProps) => {
-  const {
-    children,
-    rpcUrl = DEFAULTS.RPC_ENDPOINT,
-    portalUrl = DEFAULTS.PORTAL_URL,
-    paymasterConfig = { paymasterUrl: DEFAULTS.PAYMASTER_URL },
-    v1PaymasterConfig,
-    cluster,
-    onConfirmWallet,
-    trustedAuthorities,
-    watchMints,
-    keyStorage = 'auto',
-  } = props;
+  const { children, ...options } = props;
+  const o = options as Partial<LazorkitClientConfig> & Record<string, unknown>;
 
-  const { setConfig } = useWalletStore();
+  // Recomputed only when a prop's value changes: an inline object or list
+  // with the same content is the same config.
+  const config = useMemo(
+    () => resolveConfig(options as LazorkitClientConfig),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      o.mode,
+      o.rpId,
+      o.appName,
+      o.rpcUrl,
+      o.cluster,
+      o.portalUrl,
+      o.confirm,
+      o.keyStorage,
+      o.onConfirmWallet,
+      o.onEvent,
+      o.session,
+      JSON.stringify(o.paymasterConfig ?? null),
+      JSON.stringify(o.v1PaymasterConfig ?? null),
+      JSON.stringify(o.trustedAuthorities ?? null),
+      JSON.stringify(o.watchMints ?? null),
+    ],
+  );
+
+  // The first configure on the page runs in this render, before any child
+  // renders: the first render of the app already shows a restored wallet,
+  // and a child's first effect sees it. Nothing has subscribed to the store
+  // yet, so no other component is updated mid-render. (While hydrating a
+  // server render, the store's server snapshot, disconnected, is what
+  // React compares against, so this cannot cause a hydration mismatch.)
+  // Later changes of the props go through the layout effect.
+  if (typeof window !== 'undefined' && !isConfigured()) configureStore(config);
+  useIsomorphicLayoutEffect(() => {
+    configureStore(config);
+  }, [config]);
+
   const wallet = useWalletStore((state) => state.wallet);
   const connection = useWalletStore((state) => state.connection);
 
@@ -91,7 +87,7 @@ export const LazorkitProvider = (props: LazorkitProviderProps) => {
       .getAccountInfo(new PublicKey(wallet.smartWallet))
       .then(async (info) => {
         if (cancelled || info) return;
-        await StorageManager.clearWallet();
+        await walletRecords().clearWallet();
         useWalletStore.setState({ wallet: null });
       })
       .catch(() => {});
@@ -102,35 +98,10 @@ export const LazorkitProvider = (props: LazorkitProviderProps) => {
 
   // Session and authority keys an earlier release kept in localStorage as
   // plaintext: moved now, not only when the app next uses one.
+  const keyStorage = config.keyStorage ?? 'auto';
   useEffect(() => {
     void migrateLegacyKeys(keyStorage);
   }, [keyStorage]);
-
-  useEffect(() => {
-    // Initialize configuration in store
-    setConfig({
-      portalUrl,
-      paymasterConfig,
-      v1PaymasterConfig,
-      rpcUrl,
-      cluster,
-      onConfirmWallet,
-      trustedAuthorities,
-      watchMints,
-      keyStorage,
-    });
-  }, [
-    rpcUrl,
-    portalUrl,
-    paymasterConfig,
-    v1PaymasterConfig,
-    cluster,
-    onConfirmWallet,
-    trustedAuthorities,
-    watchMints,
-    keyStorage,
-    setConfig,
-  ]);
 
   return <>{children}</>;
 };
