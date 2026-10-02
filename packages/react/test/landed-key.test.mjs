@@ -204,7 +204,7 @@ function refuseKeyWrites() {
 
 for (const [name, slot, call] of [
     ['createSession', 'lazorkit-session', (callbacks) => store.getState().createSession({ unrestricted: true, ...callbacks })],
-    ['addAuthority', 'lazorkit-authority', (callbacks) => store.getState().addAuthority({ ...callbacks })],
+    ['addAuthority', 'lazorkit-authority', (callbacks) => store.getState().addAuthority({ role: 1, ...callbacks })],
 ]) {
     test(`${name}: a key that cannot be stored once it landed does not report it as failed`, async () => {
         // A key an earlier call kept: later calls must not sign with it in

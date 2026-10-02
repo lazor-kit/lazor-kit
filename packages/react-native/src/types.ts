@@ -394,8 +394,21 @@ export interface RevokeSessionPayload {
 /** Payload for `addAuthorityEd25519`. */
 export interface AddAuthorityPayload {
   readonly newEd25519Pubkey: PublicKey;
-  /** Role: ROLE_ADMIN (1) or ROLE_SPENDER (2). Defaults to SPENDER. */
-  readonly role?: number;
+  /**
+   * Required: the rank the key gets on the wallet. There is no default; a
+   * missing or unknown role throws before the passkey prompt.
+   * - `ROLE_OWNER` (0): adds and removes any authority, other owners included
+   *   (never the last owner), and spends without limit. On a v2 wallet the
+   *   protocol SDK adds an owner only with `allowOwner`, which this method does
+   *   not pass, so it refuses `ROLE_OWNER` before the prompt.
+   * - `ROLE_ADMIN` (1): adds and removes delegates only, and spends without
+   *   limit.
+   * - `ROLE_SPENDER` (2), the delegate rank: manages no authority, and spends
+   *   only within its `policy`, which v2 requires for it.
+   *
+   * For a key your app or backend holds, use `ROLE_SPENDER` with a `policy`.
+   */
+  readonly role: number;
   /**
    * Spending policy, required when the role is ROLE_SPENDER (Delegate).
    * Build it with `serializeActions([...])`. Protocol v2 rejects a Delegate

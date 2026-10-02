@@ -97,7 +97,11 @@ const account = ({ owner, data = Buffer.alloc(0) }) => ({
     space: data.length,
 });
 
+/** RPC and paymaster requests made, of any kind. */
+let requests = 0;
+
 async function rpc(init) {
+    requests++;
     const { id, method, params } = JSON.parse(init.body);
     const reply = (result) => new Response(JSON.stringify({ jsonrpc: '2.0', id, result }), { status: 200 });
     switch (method) {
@@ -125,6 +129,7 @@ async function rpc(init) {
 }
 
 async function paymaster(init) {
+    requests++;
     const { id, method, params } = JSON.parse(init.body);
     const answer = (body) => new Response(JSON.stringify({ jsonrpc: '2.0', id, ...body }), { status: 200 });
     if (method === 'getPayerSigner') return answer({ result: { signer_address: FEE_PAYER.toBase58() } });
@@ -361,7 +366,7 @@ test('createSession → reload → signAndSendWithSession: the key kept in Index
 test('addAuthority → reload → signAndSendWithAuthority: the key kept in IndexedDB signs after the reload, with no passkey', async () => {
     let W = await load();
     connect(W);
-    const { authorityPda, authorityPublicKey } = await W.useWalletStore.getState().addAuthority();
+    const { authorityPda, authorityPublicKey } = await W.useWalletStore.getState().addAuthority({ role: W.ROLE_ADMIN });
     landed(authorityPda);
     assert.equal(approvals.length, 1);
     assert.ok(mentions(sent.at(-1), new PublicKey(authorityPublicKey)), 'the add registered the generated key');
@@ -509,7 +514,7 @@ test('forgetStoredKeys at sign-out: no session or authority key is left, here or
     connect(W);
     const session = await W.useWalletStore.getState().createSession({ unrestricted: true });
     landed(session.sessionPda);
-    const authority = await W.useWalletStore.getState().addAuthority();
+    const authority = await W.useWalletStore.getState().addAuthority({ role: W.ROLE_ADMIN });
     landed(authority.authorityPda);
     assert.ok(await storedRecord('session'));
     assert.ok(await storedRecord('authority'));
@@ -592,7 +597,7 @@ test("revokeSession() refuses another wallet's kept session before the passkey i
 test('removeAuthority deletes the kept key once its authority is removed, and leaves it when another is', async () => {
     let W = await load();
     connect(W);
-    const { authorityPda } = await W.useWalletStore.getState().addAuthority();
+    const { authorityPda } = await W.useWalletStore.getState().addAuthority({ role: W.ROLE_ADMIN });
     landed(authorityPda);
 
     await W.useWalletStore.getState().removeAuthority(fixed(43).toBase58());
@@ -711,6 +716,39 @@ test('addAuthority → disconnect → connect again: the authority key is kept, 
     assert.equal(approvals.length, before, 'no passkey prompt');
     assertSignedBy(sent.at(-1), new PublicKey(authorityPublicKey));
     assertNoPlaintext();
+});
+
+// ─── addAuthority's role ─────────────────────────────────────────────────────
+
+test('addAuthority without a role, or with one that is not a rank, is refused before anything is read or prompted', async () => {
+    const W = await load();
+    connect(W);
+    const before = requests;
+    for (const payload of [undefined, {}, { unrestricted: true, policy: new Uint8Array(8) }, { role: 3 }, { role: -1 }, { role: 1.5 }, { role: '2' }, { role: null }]) {
+        const calls = [];
+        const error = await rejection(
+            W.useWalletStore.getState().addAuthority(
+                payload && { ...payload, onSuccess: () => calls.push('onSuccess'), onFail: (e) => calls.push([e, W.useWalletStore.getState().isSigning]) },
+            ),
+        );
+        const what = JSON.stringify(payload);
+        assert.match(error.message, payload?.role === undefined ? /^addAuthority needs a role: the rank the new key gets on the wallet\. There is no default\./ : /^addAuthority: .* is not a role\./, what);
+        assert.match(error.message, /ROLE_OWNER \(0\), which adds and removes any authority/, what);
+        assert.match(error.message, /ROLE_ADMIN \(1\), which adds and removes delegates only/, what);
+        assert.match(error.message, /ROLE_SPENDER \(2\), the delegate rank, which manages no authority and spends only within its policy/, what);
+        assert.match(error.message, /For a key your app holds, use ROLE_SPENDER with a policy\.$/, what);
+        if (payload) assert.deepEqual(calls, [[error, false]], what);
+        assert.equal(W.useWalletStore.getState().error, error, what);
+        assert.equal(W.useWalletStore.getState().isSigning, false, what);
+    }
+    assert.equal(approvals.length, 0, 'no passkey prompt');
+    assert.equal(requests, before, 'nothing read or sent');
+    assert.equal(await storedRecord('authority'), undefined);
+
+    // With a role it goes ahead.
+    const { authorityPda } = await W.useWalletStore.getState().addAuthority({ role: W.ROLE_ADMIN });
+    assert.equal(approvals.length, 1);
+    assert.equal((await storedRecord('authority')).info.authorityPda, authorityPda);
 });
 
 // ─── keyStorage: 'memory' ───────────────────────────────────────────────────

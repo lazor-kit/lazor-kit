@@ -37,6 +37,8 @@ import {
   type SessionAction,
   type Secp256r1Params,
   type ProtocolVersion,
+  ROLE_OWNER,
+  ROLE_ADMIN,
   ROLE_SPENDER,
   ACCOUNT_DISCRIMINATOR,
   AUTH_TYPE_ED25519,
@@ -753,8 +755,30 @@ export const signAndSendWithSessionAction = async (
 // ─── Authority Management ───────────────────────────────────────────
 
 /**
- * Add an Ed25519 public key as an authority (admin or spender). Signed by
- * the current passkey owner.
+ * Why `role` is not one an authority can have, or null when it is: one of
+ * the three ranks the program knows. There is no default: the rank decides
+ * what the key may do to the wallet, so the caller names it.
+ */
+export function authorityRoleProblem(role: unknown, method: string): string | null {
+  if (role === ROLE_OWNER || role === ROLE_ADMIN || role === ROLE_SPENDER) return null;
+  const what =
+    role === undefined
+      ? `${method} needs a role: the rank the new key gets on the wallet. There is no default.`
+      : `${method}: ${typeof role === 'number' ? role : JSON.stringify(role)} is not a role.`;
+  return (
+    `${what} Pass one of: ` +
+    `ROLE_OWNER (0), which adds and removes any authority, other owners included (never the last owner), and spends without limit; ` +
+    `ROLE_ADMIN (1), which adds and removes delegates only, and spends without limit; ` +
+    `ROLE_SPENDER (2), the delegate rank, which manages no authority and spends only within its policy ` +
+    `(required for this rank on v2: build it with serializeActions([...])). ` +
+    `For a key your app holds, use ROLE_SPENDER with a policy.`
+  );
+}
+
+/**
+ * Add an Ed25519 public key as an authority. Signed by the current passkey
+ * owner. `role` is required: a missing or unknown one is refused before
+ * anything is read or prompted.
  */
 export const addAuthorityEd25519Action = async (
   get: () => WalletStateClient,
@@ -765,6 +789,8 @@ export const addAuthorityEd25519Action = async (
   return withSigningState(get, set, options, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
+      const roleProblem = authorityRoleProblem(params?.role, 'addAuthorityEd25519');
+      if (roleProblem) throw new Error(roleProblem);
       const { client, version } = await buildClient(get);
       const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
@@ -794,7 +820,7 @@ export const addAuthorityEd25519Action = async (
             type: 'ed25519',
             publicKey: params.newEd25519Pubkey,
           },
-          role: params.role ?? ROLE_SPENDER,
+          role: params.role,
           policy: params.policy,
         });
 

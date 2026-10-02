@@ -45,7 +45,8 @@ export interface WalletState {
     signAndSendWithSession: (payload: SignAndSendTransactionPayload) => Promise<string>;
 
     // Ed25519 authority actions
-    addAuthority: (payload?: AddAuthorityPayload) => Promise<{ authorityPda: string; authorityPublicKey: string }>;
+    /** `payload.role` is required: see `AddAuthorityPayload.role`. */
+    addAuthority: (payload: AddAuthorityPayload) => Promise<{ authorityPda: string; authorityPublicKey: string }>;
     removeAuthority: (targetAuthorityPda: string, options?: RemoveAuthorityOptions) => Promise<void>;
     signAndSendWithAuthority: (payload: SignAndSendTransactionPayload) => Promise<string>;
 
@@ -115,12 +116,23 @@ export interface RevokeSessionPayload {
 
 export interface AddAuthorityPayload {
     /**
-     * Default `ROLE_ADMIN`: the key can do what an admin can, with no spending
-     * policy and no expiry, until `removeAuthority`. The SDK keeps it for
-     * `signAndSendWithAuthority` like a session key (see `keyStorage`). Prefer
-     * `ROLE_SPENDER` with a `policy` for a key that only spends.
+     * Required: the rank the new key gets on the wallet. There is no default;
+     * a missing or unknown role throws before the passkey prompt.
+     * - `ROLE_OWNER` (0): adds and removes any authority, other owners
+     *   included (never the last owner), and spends without limit. On a v2
+     *   wallet the protocol SDK adds an owner only with `allowOwner`, which
+     *   this method does not pass, so it refuses `ROLE_OWNER` before the
+     *   prompt.
+     * - `ROLE_ADMIN` (1): adds and removes delegates only, and spends without
+     *   limit: no policy, no expiry, until `removeAuthority`.
+     * - `ROLE_SPENDER` (2), the delegate rank: manages no authority, and
+     *   spends only within its `policy`, which v2 requires for it.
+     *
+     * For a key your app holds, use `ROLE_SPENDER` with a `policy`. The SDK
+     * keeps the key for `signAndSendWithAuthority` (see `keyStorage`), bound to
+     * this wallet.
      */
-    readonly role?: number;
+    readonly role: number;
     /**
      * Spending policy, required when the role is ROLE_SPENDER (Delegate) on a
      * v2 wallet. Build it with `serializeActions([...])`. v2 rejects a Delegate

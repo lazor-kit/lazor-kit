@@ -29,7 +29,9 @@ import {
 } from './utils';
 import { clearPendingConfirmation, connectAbandoned, connectFreshWallet } from './resolveWallet';
 import {
+    ROLE_OWNER,
     ROLE_ADMIN,
+    ROLE_SPENDER,
     Actions,
     SessionAction,
     type ProtocolVersion,
@@ -741,19 +743,45 @@ export const signAndSendWithSessionAction = async (
 };
 
 /**
+ * Why `role` is not one an authority can have, or null when it is: one of
+ * the three ranks the program knows. There is no default: the rank decides
+ * what the key may do to the wallet, so the caller names it.
+ */
+export function authorityRoleProblem(role: unknown, method: string): string | null {
+    if (role === ROLE_OWNER || role === ROLE_ADMIN || role === ROLE_SPENDER) return null;
+    const what =
+        role === undefined
+            ? `${method} needs a role: the rank the new key gets on the wallet. There is no default.`
+            : `${method}: ${typeof role === 'number' ? role : JSON.stringify(role)} is not a role.`;
+    return (
+        `${what} Pass one of: ` +
+        `ROLE_OWNER (0), which adds and removes any authority, other owners included (never the last owner), and spends without limit; ` +
+        `ROLE_ADMIN (1), which adds and removes delegates only, and spends without limit; ` +
+        `ROLE_SPENDER (2), the delegate rank, which manages no authority and spends only within its policy ` +
+        `(required for this rank on v2: build it with serializeActions([...])). ` +
+        `For a key your app holds, use ROLE_SPENDER with a policy.`
+    );
+}
+
+/**
  * Add ed25519 authority action — passkey signs to authorize a new ed25519 authority on-chain.
  * The key the SDK generates is kept for `signAndSendWithAuthority` (see
- * ../keys: a non-extractable key in IndexedDB, not localStorage).
+ * ../keys: a non-extractable key in IndexedDB, not localStorage), bound to
+ * the connected wallet. `payload.role` is required: a missing or unknown one
+ * is refused before anything is read or prompted.
  */
 export const addAuthorityAction = async (
     get: () => WalletState,
     set: (state: Partial<WalletState>) => void,
-    payload: AddAuthorityPayload = {}
+    payload: AddAuthorityPayload
 ): Promise<{ authorityPda: string; authorityPublicKey: string }> => {
     const { isSigning, connection, wallet, config } = get();
     if (isSigning) throw new Error('Already signing');
     if (!wallet) refuse(set, 'No wallet connected');
     if (!connection) refuse(set, 'No connection available');
+    const roleProblem = authorityRoleProblem(payload?.role, 'addAuthority');
+    if (roleProblem) refuse(set, roleProblem);
+    const role = payload.role;
 
     set({ isSigning: true, error: null });
     try {
@@ -761,7 +789,6 @@ export const addAuthorityAction = async (
             await resolvePasskeyWallet(wallet, connection);
         const paymaster = paymasterFor(config, version);
         const feePayer = await paymaster.getPayer();
-        const role = payload.role ?? ROLE_ADMIN;
 
         // v1 has no spending policies, and its Execute never checked rank: any
         // key added to a v1 wallet can move the whole vault. Refuse to pretend

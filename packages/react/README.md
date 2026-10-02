@@ -374,7 +374,7 @@ fails the call before the prompt.
 
 ## Session and authority keys
 
-`createSession()` without `sessionKey`, and `addAuthority()`, generate an
+`createSession()` without `sessionKey`, and `addAuthority({ role })`, generate an
 Ed25519 key in the browser and register its public key on chain with one
 passkey approval. The SDK keeps the key, so `signAndSendWithSession` and
 `signAndSendWithAuthority` sign with no passkey prompt. It keeps one key of
@@ -520,9 +520,27 @@ logged. If IndexedDB only failed this time, the key is stored on its next use
 here, unless another tab has stored a newer key meanwhile.
 
 **What bounds a kept key** is what was registered on chain, not where the key
-is kept. A session is bounded by its `spendingLimits` and its expiry.
-`addAuthority` defaults to `ROLE_ADMIN`, which has no spending policy and no
-expiry. For a key that only spends, prefer `ROLE_SPENDER` with a `policy`.
+is kept. A session is bounded by its `spendingLimits` and its expiry. An
+authority is bounded by the role you give it, which `addAuthority` requires
+(there is no default, and a missing or unknown role throws before the passkey
+prompt):
+
+| Role | What the key may do |
+|---|---|
+| `ROLE_OWNER` (0) | Add and remove any authority, other owners included (never the last owner), and spend without limit. On a v2 wallet the protocol SDK adds an owner only with `allowOwner`, which `addAuthority` does not pass, so it refuses `ROLE_OWNER` before the prompt. |
+| `ROLE_ADMIN` (1) | Add and remove delegates only, and spend without limit: no policy, no expiry, until `removeAuthority`. |
+| `ROLE_SPENDER` (2), the delegate rank | Manage no authority; spend only within its `policy` (required for this rank on v2; build it with `serializeActions([...])`). |
+
+For a key your app holds, use `ROLE_SPENDER` with a `policy`:
+
+```ts
+import { ROLE_SPENDER, serializeActions, Actions } from '@lazorkit/wallet';
+
+await addAuthority({
+  role: ROLE_SPENDER,
+  policy: serializeActions([Actions.solMaxPerTx(100_000_000n)]),
+});
+```
 
 **Signatures.** Ed25519 as RFC 8032 defines it is deterministic: Chromium and
 Node sign exactly as web3.js's `Keypair` does with the same seed (the package's

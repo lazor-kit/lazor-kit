@@ -26,7 +26,7 @@ import { reportOutcome } from '../core/wallet/utils';
 
 import { WalletInfo, WalletConfig, storage } from '../core/storage';
 import { DEFAULTS, DEFAULT_COMMITMENT } from '../config';
-import { WalletState } from '../core/types';
+import { WalletState, type AddAuthorityPayload } from '../core/types';
 /**
  * Create wallet store with integrated business logic and persistence
  */
@@ -102,7 +102,8 @@ export const useWalletStore = create<WalletState>()(
             onSuccess: payload?.onSuccess && ((r) => payload.onSuccess!(r.authorityPda, r.authorityPublicKey)),
             onFail: payload?.onFail,
           },
-          () => addAuthorityAction(get, set, payload ?? {}),
+          // A call from JavaScript may omit the payload: refused for its role.
+          () => addAuthorityAction(get, set, payload ?? ({} as AddAuthorityPayload)),
         ),
       removeAuthority: (targetAuthorityPda, options) =>
         reportOutcome(options, () => removeAuthorityAction(get, set, { targetAuthorityPda })),

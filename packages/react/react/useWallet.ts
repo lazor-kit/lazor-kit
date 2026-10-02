@@ -86,8 +86,16 @@ export interface WalletHookInterface {
   signAndSendWithSession: (payload: SendTxPayload & ActionCallbacks<string>) => Promise<string>;
 
   // Ed25519 authority actions
-  addAuthority: (payload?: {
-    role?: number;
+  /**
+   * Adds a new Ed25519 key the SDK generates and keeps, with one passkey
+   * approval. `role` is required (no default): `ROLE_OWNER` (0) manages every
+   * authority, `ROLE_ADMIN` (1) manages delegates only, both spend without
+   * limit; `ROLE_SPENDER` (2), the delegate rank, manages nothing and spends
+   * within its `policy` (required on v2). For an app key use `ROLE_SPENDER`
+   * with a policy. A missing or unknown role throws before the prompt.
+   */
+  addAuthority: (payload: {
+    role: number;
     policy?: Uint8Array;
     unrestricted?: boolean;
     onSuccess?: (authorityPda: string, authorityPublicKey: string) => void;
@@ -255,7 +263,7 @@ export const useWallet = (): WalletHookInterface => {
 
     // Ed25519 authority actions
     addAuthority: useCallback(
-      (payload?: Parameters<WalletHookInterface['addAuthority']>[0]) => addAuthority(payload),
+      (payload: Parameters<WalletHookInterface['addAuthority']>[0]) => addAuthority(payload),
       [addAuthority]
     ),
     removeAuthority: useCallback(

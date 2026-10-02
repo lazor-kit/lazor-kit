@@ -426,6 +426,34 @@ Signs a message string.
 **Returns**
 `Promise<string>` - Signature
 
+#### `addAuthorityEd25519(payload, options)`
+
+Adds an Ed25519 public key your app (or backend) holds as an authority of the
+connected wallet, with one passkey approval. `payload.role` is required: there
+is no default, and a missing or unknown role throws before anything is read or
+the portal opens.
+
+| Role | What the key may do |
+|---|---|
+| `ROLE_OWNER` (0) | Add and remove any authority, other owners included (never the last owner), and spend without limit. On a v2 wallet the protocol SDK adds an owner only with `allowOwner`, which this method does not pass, so `ROLE_OWNER` is refused before the prompt. |
+| `ROLE_ADMIN` (1) | Add and remove delegates only, and spend without limit. |
+| `ROLE_SPENDER` (2), the delegate rank | Manage no authority; spend only within its `policy` (required for this rank on v2; build it with `serializeActions([...])`). |
+
+For a key your app holds, use `ROLE_SPENDER` with a `policy`.
+
+**Parameters**
+
+| Param | Type | Description |
+|---|---|---|
+| `payload.newEd25519Pubkey` | `PublicKey` | The key to add. |
+| `payload.role` | `number` | Required: `ROLE_OWNER`, `ROLE_ADMIN` or `ROLE_SPENDER`. |
+| `payload.policy` | `Uint8Array` | The spending policy, for `ROLE_SPENDER`. |
+| `payload.unrestricted` | `boolean` | Required on a v1 wallet, where any added key can spend the whole vault. |
+| `options.redirectUrl` | `string` | Deep link URL |
+
+**Returns**
+`Promise<{ signature: string; newAuthorityPda: PublicKey }>`
+
 #### `signAndSendTransaction(payload, options)`
 
 Signs and sends transaction.
