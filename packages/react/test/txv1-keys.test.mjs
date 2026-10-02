@@ -8,7 +8,9 @@
 // - the sealed tier (no WebCrypto Ed25519) and the memory tier sign v1 too;
 // - a v1 send goes through the wallet binding as a v0 send does: refused
 //   before anything is read for another wallet, and refused at signing when
-//   the wallet disconnects or switches while the send is being built.
+//   the wallet disconnects or switches while the send is being built;
+// - once the wallet-adapter's disconnect has deleted the session key, a v1
+//   session send has none to sign with, as a v0 one.
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import { test, beforeEach, after } from 'node:test';
@@ -479,3 +481,25 @@ for (const kind of ['session', 'authority']) {
         }
     });
 }
+
+test("after the wallet-adapter's disconnect, which deletes the session key (3.3.1), a 'v1' session send has no key: nothing built, simulated or sent", async () => {
+    const { W } = await keptKey('session');
+    await W.StorageManager.saveWallet(walletInfo(W, WALLET));
+    const adapter = new W.LazorkitWalletAdapter({
+        rpcUrl: RPC,
+        portalUrl: PORTAL,
+        paymasterConfig: { paymasterUrl: PAYMASTER, acceptsTxV1: true },
+        cluster: 'devnet',
+    });
+    await adapter.connect();
+    await adapter.disconnect();
+    assert.equal(await storedRecord('session'), undefined, 'deleted from IndexedDB');
+
+    connect(W);
+    const sends = sent.length;
+    rpcCalls.length = 0;
+    await assert.rejects(send(W, 'session'), /No session key found/);
+    assert.equal(sent.length, sends, 'nothing sent');
+    assert.ok(!rpcCalls.includes('simulateTransaction'), 'nothing simulated');
+    assert.ok(!rpcCalls.includes('getLatestBlockhash'), 'nothing built');
+});
