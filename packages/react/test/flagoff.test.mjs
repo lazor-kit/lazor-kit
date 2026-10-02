@@ -1,14 +1,15 @@
 // U4 of the txv1 design: with no 'v1' request (txVersion omitted, 'v0' or
-// 'legacy'), every send flow makes exactly the requests 3.3.0 makes, in the
+// 'legacy'), every send flow makes exactly the requests 3.3.1 makes, in the
 // same order, with the same bytes, and ends the same way.
 //
 // Each case of the corpus matrix (test/support/corpus.mjs) runs through the
 // built package (`pnpm build` first) in a fresh process, against the mock
 // cluster, and is compared with test/fixtures/flagoff.web.json, recorded
-// from 3.3.0's own dist/index.mjs (test/support/capture-flagoff.mjs). It was
-// 3.2.1's until this branch took main at 3.3.0: the two differ only in the 8
-// session cases, which in 3.3.0 first read the slot (getSlot) to delete an
-// expired session's kept key before it signs. The golden compares:
+// from 3.3.1's own dist/index.mjs (test/support/capture-flagoff.mjs); every
+// case is as 3.3.0 recorded it. It was 3.2.1's until this branch took main at
+// 3.3.0: the two differ only in the 8 session cases, which since 3.3.0 first
+// read the slot (getSlot) to delete an expired session's kept key before it
+// signs. The golden compares:
 // the paymaster request bodies byte for byte (SHA-256), every JSON-RPC
 // request with its params, the portal pages opened, and each call's outcome.
 // The cases cover execute, session, authority, the deferred pair and
@@ -28,7 +29,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const DIST = join(HERE, '..', 'dist', 'index.mjs');
 const golden = JSON.parse(readFileSync(join(HERE, 'fixtures', 'flagoff.web.json'), 'utf8'));
 
-test('U4: with no v1 request, every flow makes the requests 3.3.0 makes, and ends as it does', async (t) => {
+test('U4: with no v1 request, every flow makes the requests 3.3.1 makes, and ends as it does', async (t) => {
   assert.equal(golden.corpusVersion, CORPUS_VERSION);
   const cases = caseMatrix();
   assert.deepEqual(cases.map((c) => c.id).sort(), Object.keys(golden.cases).sort(), 'the case matrix is the golden one');

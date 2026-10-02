@@ -1,6 +1,6 @@
 /**
  * The flag-off check (txv1 design U4): with `txVersion` omitted, 'v0' or
- * 'legacy', every send flow must make exactly the requests 3.3.0 makes, in
+ * 'legacy', every send flow must make exactly the requests 3.3.1 makes, in
  * the same order, and end the same way.
  *
  * `runCase` runs one case of the corpus matrix in a fresh process

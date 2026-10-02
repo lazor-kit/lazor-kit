@@ -4,7 +4,7 @@
  * published build of this package. Not run by the tests; run it again only to
  * move the golden to a new published release.
  *
- *   npm pack @lazorkit/wallet-mobile-adapter@2.3.0 && tar xzf lazorkit-wallet-mobile-adapter-2.3.0.tgz
+ *   npm pack @lazorkit/wallet-mobile-adapter@2.3.1 && tar xzf lazorkit-wallet-mobile-adapter-2.3.1.tgz
  *   mkdir -p node_modules/.cache/flagoff && cp package/dist/index.js node_modules/.cache/flagoff/
  *   node test/support/flagoff/capture.mjs node_modules/.cache/flagoff/index.js --from "<what it is>"
  *
