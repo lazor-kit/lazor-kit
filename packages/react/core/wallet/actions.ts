@@ -32,8 +32,6 @@ import {
     ROLE_OWNER,
     ROLE_ADMIN,
     ROLE_SPENDER,
-    Actions,
-    SessionAction,
     type ProtocolVersion,
     clientFor,
     versionOf,
@@ -44,7 +42,7 @@ import {
     V1WalletMigratedError,
 } from '../program';
 import type { WalletConfig } from '../storage';
-import { SpendingLimits } from '../types';
+import { spendingLimitsRecord, spendingLimitsToActions, toPolicyError } from './policy';
 import { DEFAULTS } from '../../config';
 import { type AuthorityTurn, sendAndConfirm, withAuthority } from './sequence';
 import { buildPreviewTransactionBase64 } from './preview';
@@ -415,33 +413,6 @@ export const signAndSendTransactionAction = async (
     }
 };
 
-// ─── Spending limits → SessionAction[] ───────────────────────────────
-
-function buildSessionActions(limits?: SpendingLimits): SessionAction[] {
-    if (!limits) return [];
-    const actions: SessionAction[] = [];
-    if (limits.solLifetimeCap !== undefined) {
-        actions.push(Actions.solLimit(limits.solLifetimeCap));
-    }
-    if (limits.solPerTxMax !== undefined) {
-        actions.push(Actions.solMaxPerTx(limits.solPerTxMax));
-    }
-    if (limits.solRecurring) {
-        actions.push(Actions.solRecurringLimit({
-            limit: limits.solRecurring.limit,
-            window: limits.solRecurring.windowSlots,
-        }));
-    }
-    // NOTE: do NOT auto-append a ProgramWhitelist here. Adding any
-    // whitelist entry switches the session from "allow all programs" to
-    // "only allow listed programs" — callers that just want SOL spending
-    // caps would lose the ability to call SPL Token, ATA, Raydium, etc.
-    // Callers who need a whitelist can extend `SpendingLimits` with an
-    // explicit `programAllowlist` field and build `Actions.programWhitelist`
-    // entries themselves.
-    return actions;
-}
-
 // ─── Helpers for decoding WebAuthn dialog response ───────────────────
 
 function decodeSignResult(signResult: SignResult) {
@@ -501,6 +472,18 @@ export const createSessionAction = async (
 
     set({ isSigning: true, error: null });
     try {
+        // The limits are checked before anything is read or prompted.
+        const actions = spendingLimitsToActions(payload.spendingLimits);
+        if (actions.length === 0 && !payload.unrestricted) {
+            throw new Error(
+                'createSession needs spendingLimits. A session with no limits can spend the ' +
+                    'whole vault through any program until it expires, and its key lives in the ' +
+                    'app rather than behind the passkey. Pass spendingLimits (solPerTxMax, ' +
+                    'solLifetimeCap, solRecurring, and tokens for each mint it may spend), or ' +
+                    'unrestricted: true to mint one anyway.',
+            );
+        }
+
         const { client, version, walletPda, authorityPda, publicKeyBytes, credentialIdHash } =
             await resolvePasskeyWallet(wallet, connection);
         const paymaster = paymasterFor(config, version);
@@ -531,16 +514,6 @@ export const createSessionAction = async (
 
         const currentSlot = await connection.getSlot();
         const expiresAt = BigInt(currentSlot) + (payload.expiresInSlots ?? DEFAULTS.SESSION_EXPIRY_SLOTS);
-        const actions = buildSessionActions(payload.spendingLimits);
-
-        if (actions.length === 0 && !payload.unrestricted) {
-            throw new Error(
-                'createSession needs spendingLimits. A session with no limits can spend the ' +
-                    'whole vault through any program until it expires, and its key lives in the ' +
-                    'app rather than behind the passkey. Pass spendingLimits (solPerTxMax, ' +
-                    'solLifetimeCap, solRecurring), or unrestricted: true to mint one anyway.',
-            );
-        }
 
         const sessionPda = await withAuthority(authorityPda, async (turn) => {
             const prepared = await client.prepareCreateSession({
@@ -585,16 +558,7 @@ export const createSessionAction = async (
                 walletPda: walletPda.toBase58(),
                 bound: true,
                 expiresAt: expiresAt.toString(),
-                spendingLimits: payload.spendingLimits ? {
-                    solLifetimeCap: payload.spendingLimits.solLifetimeCap?.toString(),
-                    solPerTxMax: payload.spendingLimits.solPerTxMax?.toString(),
-                    solRecurring: payload.spendingLimits.solRecurring
-                        ? {
-                            limit: payload.spendingLimits.solRecurring.limit.toString(),
-                            windowSlots: payload.spendingLimits.solRecurring.windowSlots.toString(),
-                        }
-                        : undefined,
-                } : undefined,
+                spendingLimits: spendingLimitsRecord(payload.spendingLimits),
             }, { unlessWipedSince: sessionWipes });
             if (kept === 'discarded') {
                 console.warn(
@@ -750,7 +714,8 @@ export const signAndSendWithSessionAction = async (
         });
         return txSignature;
     } catch (error) {
-        return handleActionError(error, set, flowVersion ?? walletVersion(get));
+        // A session's actions name what may leave the vault (3037 / 3038).
+        return handleActionError(toPolicyError(error, 'session'), set, flowVersion ?? walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -1215,7 +1180,8 @@ export const signAndSendWithAuthorityAction = async (
         });
         return txSignature;
     } catch (error) {
-        return handleActionError(error, set, flowVersion ?? walletVersion(get));
+        // A delegate's policy names what may leave the vault (3037 / 3038).
+        return handleActionError(toPolicyError(error, 'authority'), set, flowVersion ?? walletVersion(get));
     } finally {
         set({ isSigning: false });
     }

@@ -366,6 +366,43 @@ test('createSession → reload → signAndSendWithSession: the key kept in Index
     assert.deepEqual(warnings, []);
 });
 
+test('createSession with token limits registers a SOL action and one for each mint, and the record keeps them', async () => {
+    const W = await load();
+    connect(W);
+    const USDC = fixed(21);
+    const BONK = fixed(22);
+    const { sessionPda } = await W.useWalletStore.getState().createSession({
+        spendingLimits: {
+            solPerTxMax: 5_000n,
+            tokens: [
+                { mint: USDC, lifetimeCap: 50_000_000n, perTxMax: 1_000_000n },
+                { mint: BONK.toBase58(), recurring: { limit: 10n, windowSlots: 216_000n } },
+            ],
+        },
+    });
+    assert.equal(approvals.length, 1, 'one passkey approval');
+    // The CreateSession instruction carries the actions as [len u16 LE][buffer].
+    const actions = W.serializeActions([
+        W.Actions.solMaxPerTx(5_000n),
+        W.Actions.tokenLimit({ mint: USDC, remaining: 50_000_000n }),
+        W.Actions.tokenMaxPerTx({ mint: USDC, max: 1_000_000n }),
+        W.Actions.tokenRecurringLimit({ mint: BONK, limit: 10n, window: 216_000n }),
+    ]);
+    const length = Buffer.alloc(2);
+    length.writeUInt16LE(actions.length);
+    const carried = Buffer.concat([length, Buffer.from(actions)]);
+    const create = sent.at(-1).message.compiledInstructions.filter((ix) => Buffer.from(ix.data).indexOf(carried) >= 0);
+    assert.equal(create.length, 1, 'the create carries exactly these actions');
+
+    const record = await storedRecord('session');
+    assert.equal(record.info.sessionPda, sessionPda);
+    assert.equal(record.info.spendingLimits.solPerTxMax, '5000');
+    assert.deepEqual(record.info.spendingLimits.tokens, [
+        { mint: USDC.toBase58(), lifetimeCap: '50000000', perTxMax: '1000000', recurring: undefined },
+        { mint: BONK.toBase58(), lifetimeCap: undefined, perTxMax: undefined, recurring: { limit: '10', windowSlots: '216000' } },
+    ]);
+});
+
 // ─── addAuthority → reload → authority send ─────────────────────────────────
 
 test('addAuthority → reload → signAndSendWithAuthority: the key kept in IndexedDB signs after the reload, with no passkey', async () => {

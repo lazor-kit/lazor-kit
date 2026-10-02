@@ -59,6 +59,12 @@ export interface WalletState {
     executeDeferred: (payload: ExecuteDeferredPayload) => Promise<string>;
 }
 
+/**
+ * What a session may spend. Under LazorKit v2 an asset the limits do not name
+ * cannot leave the wallet at all: with no SOL limit the session spends no SOL
+ * (rent for an account the wallet pays for included), and it spends a token
+ * only with a `tokens` entry for its mint.
+ */
 export interface SpendingLimits {
     /** Lifetime SOL cap in lamports — session exhausted once spent */
     solLifetimeCap?: bigint;
@@ -66,6 +72,27 @@ export interface SpendingLimits {
     solPerTxMax?: bigint;
     /** SOL cap that resets every `windowSlots` slots */
     solRecurring?: {
+        limit: bigint;
+        windowSlots: bigint;
+    };
+    /**
+     * The tokens the session may spend, one entry per mint, each with at
+     * least one limit. A mint not listed cannot leave the wallet. wSOL is a
+     * mint of its own: the SOL limits do not cover it.
+     */
+    tokens?: readonly TokenSpendingLimit[];
+}
+
+/** The limits on one token a session may spend, in the mint's base units. */
+export interface TokenSpendingLimit {
+    /** The token's mint (a `PublicKey` or base58). */
+    mint: import('@solana/web3.js').PublicKey | string;
+    /** Lifetime cap: the session is exhausted for this token once spent. */
+    lifetimeCap?: bigint;
+    /** Max per single execute. */
+    perTxMax?: bigint;
+    /** Cap that resets every `windowSlots` slots. */
+    recurring?: {
         limit: bigint;
         windowSlots: bigint;
     };
@@ -136,9 +163,13 @@ export interface AddAuthorityPayload {
     readonly role: number;
     /**
      * Spending policy, required when the role is ROLE_SPENDER (Delegate) on a
-     * v2 wallet. Build it with `serializeActions([...])`. v2 rejects a Delegate
-     * without one (3033) and a policy on any other rank (3035). v1 wallets have
-     * no policies: passing one for a v1 wallet throws.
+     * v2 wallet. Build it with `serializeActions([...])`, or
+     * `serializeActions(spendingLimitsToActions(limits))`. v2 rejects a
+     * Delegate without one (3033) and a policy on any other rank (3035). An
+     * asset the policy does not name cannot leave the wallet: name SOL with a
+     * `sol*` action (rent the wallet pays counts) and each mint the key may
+     * spend with a `token*` action. v1 wallets have no policies: passing one
+     * for a v1 wallet throws.
      */
     readonly policy?: Uint8Array;
     /**
