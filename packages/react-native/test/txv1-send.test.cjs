@@ -17,7 +17,7 @@
 // The gate and the strip are also tested on the source, with their imports
 // stubbed, and so is executeWallet (internal; entered after the passkey
 // signed), which sends a 'v1' request exactly as 'v0'. The flag-off identity (U4) is the packed-tarball comparison against
-// the 2.2.1 goldens; here a request without 'v1' is only checked to take the
+// the 2.3.0 goldens; here a request without 'v1' is only checked to take the
 // v0 path.
 'use strict';
 const { test } = require('node:test');

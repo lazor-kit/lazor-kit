@@ -4,7 +4,7 @@
  * published build of this package. Not run by the tests; run it again only to
  * move the golden to a new published release.
  *
- *   npm pack @lazorkit/wallet@3.2.1 && tar xzf lazorkit-wallet-3.2.1.tgz
+ *   npm pack @lazorkit/wallet@3.3.0 && tar xzf lazorkit-wallet-3.3.0.tgz
  *   mkdir -p node_modules/.cache/flagoff && cp package/dist/index.mjs node_modules/.cache/flagoff/
  *   node test/support/capture-flagoff.mjs node_modules/.cache/flagoff/index.mjs --from "<what it is>"
  *

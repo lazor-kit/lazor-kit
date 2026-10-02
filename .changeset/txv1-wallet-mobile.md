@@ -4,7 +4,7 @@
 
 Experimental, devnet only: `transactionOptions.txVersion: 'v1'` sends a SIMD-0385 v1 transaction, up to 4096 bytes and 64 addresses
 
-Nothing changes unless a call passes `txVersion: 'v1'`. Without it, every transaction, paymaster request, RPC call and error is the same as in 2.2.1. A test runs 44 send cases and compares them, byte for byte, with what the published 2.2.1 build does.
+Nothing changes unless a call passes `txVersion: 'v1'`. Without it, every transaction, paymaster request, RPC call and error is the same as in 2.3.0. A test runs 44 send cases and compares them, byte for byte, with what the 2.3.0 build does.
 
 - **When v1 is used.** A `'v1'` request goes out as v1 only when all of these hold:
   - the paymaster declares it signs v1 (`configPaymaster={{ paymasterUrl, acceptsTxV1: true }}`);

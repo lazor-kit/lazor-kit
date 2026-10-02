@@ -1,7 +1,7 @@
 /**
  * The flag-off check (txv1 design U4): with `txVersion` omitted, 'v0' or
- * 'legacy', every send flow must make exactly the requests the published
- * 3.2.1 made, in the same order, and end the same way.
+ * 'legacy', every send flow must make exactly the requests 3.3.0 makes, in
+ * the same order, and end the same way.
  *
  * `runCase` runs one case of the corpus matrix in a fresh process
  * (./flagoff-case.mjs); `compact` reduces its record to what is compared:
@@ -12,7 +12,7 @@
  *   rpc        each JSON-RPC request in order: method, and its params' SHA-256
  *   portal     each portal page opened: action, and its parameters' SHA-256
  *
- * The golden (test/fixtures/flagoff.web.json) was recorded from 3.2.1's own
+ * The golden (test/fixtures/flagoff.web.json) was recorded from 3.3.0's own
  * dist/index.mjs by ./capture-flagoff.mjs, with this workspace's
  * dependencies, so a difference is the wallet's own.
  */

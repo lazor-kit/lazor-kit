@@ -1,12 +1,13 @@
 // U4 of the txv1 design: with no 'v1' request (txVersion omitted or 'v0'),
-// every send flow makes exactly the requests the published 2.2.1 made, in the
-// same order, with the same bytes, and ends the same way.
+// every send flow makes exactly the requests 2.3.0 makes, in the same order,
+// with the same bytes, and ends the same way.
 //
 // Each case of the corpus matrix (test/support/flagoff/corpus.mjs) runs
 // through the built package (`pnpm build` first) in a fresh process, with the
 // native modules stubbed, against the mock cluster, and is compared with
-// test/fixtures/flagoff.mobile.json, recorded from 2.2.1's own dist/index.js
-// (test/support/flagoff/capture.mjs): the paymaster request bodies byte for
+// test/fixtures/flagoff.mobile.json, recorded from 2.3.0's own dist/index.js
+// (test/support/flagoff/capture.mjs; every case is as 2.2.1 recorded it):
+// the paymaster request bodies byte for
 // byte (SHA-256), every JSON-RPC request with its params, the portal pages
 // opened, and each call's outcome. The cases cover execute, transferSol,
 // session, the deferred pair and authorizeDeferred + executeDeferred, with
@@ -26,7 +27,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const DIST = join(HERE, '..', 'dist', 'index.js');
 const golden = JSON.parse(readFileSync(join(HERE, 'fixtures', 'flagoff.mobile.json'), 'utf8'));
 
-test('U4: with no v1 request, every flow makes the requests 2.2.1 made, and ends as it did', async (t) => {
+test('U4: with no v1 request, every flow makes the requests 2.3.0 makes, and ends as it does', async (t) => {
   assert.equal(golden.corpusVersion, CORPUS_VERSION);
   const cases = caseMatrix();
   assert.deepEqual(cases.map((c) => c.id).sort(), Object.keys(golden.cases).sort(), 'the case matrix is the golden one');
