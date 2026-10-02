@@ -480,39 +480,57 @@ export async function createPasskey(
 /**
  * Passkey autofill: a conditional get that stays pending until the user picks
  * a passkey in an `autocomplete="username webauthn"` field, or `stop()`.
- * `null` when the browser has no autofill. Reported as a `get:autofill`
- * ceremony when a passkey is picked.
+ * `null` when the browser is known to have no autofill. Before the browser
+ * has said (a page that loads disconnected asks before it answers), the
+ * handle is returned at once and the get starts when it does, unless `stop()`
+ * or another ceremony came first. Reported as a `get:autofill` ceremony when
+ * a passkey is picked.
  */
 export function startConditional(
     config: WalletConfig,
     params: { rpId: string; challenge: Uint8Array; onAssertion: (assertion: Assertion) => void; onError?: (error: unknown) => void },
 ): { stop(): void } | null {
-    if (!hasWebAuthn() || knownCapabilities()?.conditionalGet !== true) return null;
+    const known = knownCapabilities();
+    if (!hasWebAuthn() || known?.conditionalGet === false) return null;
     autofill?.abort();
+    // Held from now on, even before the get starts: `abortAutofill` (every
+    // other ceremony) and `stop()` cancel a start still waiting for the
+    // capabilities too.
     const controller = new AbortController();
     autofill = controller;
-    navigator.credentials
-        .get({
-            mediation: 'conditional',
-            signal: controller.signal,
-            publicKey: { ...publicKeyGet(params.rpId, params.challenge), timeout: 600_000 },
-        })
-        .then(
-            (credential) => {
-                if (controller.signal.aborted) return;
-                if (autofill === controller) autofill = null;
-                // Counted once picked: until then it shows nothing of its own.
-                void ceremony(config, 'get:autofill', async () => toAssertion(credential)).then(
-                    params.onAssertion,
-                    (error) => params.onError?.(error),
-                );
-            },
-            (error) => {
-                if (autofill === controller) autofill = null;
-                if (controller.signal.aborted || isDomError(error, 'AbortError')) return;
-                params.onError?.(ceremonyError(error, params.rpId));
-            },
-        );
+    const begin = () => {
+        if (controller.signal.aborted) return;
+        navigator.credentials
+            .get({
+                mediation: 'conditional',
+                signal: controller.signal,
+                publicKey: { ...publicKeyGet(params.rpId, params.challenge), timeout: 600_000 },
+            })
+            .then(
+                (credential) => {
+                    if (controller.signal.aborted) return;
+                    if (autofill === controller) autofill = null;
+                    // Counted once picked: until then it shows nothing of its own.
+                    void ceremony(config, 'get:autofill', async () => toAssertion(credential)).then(
+                        params.onAssertion,
+                        (error) => params.onError?.(error),
+                    );
+                },
+                (error) => {
+                    if (autofill === controller) autofill = null;
+                    if (controller.signal.aborted || isDomError(error, 'AbortError')) return;
+                    params.onError?.(ceremonyError(error, params.rpId));
+                },
+            );
+    };
+    if (known) {
+        begin();
+    } else {
+        void passkeyCapabilities().then((caps) => {
+            if (caps.conditionalGet) begin();
+            else if (autofill === controller) autofill = null;
+        });
+    }
     return {
         stop() {
             controller.abort();

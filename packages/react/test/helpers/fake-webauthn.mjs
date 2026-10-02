@@ -1,8 +1,9 @@
 // A virtual authenticator for a jsdom page: resident P-256 credentials made
 // with node:crypto, behind `navigator.credentials.get` / `create`, with
 // `PublicKeyCredential.getClientCapabilities` /
-// `isConditionalMediationAvailable` and `navigator.userActivation`. Every call
-// is recorded with its options. What the next calls do can be scripted:
+// `isConditionalMediationAvailable` (answered late while `state.capsGate` is
+// pending) and `navigator.userActivation`. Every call is recorded with its
+// options. What the next calls do can be scripted:
 //
 //   authenticator.next('cancel')                the sheet is closed (NotAllowedError)
 //   authenticator.next({ error: 'SecurityError' }) / 'InvalidStateError' / 'NotSupportedError'
@@ -86,6 +87,8 @@ export function installFakeWebAuthn(window, { origin } = {}) {
         calls: [],
         script: [],
         caps: { immediateGet: false, conditionalGet: false },
+        /** A promise the capability reads wait for: a browser that answers late. */
+        capsGate: null,
         userActivation: true,
         /** A pending conditional get, answered by `pickAutofill`. */
         conditional: null,
@@ -206,8 +209,14 @@ export function installFakeWebAuthn(window, { origin } = {}) {
         configurable: true,
     });
     class PublicKeyCredential {}
-    PublicKeyCredential.getClientCapabilities = async () => ({ ...state.caps });
-    PublicKeyCredential.isConditionalMediationAvailable = async () => state.caps.conditionalGet;
+    PublicKeyCredential.getClientCapabilities = async () => {
+        await state.capsGate;
+        return { ...state.caps };
+    };
+    PublicKeyCredential.isConditionalMediationAvailable = async () => {
+        await state.capsGate;
+        return state.caps.conditionalGet;
+    };
     window.PublicKeyCredential = PublicKeyCredential;
     globalThis.PublicKeyCredential = PublicKeyCredential;
 

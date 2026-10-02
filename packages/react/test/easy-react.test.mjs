@@ -1,15 +1,20 @@
 // The Easy tier in React, through the built package rendered with react-dom
 // in a jsdom page (virtual authenticator, scripted devnet): the provider
 // throws for a missing mode; `useWallet()` has the Easy fields and a status
-// that follows the store; the 3.x flags warn once when read; `ConnectButton`
-// runs "Continue with passkey" through the SDK's own sheets (data-lk hooks),
-// labels each step, and once connected offers Copy address and Sign out; a
-// reload is connected on its first effect; in portal mode the same button
-// opens the portal. Run with `pnpm test`.
+// that follows the store; the 3.x flags warn once when read, and the
+// session, authority and deferred functions once when called;
+// `ConnectButton` runs "Continue with passkey" through the SDK's own sheets
+// (data-lk hooks), labels each step, and once connected offers Copy address
+// and Sign out; autofill starts on a page whose browser reports it late; a
+// reload is connected on its first effect, and hydrating a server render
+// over it does not mismatch; in portal mode the same button opens the
+// portal. Run with `pnpm test`.
 import { test, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
 import { freshPage, freshPages } from './helpers/fresh-page.mjs';
-import { APP_NAME, RP_ID, embeddedConfig, loadPackage, setUpPage, until } from './helpers/embedded-page.mjs';
+import { credential } from './helpers/fake-webauthn.mjs';
+import { APP_NAME, RP_ID, embeddedConfig, loadPackage, setUpPage, tick, until } from './helpers/embedded-page.mjs';
 
 console.debug = () => {};
 const errors = [];
@@ -193,6 +198,86 @@ test('/hooks: the same useWallet and store as the root; useWalletStatus gives th
     assert.ok(steps.includes('connecting:no-passkey'), steps.join(' '));
     assert.equal(steps[steps.length - 1], 'disconnected:null');
     await unmount();
+});
+
+// ─── Autofill on a page that loads disconnected ─────────────────────────────
+
+const conditionalGets = () => authenticator.calls.filter((c) => c.kind === 'get' && c.options.mediation === 'conditional');
+
+/** The browser answers the capability reads only when `answer()` is called. */
+function lateCapabilities(caps) {
+    let answer;
+    authenticator.state.caps = caps;
+    authenticator.state.capsGate = new Promise((resolve) => (answer = resolve));
+    return () => answer();
+}
+function restoreCapabilities() {
+    authenticator.state.capsGate = null;
+    authenticator.state.caps = { immediateGet: false, conditionalGet: false };
+}
+
+test('ConnectButton autofill: the conditional get starts once the browser reports autofill, and a passkey picked there connects', async () => {
+    const cred = credential({ rpId: RP_ID, userHandle: randomBytes(32) });
+    authenticator.add(cred);
+    const { vault } = chain.walletFor(cred, { rpId: RP_ID, seed: cred.userHandle, counter: 3 });
+    const answer = lateCapabilities({ immediateGet: false, conditionalGet: true });
+    try {
+        // A fresh page: nothing read yet, and the browser answers after the first effects.
+        const R = await freshPage();
+        const { container, unmount } = await mount(h(R.LazorkitProvider, embeddedProps(), h(R.ConnectButton, { autofill: true })));
+        assert.ok(container.querySelector('[data-lk="autofill"]'), 'the field is there');
+        assert.equal(conditionalGets().length, 0, 'nothing asked before the browser has answered');
+        await act(async () => answer());
+        await until(() => conditionalGets().length === 1, 'the conditional get');
+        await act(async () => authenticator.pickAutofill(0));
+        await until(() => R.useWalletStore.getState().wallet, 'connected');
+        assert.equal(R.useWalletStore.getState().wallet.vaultPda, vault.toBase58());
+        await unmount();
+    } finally {
+        restoreCapabilities();
+    }
+});
+
+test('startAutofill before the browser has answered: stop() or a connect first means no conditional get; none where it has no autofill', async () => {
+    const cred = credential({ rpId: RP_ID, userHandle: randomBytes(32) });
+    authenticator.add(cred);
+    chain.walletFor(cred, { rpId: RP_ID, seed: cred.userHandle, counter: 3 });
+    try {
+        // stop() first.
+        let answer = lateCapabilities({ immediateGet: false, conditionalGet: true });
+        let C = await freshPage('core.mjs');
+        let client = C.createLazorkitClient(embeddedConfig());
+        const handle = client.startAutofill();
+        assert.ok(handle, 'a handle at once, before the browser has answered');
+        handle.stop();
+        answer();
+        await tick(20);
+        assert.equal(conditionalGets().length, 0);
+
+        // A connect first (it aborts the autofill it would race with).
+        answer = lateCapabilities({ immediateGet: false, conditionalGet: true });
+        C = await freshPage('core.mjs');
+        client = C.createLazorkitClient(embeddedConfig());
+        client.startAutofill();
+        const connected = await client.connect();
+        assert.equal(connected.how, 'adopted');
+        answer();
+        await tick(20);
+        assert.equal(conditionalGets().length, 0, 'no conditional get beside or after the connect');
+
+        // A browser without autofill: nothing started; null once that is known.
+        localStorage.clear();
+        answer = lateCapabilities({ immediateGet: false, conditionalGet: false });
+        C = await freshPage('core.mjs');
+        client = C.createLazorkitClient(embeddedConfig());
+        assert.ok(client.startAutofill());
+        answer();
+        await tick(20);
+        assert.equal(conditionalGets().length, 0);
+        assert.equal(client.startAutofill(), null);
+    } finally {
+        restoreCapabilities();
+    }
 });
 
 test('portal mode: the same button opens the portal connect', async () => {

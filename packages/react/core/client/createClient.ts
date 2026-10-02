@@ -47,8 +47,10 @@ export interface LazorkitClient {
     /**
      * Embedded: passkey autofill in an `autocomplete="username webauthn"`
      * field. A passkey picked there connects as "Continue with passkey" would.
-     * `null` where the browser has no autofill, in portal mode, or while a
-     * wallet is connected.
+     * `null` where the browser is known to have no autofill, in portal mode,
+     * or while a wallet is connected. Called before the browser has said what
+     * it can do (on a page that loads disconnected), the handle comes back at
+     * once and the request starts when it has, unless `stop()` came first.
      */
     startAutofill(): { stop(): void } | null;
     /**
