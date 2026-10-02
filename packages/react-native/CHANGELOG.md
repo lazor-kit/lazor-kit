@@ -1,5 +1,50 @@
 # @lazorkit/wallet-mobile-adapter
 
+## 2.3.0
+
+### Minor Changes
+
+- [#110](https://github.com/lazor-kit/lazor-kit/pull/110) [`75128cb`](https://github.com/lazor-kit/lazor-kit/commit/75128cb3e752d35b0511cf5e6e6645b7ca441754) Thanks [@onspeedhp](https://github.com/onspeedhp)! - **Breaking:** `addAuthorityEd25519` has no default role any more: `role` is required
+
+  2.2.1 gave a key added without a `role` the delegate rank (`ROLE_SPENDER`), which v2 accepts only with a `policy`.
+
+  - `role` is required in the types (`AddAuthorityPayload.role: number`, on `useWallet()` and on the store): a call without it does not compile.
+  - At runtime, a missing role, or one that is not `ROLE_OWNER` (0), `ROLE_ADMIN` (1) or `ROLE_SPENDER` (2), is refused before anything is read or the portal opens: the call rejects (and calls `onFail`, and sets `error`) with an error that says what each rank may do and suggests `ROLE_SPENDER` with a policy for a key the app holds. The same rule as `@lazorkit/wallet` 3.3.0's `addAuthority`.
+  - `ROLE_OWNER` on a v2 wallet is refused the same way, before anything is read or the portal opens: the protocol SDK adds an Owner only on an explicit opt-in this method does not pass, so 2.2.1 failed there too, after reading the chain. The error names `ROLE_ADMIN` and `ROLE_SPENDER`. On a v1 wallet `ROLE_OWNER` is accepted, as before.
+
+  A breaking change in a minor release, deliberately, as for the web SDK: protocol v2 is not live on mainnet yet, and making the rank explicit is the point. Every `addAuthorityEd25519` call that compiles against this release adds the same authority 2.2.1 did.
+
+  **Migration:** pass the role you relied on: `addAuthorityEd25519({ newEd25519Pubkey, role: ROLE_SPENDER, policy }, options)` keeps 2.2.1's behaviour.
+
+### Patch Changes
+
+- [#109](https://github.com/lazor-kit/lazor-kit/pull/109) [`91ae852`](https://github.com/lazor-kit/lazor-kit/commit/91ae85245c4bb72bba89e4f732d935961c1ca9ed) Thanks [@onspeedhp](https://github.com/onspeedhp)! - `connect` and `disconnect` honour their callbacks on the store too, and `transferSol` reports a refusal to `onFail`
+
+  The adapter's callback contract (callbacks run once `isSigning` is `false`, right before the promise settles, or at once for a call refused because another is running; what they throw changes nothing) now covers every entry point:
+
+  - `store.connect({ onSuccess, onFail })` calls them, once `isConnecting` is `false`; 2.2.1 ignored them. `useWallet().connect` passes them through, so they run once, and a throwing `onSuccess` no longer rejects a connect that succeeded or calls `onFail`. A refusal ("Already connecting") calls `onFail` at once, while the running connect still holds `isConnecting`.
+  - `disconnect(options?)` on the store takes `onSuccess` / `onFail`, and `useWallet().disconnect` passes them through: a throwing `onSuccess` no longer rejects it.
+  - `transferSol` with no wallet connected calls `onFail` and sets `error`, as every other action does; 2.2.1 rejected without either.
+
+- [#109](https://github.com/lazor-kit/lazor-kit/pull/109) [`878bb2a`](https://github.com/lazor-kit/lazor-kit/commit/878bb2ac6adb35cd34b1c075a2fd60a1970fcc6c) Thanks [@onspeedhp](https://github.com/onspeedhp)! - `isSignatureReusedError` and `isRetiredDeploymentError` are true for the adapter's own errors, and every `is*Error` predicate reads through wrapped errors
+
+  2.2.1 checked only an error's text, so `isSignatureReusedError(new SignatureReusedError())` and `isRetiredDeploymentError(new V1WalletRetiredError())` were `false` (the bug 2.2.1 fixed in `isDeferredExpiredError`).
+
+  - `isSignatureReusedError`, `isRetiredDeploymentError` and `isDeferredExpiredError` are true for `SignatureReusedError`, `V1WalletRetiredError` and `DeferredExpiredError`, including one from another copy of the package (matched by `name` and `code`).
+  - They read through what wraps an error: `cause`, and the `error` of a wallet-adapter `WalletError`.
+  - For a raw error they read the message, the logs, a paymaster's `data` and a TransactionError, in the error and in its causes. The documented rules for raw errors are unchanged: a 3006 with no logs counts as LazorKit's, and a 3014 with no logs does not.
+  - `isRetiredDeploymentError` also accepts Kora's `Custom(4018)` text, a 4018 whose logs are only in the paymaster's `data`, and a TransactionError object. Actions map a retired v1 wallet's failure to `V1WalletRetiredError` with this predicate, so these now reach the app as `V1WalletRetiredError` instead of a raw `PaymasterError`.
+  - The README says which error classes have no predicate: compare `error.name` for those.
+
+- [#110](https://github.com/lazor-kit/lazor-kit/pull/110) [`ed6ef1e`](https://github.com/lazor-kit/lazor-kit/commit/ed6ef1e732d925c1452fcdbac0fc2810ca965d9a) Thanks [@onspeedhp](https://github.com/onspeedhp)! - Docs: the adapter stores no session key, and how to keep one
+
+  No runtime change. The adapter never generated or stored a session key: `createSession` registers the public key your app passes, `signAndSendWithSession` signs with the `Keypair` you hand it, and AsyncStorage holds only the wallet's public record, the configuration and each passkey's transaction state. A new test checks that nothing the adapter persists holds a session key's secret.
+
+  - README, new section "Session keys": keep the key in the OS keystore with `expo-secure-store` (`WHEN_UNLOCKED_THIS_DEVICE_ONLY`), never in AsyncStorage; keep the wallet it belongs to with it and use it only while that wallet is connected; delete it once its session is revoked or expired, and at disconnect; an iOS Keychain item survives an uninstall; exclude it from Android Auto Backup.
+  - The JSDoc of `SessionSignPayload.sessionKeypair` and `CreateSessionPayload.sessionKey` says the same.
+
+  Patch: README and type documentation only, published so that integrators see them in the package.
+
 ## 2.2.1
 
 ### Patch Changes
