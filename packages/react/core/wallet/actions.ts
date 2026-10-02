@@ -17,15 +17,19 @@ import {
     TransactionInstruction,
     Connection,
 } from '@solana/web3.js';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import bs58 from 'bs58';
 import { SignResult } from '../portal';
-import { StorageManager, WalletInfo } from '../storage';
+import { WalletInfo, walletRecords } from '../storage';
 import { Paymaster } from '../paymaster/paymaster';
-import { WalletState, ConnectOptions, DisconnectOptions, SignAndSendTransactionPayload, CreateSessionPayload, RevokeSessionPayload, AddAuthorityPayload, AuthorizeAndExecutePayload, AuthorizeDeferredPayload, ExecuteDeferredPayload } from '../types';
+import { WalletState, ConnectOptions, DisconnectOptions, SignAndSendTransactionPayload, SignAndSendPayload, CreateSessionPayload, RevokeSessionPayload, AddAuthorityPayload, AuthorizeAndExecutePayload, AuthorizeDeferredPayload, ExecuteDeferredPayload } from '../types';
 import {
     createDialogManager,
+    createPortalDialog,
     getCredentialHash,
     handleActionError,
     cleanupLegacyStorage,
+    notify,
 } from './utils';
 import { clearPendingConfirmation, connectAbandoned, connectFreshWallet } from './resolveWallet';
 import {
@@ -50,8 +54,17 @@ import { type AuthorityTurn, sendAndConfirm, withAuthority } from './sequence';
 import { buildPreviewTransactionBase64 } from './preview';
 import { deferredExpiryOffset, executeBeforeExpiry } from './deferred';
 import { type KeySigner, type KeyStorage, forgetKey, generateKey, saveKey, wipeKey, wipeMark } from '../keys';
-import { keyForConnectedWallet } from './keyBinding';
-import type { SignMessageResult } from '../message/signedMessage';
+import { keyForConnectedWallet, walletOfKey } from './keyBinding';
+import type { SignMessageResult, SignedMessageInput } from '../message/signedMessage';
+import { loadKey } from '../keys';
+import { UserRejectedError, isUserRejection } from '../errors';
+import { acceptStoredWallet, programIdsFor } from '../client/validate';
+import { connectEmbedded } from '../embedded/connect';
+import { passkeySeatOf } from '../embedded/chain';
+import { emit } from '../embedded/events';
+import { EmbeddedPrompt } from '../embedded/prompt';
+import { buildReview, snapshotInstructions } from '../embedded/review';
+import type { Assertion } from '../embedded/webauthn';
 
 export function randomBytes(size: number): Uint8Array {
     return globalThis.crypto.getRandomValues(new Uint8Array(size));
@@ -198,8 +211,16 @@ export const connectAction = async (
     set({ isConnecting: true, error: null });
 
     try {
-        let existingWallet = await StorageManager.getWallet();
-        cleanupLegacyStorage();
+        const records = walletRecords();
+        let existingWallet = await records.getWallet();
+        if (embedded) {
+            // A record from another rpId, mode or cluster is not this app's wallet.
+            const valid = acceptStoredWallet(existingWallet, config, programIdsFor(config));
+            if (existingWallet && !valid) await records.clearWallet();
+            existingWallet = valid;
+        } else {
+            cleanupLegacyStorage();
+        }
 
         if (existingWallet) {
             const version = versionOf(existingWallet);
@@ -208,7 +229,7 @@ export const connectAction = async (
             // migration page, say. Then it is closed and its address is dead;
             // forget it and connect afresh, which finds the v2 wallet.
             if (version === 1 && !(await connection.getAccountInfo(new PublicKey(existingWallet.smartWallet)))) {
-                await StorageManager.clearWallet();
+                await records.clearWallet();
                 set({ wallet: null });
                 existingWallet = null;
             } else if (!existingWallet.vaultPda) {
@@ -217,7 +238,7 @@ export const connectAction = async (
                 // address funds belong at.
                 const [vault] = clientFor(version, connection).findVault(new PublicKey(existingWallet.smartWallet));
                 existingWallet = { ...existingWallet, vaultPda: vault.toBase58() };
-                await StorageManager.saveWallet(existingWallet);
+                await records.saveWallet(existingWallet);
             }
         }
 
@@ -235,6 +256,53 @@ export const connectAction = async (
         }
 
         const connection = get().connection;
+        if (embedded) {
+            const result = await connectEmbedded({
+                config,
+                connection,
+                signal: attempt.signal,
+                setStep: (step) => {
+                    if (connectInFlight === attempt) set({ step });
+                },
+                confirmWallet: options?.confirmWallet,
+                onConfirmWallet: options?.onConfirmWallet,
+                preAsserted,
+                heldSessionKey: async () => {
+                    // D10: the session key this device holds, and the wallet it is bound to.
+                    const stored = await loadKey(keyStorageOf(config), 'session');
+                    if (!stored) return null;
+                    const walletPda = await walletOfKey(connection, 'session', stored.signer.publicKey, stored.info);
+                    return walletPda ? { walletPda, publicKey: stored.signer.publicKey.toBase58() } : null;
+                },
+                createWallet: async ({ seed, owner }) => {
+                    const client = clientFor(2, connection);
+                    const paymaster = paymasterFor(config, 2);
+                    const feePayer = await paymaster.getPayer();
+                    const { instructions, walletPda, authorityPda } = await client.createWallet({
+                        payer: feePayer,
+                        userSeed: seed,
+                        owner: { type: 'secp256r1', ...owner },
+                    });
+                    let slot: number | undefined;
+                    const signature = await buildAndSendTx({
+                        paymaster,
+                        connection,
+                        feePayer,
+                        instructions,
+                        createsAuthority: authorityPda,
+                        verifyFeePayer: true,
+                        onLanded: (landed) => (slot = landed),
+                    });
+                    return { walletPda, authorityPda, signature, slot };
+                },
+            });
+            if (attempt.signal.aborted) throw connectAbandoned();
+            await walletRecords().saveWallet(result.wallet);
+            set({ wallet: result.wallet });
+            emit(config, { type: 'connected', how: result.how, signatures: result.signatures });
+            return result.wallet;
+        }
+
         // See ./resolveWallet: which wallet is this passkey's own is proven,
         // not guessed from the public credential hash, and a wallet the rule
         // will not adopt goes to the user. A v1 wallet made before LazorKit v2
@@ -247,7 +315,7 @@ export const connectAction = async (
             watchMints: config.watchMints,
             onConfirmWallet: options?.onConfirmWallet ?? config.onConfirmWallet,
             confirmWallet: options?.confirmWallet,
-            openPortal: () => createDialogManager(config),
+            openPortal: () => createPortalDialog(config),
             createWallet: async (owner) => {
                 const client = clientFor(2, connection);
                 const paymaster = paymasterFor(config, 2);
@@ -264,7 +332,7 @@ export const connectAction = async (
         });
 
         if (attempt.signal.aborted) throw connectAbandoned();
-        await StorageManager.saveWallet(walletInfo);
+        await records.saveWallet(walletInfo);
         set({ wallet: walletInfo });
         return walletInfo;
 
@@ -272,7 +340,7 @@ export const connectAction = async (
         if (attempt.signal.aborted) {
             // Abandoned by disconnect, which already reset the store: leave
             // its `error` alone, but still fail this call.
-            throw connectAbandoned();
+            throw embedded ? new UserRejectedError('abandoned') : connectAbandoned();
         }
         return handleActionError(error, set, walletVersion(get));
     } finally {
@@ -280,7 +348,7 @@ export const connectAction = async (
         // it, and a connect started since may have set it again.
         if (connectInFlight === attempt) {
             connectInFlight = null;
-            set({ isConnecting: false });
+            set({ isConnecting: false, step: null });
         }
     }
 };
@@ -318,8 +386,8 @@ export const disconnectAction = async (
         connectInFlight?.abort();
         connectInFlight = null;
         clearPendingConfirmation();
-        await StorageManager.clearWallet();
-        set({ wallet: null, error: null, isConnecting: false, isLoading: false });
+        await walletRecords().clearWallet();
+        set({ wallet: null, error: null, isConnecting: false, isLoading: false, ...(get().isSigning ? {} : { step: null }) });
     } catch (error: unknown) {
         return handleActionError(error, set);
     } finally {
@@ -339,9 +407,10 @@ export const disconnectAction = async (
 export const signAndSendTransactionAction = async (
     get: () => WalletState,
     set: (state: Partial<WalletState>) => void,
-    payload: SignAndSendTransactionPayload
+    payload: SignAndSendPayload
 ): Promise<string> => {
     const { isSigning, connection, wallet, config } = get();
+    const embedded = config.mode === 'embedded';
 
     if (isSigning) {
         throw new Error('Already signing');
