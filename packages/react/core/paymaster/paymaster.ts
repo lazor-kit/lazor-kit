@@ -22,6 +22,12 @@ export interface PaymasterConfig {
     apiKey?: string;
 }
 
+/** `signAndSend` / `signAndSendVersionedTransaction` options. */
+export interface PaymasterSendOptions {
+    /** Runs right before each attempt to send; what it throws stops the send. */
+    beforeAttempt?: () => void;
+}
+
 /** How long a `signAndSendTransaction` request may take: a paymaster may hold it until the transaction is confirmed. */
 const SEND_TIMEOUT_MS = 90_000;
 /** How long any other request may take. */
@@ -288,14 +294,32 @@ export class Paymaster {
      *   wallet's protocol. After an earlier attempt whose answer was lost it
      *   is the `PaymasterError` with `maybeSent`: that attempt's outcome is
      *   still unknown.
+     * - `beforeAttempt` throws, before an attempt: what it throws, when no
+     *   earlier attempt may have been sent (nothing was); otherwise the last
+     *   attempt's `PaymasterError` with `maybeSent`, its message saying why
+     *   the bytes were not sent again.
      */
     private async sendWithRetries(
         attemptSend: () => Promise<string>,
         maxRetries: number,
         baseDelay: number,
+        beforeAttempt?: () => void,
     ): Promise<string> {
         let maybeSent = false;
+        let last: PaymasterError | undefined;
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            if (beforeAttempt) {
+                try {
+                    beforeAttempt();
+                } catch (refusal) {
+                    if (!maybeSent || !last) throw refusal;
+                    // An earlier attempt may still land: its outcome is unknown, not refused.
+                    throw new PaymasterError(
+                        `${last.message} (not sent again: ${(refusal as Error)?.message ?? String(refusal)})`,
+                        { code: last.code, data: last.data, httpStatus: last.httpStatus, maybeSent: true, cause: last },
+                    );
+                }
+            }
             try {
                 return await attemptSend();
             } catch (caught) {
@@ -304,6 +328,7 @@ export class Paymaster {
                         ? caught
                         : new PaymasterError((caught as Error)?.message ?? String(caught), { cause: caught });
                 this.logger.error(`Attempt ${attempt} failed:`, error);
+                last = error;
                 if (error.signature) throw error;
                 if (isAlreadyProcessed(error)) {
                     error.maybeSent = true;
@@ -359,9 +384,17 @@ export class Paymaster {
      * @param transaction Transaction to sign and send
      * @param maxRetries Maximum number of retry attempts (default: 3)
      * @param baseDelay Base delay between retries in ms (default: 1000)
+     * @param options.beforeAttempt Runs right before each attempt; what it
+     *   throws stops the send (see `sendWithRetries`). The SDK passes its kept
+     *   key's check: nothing is sent once the wallet has been disconnected.
      * @returns Transaction signature
      */
-    async signAndSend(transaction: Transaction, maxRetries: number = 3, baseDelay: number = 1000): Promise<string> {
+    async signAndSend(
+        transaction: Transaction,
+        maxRetries: number = 3,
+        baseDelay: number = 1000,
+        options: PaymasterSendOptions = {},
+    ): Promise<string> {
         const serialized = transaction.serialize({
             verifySignatures: false,
             requireAllSignatures: false
@@ -370,6 +403,7 @@ export class Paymaster {
             () => this.sendOnce(serialized.toString('base64'), transaction.feePayer ?? undefined),
             maxRetries,
             baseDelay,
+            options.beforeAttempt,
         );
     }
 
@@ -378,12 +412,18 @@ export class Paymaster {
      * @param transaction Transaction to sign and send
      * @param maxRetries Maximum number of retry attempts (default: 3)
      * @param baseDelay Base delay between retries in ms (default: 1000)
+     * @param options.beforeAttempt As for `signAndSend`.
      * @returns Transaction signature
      */
-    async signAndSendVersionedTransaction(transaction: VersionedTransaction, maxRetries: number = 3, baseDelay: number = 1000): Promise<string> {
+    async signAndSendVersionedTransaction(
+        transaction: VersionedTransaction,
+        maxRetries: number = 3,
+        baseDelay: number = 1000,
+        options: PaymasterSendOptions = {},
+    ): Promise<string> {
         // V0 message: account_keys[0] is the fee payer.
         const feePayerKey = transaction.message.staticAccountKeys[0];
         const serialized = Buffer.from(transaction.serialize()).toString('base64');
-        return this.sendWithRetries(() => this.sendOnce(serialized, feePayerKey), maxRetries, baseDelay);
+        return this.sendWithRetries(() => this.sendOnce(serialized, feePayerKey), maxRetries, baseDelay, options.beforeAttempt);
     }
 }

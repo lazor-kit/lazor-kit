@@ -51,6 +51,7 @@ import { buildPreviewTransactionBase64 } from './preview';
 import { deferredExpiryOffset, executeBeforeExpiry } from './deferred';
 import { type KeySigner, type KeyStorage, forgetKey, generateKey, saveKey, wipeKey, wipeMark } from '../keys';
 import { keyForConnectedWallet } from './keyBinding';
+import { noteDisconnect } from './disconnects';
 import type { SignMessageResult } from '../message/signedMessage';
 
 export function randomBytes(size: number): Uint8Array {
@@ -116,6 +117,10 @@ function paymasterFor(config: WalletConfig, version: ProtocolVersion): Paymaster
  * the paymaster's feePayer, pass it in `signers`: each adds its signature to
  * its own slot, in v0 and legacy alike, before the paymaster adds the fee
  * payer's. A transaction is signed once: `sendAndConfirm` never re-signs it.
+ *
+ * `beforeSend` runs right before each attempt to hand the transaction to the
+ * paymaster; what it throws stops the send (a kept key's `assertSendable`:
+ * nothing goes out once the wallet has been disconnected).
  */
 async function buildAndSendTx(params: {
     paymaster: Paymaster;
@@ -123,6 +128,7 @@ async function buildAndSendTx(params: {
     feePayer: PublicKey;
     instructions: TransactionInstruction[];
     signers?: KeySigner[];
+    beforeSend?: () => void;
     addressLookupTables?: AddressLookupTableAccount[];
     txVersion?: 'legacy' | 'v0';
     turn?: AuthorityTurn;
@@ -132,6 +138,7 @@ async function buildAndSendTx(params: {
     const { paymaster, connection, feePayer, instructions } = params;
     const signers = params.signers ?? [];
     const txVersion = params.txVersion ?? 'v0';
+    const sendOptions = { beforeAttempt: params.beforeSend };
     const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
 
     let send: () => Promise<string>;
@@ -145,7 +152,7 @@ async function buildAndSendTx(params: {
         tx.recentBlockhash = blockhash;
         tx.feePayer = feePayer;
         for (const signer of signers) await signer.signTransaction(tx);
-        send = () => paymaster.signAndSend(tx);
+        send = () => paymaster.signAndSend(tx, undefined, undefined, sendOptions);
         simulateLogs = async () => (await connection.simulateTransaction(tx)).value.logs;
     } else {
         const v0Message = new TransactionMessage({
@@ -155,7 +162,7 @@ async function buildAndSendTx(params: {
         }).compileToV0Message(params.addressLookupTables ?? []);
         const tx = new VersionedTransaction(v0Message);
         for (const signer of signers) await signer.signTransaction(tx);
-        send = () => paymaster.signAndSendVersionedTransaction(tx);
+        send = () => paymaster.signAndSendVersionedTransaction(tx, undefined, undefined, sendOptions);
         simulateLogs = async () =>
             (await connection.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true })).value.logs;
     }
@@ -178,6 +185,15 @@ async function buildAndSendTx(params: {
  * page, as is this.)
  */
 let connectInFlight: AbortController | null = null;
+
+/**
+ * Abandons the store's connect in flight, if any (see `connectInFlight`):
+ * at the store's `disconnect`, and at the adapter's (see react/store).
+ */
+export function abandonConnect(): void {
+    connectInFlight?.abort();
+    connectInFlight = null;
+}
 
 /**
  * Connect wallet action
@@ -295,8 +311,9 @@ function namesWallet(wallet: WalletInfo, address: string): boolean {
  * on mobile: an action already running is not abandoned (its passkey prompt
  * may still be open), and clearing its flag here would let a second one start
  * beside it, whose flag the first would then clear when it ends. (A session
- * or authority send still running does not sign once the wallet is gone: see
- * ./keyBinding.)
+ * or authority send still running neither signs nor sends after this, even
+ * if its wallet is connected again by then: see ./keyBinding and
+ * ./disconnects.)
  *
  * The session key the SDK keeps is deleted, unless `keepSessionKeys`: the
  * one in the slot, whichever wallet it is for, and one a `createSession`
@@ -311,12 +328,12 @@ export const disconnectAction = async (
     set: (state: Partial<WalletState>) => void,
     options?: DisconnectOptions,
 ): Promise<void> => {
-
+    // First: a kept key loaded before this signs and sends nothing from here on.
+    noteDisconnect();
     try {
         // A connect still running is abandoned (see connectInFlight), so
         // resetting `isConnecting` below cannot let two run side by side.
-        connectInFlight?.abort();
-        connectInFlight = null;
+        abandonConnect();
         clearPendingConfirmation();
         await StorageManager.clearWallet();
         set({ wallet: null, error: null, isConnecting: false, isLoading: false });
@@ -745,6 +762,7 @@ export const signAndSendWithSessionAction = async (
             feePayer,
             instructions,
             signers: [sessionKey],
+            beforeSend: stored.assertSendable,
             addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
             txVersion: payload.transactionOptions?.txVersion,
         });
@@ -1210,6 +1228,7 @@ export const signAndSendWithAuthorityAction = async (
             feePayer,
             instructions,
             signers: [authorityKey],
+            beforeSend: stored.assertSendable,
             addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
             txVersion: payload.transactionOptions?.txVersion,
         });

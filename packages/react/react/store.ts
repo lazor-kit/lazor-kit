@@ -8,6 +8,7 @@ import { Connection } from '@solana/web3.js';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import {
+  abandonConnect,
   connectAction,
   disconnectAction,
   signAndSendTransactionAction,
@@ -23,6 +24,7 @@ import {
   executeDeferredAction,
 } from '../core/wallet/actions';
 import { reportOutcome } from '../core/wallet/utils';
+import { onAdapterDisconnect } from '../core/wallet/disconnects';
 
 import { WalletInfo, WalletConfig, storage } from '../core/storage';
 import { DEFAULTS, DEFAULT_COMMITMENT } from '../config';
@@ -125,3 +127,17 @@ export const useWalletStore = create<WalletState>()(
     }
   )
 );
+
+// `LazorkitWalletAdapter.disconnect()` (and the Wallet Standard
+// `standard:disconnect`, which calls it) disconnects the store too, as the
+// store's own `disconnect` would: a connect still running is abandoned, and
+// the wallet goes. The stored wallet is the one both connect, and a store
+// left connected would keep a kept key signing after the user signed out:
+// the authority key, and a session key kept with `keepSessionKeys`. The
+// adapter clears the stored wallet and deletes the session key (unless
+// `keepSessionKeys`) itself; `isSigning` is left to the action running, as
+// the store's `disconnect` leaves it.
+onAdapterDisconnect(() => {
+  abandonConnect();
+  useWalletStore.setState({ wallet: null, error: null, isConnecting: false, isLoading: false });
+});
