@@ -756,24 +756,33 @@ export const signAndSendWithSessionAction = async (
 };
 
 /**
- * Why `role` is not one an authority can have, or null when it is: one of
- * the three ranks the program knows. There is no default: the rank decides
- * what the key may do to the wallet, so the caller names it.
+ * Why `role` is not one `method` can give a new authority on a wallet of
+ * `version`, or null when it is: one of the three ranks the program knows,
+ * except an Owner on v2, which the protocol SDK adds only on an explicit
+ * opt-in this method does not pass. There is no default: the rank decides
+ * what the key may do to the wallet, so the caller names it. Checked before
+ * anything is read or prompted.
  */
-export function authorityRoleProblem(role: unknown, method: string): string | null {
-    if (role === ROLE_OWNER || role === ROLE_ADMIN || role === ROLE_SPENDER) return null;
+export function authorityRoleProblem(role: unknown, method: string, version: ProtocolVersion): string | null {
+    const ranks: unknown[] = version === 2 ? [ROLE_ADMIN, ROLE_SPENDER] : [ROLE_OWNER, ROLE_ADMIN, ROLE_SPENDER];
+    if (ranks.includes(role)) return null;
     const what =
         role === undefined
             ? `${method} needs a role: the rank the new key gets on the wallet. There is no default.`
-            : `${method}: ${typeof role === 'number' ? role : JSON.stringify(role)} is not a role.`;
-    return (
-        `${what} Pass one of: ` +
-        `ROLE_OWNER (0), which adds and removes any authority, other owners included (never the last owner), and spends without limit; ` +
-        `ROLE_ADMIN (1), which adds and removes delegates only, and spends without limit; ` +
-        `ROLE_SPENDER (2), the delegate rank, which manages no authority and spends only within its policy ` +
-        `(required for this rank on v2: build it with serializeActions([...])). ` +
-        `For a key your app holds, use ROLE_SPENDER with a policy.`
-    );
+            : role === ROLE_OWNER
+                ? `${method} does not add an Owner to a LazorKit v2 wallet: an Owner could remove every other authority, this passkey included.`
+                : `${method}: ${typeof role === 'number' ? role : JSON.stringify(role)} is not a role.`;
+    const owner =
+        'ROLE_OWNER (0), which adds and removes any authority, other owners included (never the last owner), and spends without limit';
+    const admin = 'ROLE_ADMIN (1), which adds and removes delegates only, and spends without limit';
+    const spender =
+        'ROLE_SPENDER (2), the delegate rank, which manages no authority and spends only within its policy ' +
+        '(required for this rank on v2: build it with serializeActions([...]))';
+    const choices =
+        version === 2
+            ? `Pass one of: ${admin}; ${spender}. On a v2 wallet ${method} never adds ${owner}.`
+            : `Pass one of: ${owner}; ${admin}; ${spender}.`;
+    return `${what} ${choices} For a key your app holds, use ROLE_SPENDER with a policy.`;
 }
 
 /**
@@ -792,7 +801,7 @@ export const addAuthorityAction = async (
     if (isSigning) throw new Error('Already signing');
     if (!wallet) refuse(set, 'No wallet connected');
     if (!connection) refuse(set, 'No connection available');
-    const roleProblem = authorityRoleProblem(payload?.role, 'addAuthority');
+    const roleProblem = authorityRoleProblem(payload?.role, 'addAuthority', versionOf(wallet));
     if (roleProblem) refuse(set, roleProblem);
     const role = payload.role;
     // forgetStoredKeys from here on means the key is not kept.

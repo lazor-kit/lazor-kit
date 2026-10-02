@@ -445,7 +445,7 @@ the portal opens.
 
 | Role | What the key may do |
 |---|---|
-| `ROLE_OWNER` (0) | Add and remove any authority, other owners included (never the last owner), and spend without limit. On a v2 wallet the protocol SDK adds an owner only with `allowOwner`, which this method does not pass, so `ROLE_OWNER` is refused before the prompt. |
+| `ROLE_OWNER` (0) | Add and remove any authority, other owners included (never the last owner), and spend without limit. On a v2 wallet the protocol SDK adds an owner only with `allowOwner`, which this method does not pass, so `ROLE_OWNER` is refused there before anything is read or the portal opens. On a v1 wallet it adds one. |
 | `ROLE_ADMIN` (1) | Add and remove delegates only, and spend without limit. |
 | `ROLE_SPENDER` (2), the delegate rank | Manage no authority; spend only within its `policy` (required for this rank on v2; build it with `serializeActions([...])`). |
 

@@ -11,8 +11,9 @@
 // deleted (or kept with keepSessionKeys), the authority key kept, and either
 // refused unless its own wallet is connected. A session or authority that
 // lands after the sign-out keeps no key, a key stored later is not written
-// back once deleted, and a stored record that names another wallet is not
-// trusted. Run with `pnpm test`.
+// back once deleted, a stored record that names another wallet is not
+// trusted, and addAuthority's role is checked before anything is read. Run
+// with `pnpm test`.
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import { test, beforeEach, after } from 'node:test';
@@ -984,11 +985,11 @@ test("a record altered to name another wallet is not trusted: refused as unbound
 
 // ─── addAuthority's role ─────────────────────────────────────────────────────
 
-test('addAuthority without a role, or with one that is not a rank, is refused before anything is read or prompted', async () => {
+test('addAuthority without a role, with one that is not a rank, or ROLE_OWNER on a v2 wallet, is refused before anything is read or prompted', async () => {
     const W = await load();
     connect(W);
     const before = requests;
-    for (const payload of [undefined, {}, { unrestricted: true, policy: new Uint8Array(8) }, { role: 3 }, { role: -1 }, { role: 1.5 }, { role: '2' }, { role: null }]) {
+    for (const payload of [undefined, {}, { unrestricted: true, policy: new Uint8Array(8) }, { role: 3 }, { role: -1 }, { role: 1.5 }, { role: '2' }, { role: null }, { role: 0 }]) {
         const calls = [];
         const error = await rejection(
             W.useWalletStore.getState().addAuthority(
@@ -996,10 +997,21 @@ test('addAuthority without a role, or with one that is not a rank, is refused be
             ),
         );
         const what = JSON.stringify(payload);
-        assert.match(error.message, payload?.role === undefined ? /^addAuthority needs a role: the rank the new key gets on the wallet\. There is no default\./ : /^addAuthority: .* is not a role\./, what);
-        assert.match(error.message, /ROLE_OWNER \(0\), which adds and removes any authority/, what);
-        assert.match(error.message, /ROLE_ADMIN \(1\), which adds and removes delegates only/, what);
-        assert.match(error.message, /ROLE_SPENDER \(2\), the delegate rank, which manages no authority and spends only within its policy/, what);
+        assert.match(
+            error.message,
+            payload?.role === undefined
+                ? /^addAuthority needs a role: the rank the new key gets on the wallet\. There is no default\./
+                : payload.role === 0
+                  ? /^addAuthority does not add an Owner to a LazorKit v2 wallet: an Owner could remove every other authority, this passkey included\./
+                  : /^addAuthority: .* is not a role\./,
+            what,
+        );
+        // On v2: the two ranks it adds, then what an Owner is and that it is not added.
+        assert.match(
+            error.message,
+            /Pass one of: ROLE_ADMIN \(1\), which adds and removes delegates only, and spends without limit; ROLE_SPENDER \(2\), the delegate rank, which manages no authority and spends only within its policy .*\. On a v2 wallet addAuthority never adds ROLE_OWNER \(0\), which adds and removes any authority, other owners included \(never the last owner\), and spends without limit\./,
+            what,
+        );
         assert.match(error.message, /For a key your app holds, use ROLE_SPENDER with a policy\.$/, what);
         if (payload) assert.deepEqual(calls, [[error, false]], what);
         assert.equal(W.useWalletStore.getState().error, error, what);
@@ -1013,6 +1025,31 @@ test('addAuthority without a role, or with one that is not a rank, is refused be
     const { authorityPda } = await W.useWalletStore.getState().addAuthority({ role: W.ROLE_ADMIN });
     assert.equal(approvals.length, 1);
     assert.equal((await storedRecord('authority')).info.authorityPda, authorityPda);
+});
+
+test('on a v1 wallet, addAuthority lists ROLE_OWNER among the ranks, and does not refuse it', async () => {
+    const W = await load();
+    connect(W);
+    // The wallet account exists: LazorkitProvider checks a v1 wallet has not been migrated.
+    accounts.set(WALLET.toBase58(), { owner: PROGRAM.toBase58() });
+    const checked = requests;
+    W.useWalletStore.setState({ wallet: { ...W.useWalletStore.getState().wallet, protocolVersion: 1 } });
+    await until(() => requests > checked, 'the provider to check the v1 wallet');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(W.useWalletStore.getState().wallet?.protocolVersion, 1, 'still connected');
+    const before = requests;
+    const error = await rejection(W.useWalletStore.getState().addAuthority({ role: 7, unrestricted: true }));
+    assert.match(
+        error.message,
+        /^addAuthority: 7 is not a role\. Pass one of: ROLE_OWNER \(0\), which adds and removes any authority, other owners included \(never the last owner\), and spends without limit; ROLE_ADMIN \(1\), .*; ROLE_SPENDER \(2\), the delegate rank, .*\. For a key your app holds, use ROLE_SPENDER with a policy\.$/,
+    );
+    assert.equal(requests, before, 'refused before anything is read');
+
+    // ROLE_OWNER passes the role check: the call goes on to read the wallet.
+    const owner = await rejection(W.useWalletStore.getState().addAuthority({ role: W.ROLE_OWNER }));
+    assert.doesNotMatch(owner.message, /is not a role|does not add an Owner|needs a role/);
+    assert.ok(requests > before, 'went on to the chain');
+    assert.equal(approvals.length, 0);
 });
 
 // ─── keyStorage: 'memory' ───────────────────────────────────────────────────

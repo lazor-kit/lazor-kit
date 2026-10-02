@@ -380,7 +380,7 @@ test('C2: a call refused for want of a wallet calls its onFail, and records the 
   }
 });
 
-test('addAuthorityEd25519 without a role, or with one that is not a rank, is refused before anything is read or prompted', async () => {
+test('addAuthorityEd25519 without a role, with one that is not a rank, or ROLE_OWNER on a v2 wallet, is refused before anything is read or prompted', async () => {
   const newEd25519Pubkey = Keypair.generate().publicKey;
   const before = requests;
   const hook = M.useWallet();
@@ -391,6 +391,7 @@ test('addAuthorityEd25519 without a role, or with one that is not a rank, is ref
     [{ newEd25519Pubkey, role: -1 }, 'hook'],
     [{ newEd25519Pubkey, role: '2' }, 'store'],
     [{ newEd25519Pubkey, role: null }, 'store'],
+    [{ newEd25519Pubkey, role: 0 }, 'hook'],
   ]) {
     store.setState({ isSigning: false, error: null, wallet: storedWallet() });
     const calls = [];
@@ -402,14 +403,34 @@ test('addAuthorityEd25519 without a role, or with one that is not a rank, is ref
       error.message,
       payload.role === undefined
         ? /^addAuthorityEd25519 needs a role: the rank the new key gets on the wallet\. There is no default\./
-        : /^addAuthorityEd25519: .* is not a role\./,
+        : payload.role === 0
+          ? /^addAuthorityEd25519 does not add an Owner to a LazorKit v2 wallet: an Owner could remove every other authority, this passkey included\./
+          : /^addAuthorityEd25519: .* is not a role\./,
       what,
     );
-    assert.match(error.message, /ROLE_OWNER \(0\).*ROLE_ADMIN \(1\).*ROLE_SPENDER \(2\), the delegate rank/, what);
+    // On v2: the two ranks it adds, then what an Owner is and that it is not added.
+    assert.match(
+      error.message,
+      /Pass one of: ROLE_ADMIN \(1\), which adds and removes delegates only.*; ROLE_SPENDER \(2\), the delegate rank.*\. On a v2 wallet addAuthorityEd25519 never adds ROLE_OWNER \(0\), which adds and removes any authority/,
+      what,
+    );
     assert.match(error.message, /For a key your app holds, use ROLE_SPENDER with a policy\.$/, what);
     assert.deepEqual(calls, [[error, false]], what);
     assert.equal(store.getState().error, error, what);
     assert.equal(store.getState().isSigning, false, what);
   }
+  assert.equal(requests, before, 'nothing read, prompted or sent');
+});
+
+test('on a v1 wallet, addAuthorityEd25519 lists ROLE_OWNER among the ranks', async () => {
+  const before = requests;
+  store.setState({ isSigning: false, error: null, wallet: { ...storedWallet(), protocolVersion: 1 } });
+  const error = await rejection(
+    store.getState().addAuthorityEd25519({ newEd25519Pubkey: Keypair.generate().publicKey, role: 7, unrestricted: true }, { redirectUrl }),
+  );
+  assert.match(
+    error.message,
+    /^addAuthorityEd25519: 7 is not a role\. Pass one of: ROLE_OWNER \(0\), which adds and removes any authority.*; ROLE_ADMIN \(1\).*; ROLE_SPENDER \(2\), the delegate rank.*\. For a key your app holds, use ROLE_SPENDER with a policy\.$/,
+  );
   assert.equal(requests, before, 'nothing read, prompted or sent');
 });
