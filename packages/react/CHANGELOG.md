@@ -1,5 +1,47 @@
 # @lazorkit/wallet
 
+## 3.3.1
+
+### Patch Changes
+
+- [#112](https://github.com/lazor-kit/lazor-kit/pull/112) [`7bab56d`](https://github.com/lazor-kit/lazor-kit/commit/7bab56d29fefbd362532ab75483834ff5386ff12) Thanks [@onspeedhp](https://github.com/onspeedhp)! - `LazorkitWalletAdapter.disconnect()` and the Wallet Standard `standard:disconnect` delete the session key the SDK keeps, as the store's `disconnect()` does.
+
+  In 3.3.0 only `useWallet().disconnect()` (and the store's) deleted it. A dApp that signs the user out through wallet-adapter (`useWallet().disconnect()` from `@solana/wallet-adapter-react`, a wallet-adapter UI's Disconnect) or through the Wallet Standard cleared the stored wallet but left the session key a `createSession` on the same page had kept, which then signed again once its wallet was connected. Now:
+
+  - `adapter.disconnect()` deletes the session key from IndexedDB, this page's memory and any plaintext an earlier release left, whichever wallet it is for and whatever `keyStorage` the provider uses, before the adapter emits `'disconnect'`. A key IndexedDB fails to delete is logged, and the disconnect still succeeds.
+  - `adapter.disconnect({ keepSessionKeys: true })` keeps it, as `DisconnectOptions.keepSessionKeys` does for the store. New type `LazorkitAdapterDisconnectOptions`.
+  - `standard:disconnect` takes no options, so it always deletes it.
+  - The authority key is kept on both paths, as by the store's `disconnect()`; `forgetStoredKeys()` deletes it.
+
+- [#106](https://github.com/lazor-kit/lazor-kit/pull/106) [`caafdc1`](https://github.com/lazor-kit/lazor-kit/commit/caafdc179ae3953009bdf6c5014db0424dbadb26) Thanks [@onspeedhp](https://github.com/onspeedhp)! - Drop the unused peer dependencies `@solana/kit` ^5, `@solana/kora` ^0.1 and `@solana-program/token` ^0.9, so the wallet installs next to `@solana/kit` 8
+
+  Nothing in the wallet imports them; the published bundle and its types are unchanged. They were carried over from an older adapter. Because npm installs peers, an app on `@solana/kit` 8 (or 6 or 7) could not install the wallet: `npm install` failed with `ERESOLVE` (`peer @solana/kit@"^5.0" from @solana-program/token@0.9.0`) unless run with `--legacy-peer-deps`. An app without `@solana/kit` got kit 5, Kora and the token program installed for nothing (111 packages instead of 72).
+
+- [#112](https://github.com/lazor-kit/lazor-kit/pull/112) [`b30046c`](https://github.com/lazor-kit/lazor-kit/commit/b30046c77903814959a996a395c5bcc33c071131) Thanks [@onspeedhp](https://github.com/onspeedhp)! - Security: the sign dialog sends the stored credentials to the portal's origin only.
+
+  When the sign dialog opened, `DialogManager` posted the stored credential id, passkey public key and wallet address (`SYNC_CREDENTIALS`) to its iframe with `postMessage(message, '*')`, six times over three seconds. `'*'` delivers to whatever page the iframe shows at that moment: a portal page that navigated or redirected the frame elsewhere handed them to that page. They are now addressed to the origin of `portalUrl`, so the browser delivers them only while the iframe shows a page of the portal's origin, and drops them otherwise. A `portalUrl` with no origin to address (not an absolute URL, or an opaque origin) sends nothing. No change for a portal that stays on its own origin: its replies were already accepted from that origin only.
+
+  Fixes code-scanning alert `js/cross-window-information-leak` (`CredentialManager.ts`).
+
+- [#113](https://github.com/lazor-kit/lazor-kit/pull/113) [`704ba51`](https://github.com/lazor-kit/lazor-kit/commit/704ba511e36fb45df20deaa08379747553f7cc34) Thanks [@onspeedhp](https://github.com/onspeedhp)! - **Security:** domain-separated passkey challenges for messages and ownership proofs
+
+  Message signatures are now domain-separated from every other passkey challenge. `signMessage` on the hook and the store, `LazorkitWalletAdapter.signMessage` and the Wallet Standard `solana:signMessage` sign a fixed-format challenge, never the app's bytes:
+
+  ```
+  challenge = tag || SHA-256(tag || message),  tag = UTF-8 "LazorKit signed message v1"   (58 bytes)
+  ```
+
+  Connect's ownership proofs get their own tag too: `createOwnershipChallenge()` now returns `UTF-8 "LazorKit ownership proof v1" || 32 random bytes` (59 bytes). `verifyOwnershipProof` accepts it unchanged. A transaction challenge is a 32-byte hash, so no challenge of one kind can be another.
+
+  - The portal gets the message challenge as `message` and the text to show as `displayMessage`. The SDK refuses a portal reply over any other challenge.
+  - `signMessage` resolves with `SignMessageResult`: `signature` and `signedPayload` as before, plus `clientDataJsonBase64` and `authenticatorDataBase64`, which a verifier needs. The adapter's and the Wallet Standard `signature` stay JSON bytes, now with the same four fields.
+  - New: `verifyWalletMessage` checks that a wallet signed a message, with the passkey's key read from the chain (the wallet's Owner authority for the credential), never taken from the client. `verifySignedMessage` is its offline part, for a key you read from chain yourself. Also `signedMessageChallenge`, `SIGNED_MESSAGE_DOMAIN` and `OWNERSHIP_PROOF_DOMAIN`.
+  - Deprecated: `useWallet().verifyMessage` and `verifySignatureBrowser`. They check only that `signature` is over `signedPayload`, not which message was signed; do not use them for authentication.
+  - `DialogManager.openSign` and the `challenge` option of `openConnect` are documented as internal: pass them only challenges the SDK computed.
+  - Fixes the hook's `signMessage`, which signed the base64 decoding of the text instead of the text.
+
+  A message signature made by an earlier release does not verify with `verifySignedMessage`; sign it again. New dependency: `@noble/curves` (already a dependency of `@solana/web3.js`).
+
 ## 3.3.0
 
 ### Minor Changes
