@@ -49,7 +49,7 @@ import { DEFAULTS } from '../../config';
 import { type AuthorityTurn, sendAndConfirm, withAuthority } from './sequence';
 import { buildPreviewTransactionBase64 } from './preview';
 import { deferredExpiryOffset, executeBeforeExpiry } from './deferred';
-import { type KeySigner, type KeyStorage, forgetKey, generateKey, saveKey } from '../keys';
+import { type KeySigner, type KeyStorage, forgetKey, generateKey, saveKey, wipeKey, wipeMark } from '../keys';
 import { keyForConnectedWallet } from './keyBinding';
 
 export function randomBytes(size: number): Uint8Array {
@@ -297,10 +297,13 @@ function namesWallet(wallet: WalletInfo, address: string): boolean {
  * or authority send still running does not sign once the wallet is gone: see
  * ./keyBinding.)
  *
- * The session key the SDK keeps is deleted, unless `keepSessionKeys`; the
+ * The session key the SDK keeps is deleted, unless `keepSessionKeys`: the
+ * one in the slot, whichever wallet it is for, and one a `createSession`
+ * still running registers after this (it is not kept: see `saveKey`). The
  * authority key is kept, and signs only once its wallet is connected again.
  * A key that cannot be deleted is logged, not thrown: it stays bound to its
- * wallet.
+ * wallet. This tab only: another tab of the app stays connected (see the
+ * README).
  */
 export const disconnectAction = async (
     get: () => WalletState,
@@ -320,7 +323,7 @@ export const disconnectAction = async (
         return handleActionError(error, set);
     } finally {
         // Whatever else failed: the session key goes with the wallet.
-        if (!options?.keepSessionKeys) await forgetKey(keyStorageOf(get().config), 'session', () => true);
+        if (!options?.keepSessionKeys) await wipeKey(keyStorageOf(get().config), 'session');
     }
 };
 
@@ -492,6 +495,8 @@ export const createSessionAction = async (
     if (isSigning) throw new Error('Already signing');
     if (!wallet) refuse(set, 'No wallet connected');
     if (!connection) refuse(set, 'No connection available');
+    // A disconnect (or forgetStoredKeys) from here on means the key is not kept.
+    const sessionWipes = wipeMark('session');
 
     set({ isSigning: true, error: null });
     try {
@@ -572,8 +577,9 @@ export const createSessionAction = async (
         // and the call still succeeds.
         if (generatedKey) {
             // Bound to the wallet it was made for: it signs only while that
-            // wallet is connected (./keyBinding).
-            await saveKey(keyStorageOf(config), 'session', generatedKey, {
+            // wallet is connected (./keyBinding). Not kept at all when the
+            // user disconnected (or forgetStoredKeys ran) since this started.
+            const kept = await saveKey(keyStorageOf(config), 'session', generatedKey, {
                 sessionPda: sessionPda.toBase58(),
                 walletPda: walletPda.toBase58(),
                 bound: true,
@@ -588,7 +594,14 @@ export const createSessionAction = async (
                         }
                         : undefined,
                 } : undefined,
-            });
+            }, { unlessWipedSince: sessionWipes });
+            if (kept === 'discarded') {
+                console.warn(
+                    `[LazorKit] Session ${sessionPda.toBase58()} landed after disconnect() or forgetStoredKeys() ` +
+                        `deleted the kept keys, so its key was not kept. The session stays on chain until it ` +
+                        `expires; revokeSession({ sessionPda }) closes it sooner.`,
+                );
+            }
         }
 
         return { sessionPda: sessionPda.toBase58(), sessionPublicKey: sessionPublicKey.toBase58() };
@@ -782,6 +795,8 @@ export const addAuthorityAction = async (
     const roleProblem = authorityRoleProblem(payload?.role, 'addAuthority');
     if (roleProblem) refuse(set, roleProblem);
     const role = payload.role;
+    // forgetStoredKeys from here on means the key is not kept.
+    const authorityWipes = wipeMark('authority');
 
     set({ isSigning: true, error: null });
     try {
@@ -837,13 +852,21 @@ export const addAuthorityAction = async (
         });
 
         // On chain now: a key that cannot be stored is kept for this page, and
-        // the call still succeeds.
-        await saveKey(keyStorageOf(config), 'authority', authorityKey, {
+        // the call still succeeds. Not kept at all when forgetStoredKeys ran
+        // since this started.
+        const kept = await saveKey(keyStorageOf(config), 'authority', authorityKey, {
             authorityPda: newAuthorityPda.toBase58(),
             walletPda: walletPda.toBase58(),
             bound: true,
             role,
-        });
+        }, { unlessWipedSince: authorityWipes });
+        if (kept === 'discarded') {
+            console.warn(
+                `[LazorKit] Authority ${newAuthorityPda.toBase58()} landed after forgetStoredKeys() deleted the ` +
+                    `kept keys, so its key was not kept. The authority stays on the wallet with no one holding ` +
+                    `its key; removeAuthority({ targetAuthorityPda }) removes it.`,
+            );
+        }
 
         return { authorityPda: newAuthorityPda.toBase58(), authorityPublicKey: authorityKey.signer.publicKey.toBase58() };
     } catch (error) {

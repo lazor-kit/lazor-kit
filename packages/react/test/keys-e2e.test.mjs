@@ -9,7 +9,10 @@
 // key once its session is revoked or its authority removed, forgetStoredKeys
 // at sign-out, and a kept key across disconnect and connect: the session key
 // deleted (or kept with keepSessionKeys), the authority key kept, and either
-// refused unless its own wallet is connected. Run with `pnpm test`.
+// refused unless its own wallet is connected. A session or authority that
+// lands after the sign-out keeps no key, a key stored later is not written
+// back once deleted, and a stored record that names another wallet is not
+// trusted. Run with `pnpm test`.
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import { test, beforeEach, after } from 'node:test';
@@ -693,6 +696,21 @@ test('createSession → disconnect({ keepSessionKeys: true }) → connect again:
     assertNoPlaintext();
 });
 
+test('disconnect deletes the kept session key whichever wallet it belongs to: one kept for another wallet goes too', async () => {
+    const W = await load();
+    connect(W);
+    const { sessionPda } = await W.useWalletStore.getState().createSession({ unrestricted: true });
+    landed(sessionPda);
+    await W.useWalletStore.getState().disconnect({ keepSessionKeys: true });
+    assert.equal((await storedRecord('session')).info.walletPda, WALLET.toBase58(), 'kept');
+
+    await reconnect(W, OTHER_WALLET);
+    await W.useWalletStore.getState().disconnect();
+    assert.equal(await storedRecord('session'), undefined, "WALLET's key, deleted by OTHER_WALLET's disconnect");
+    await reconnect(W, WALLET);
+    await assert.rejects(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /No session key found/);
+});
+
 test('addAuthority → disconnect → connect again: the authority key is kept, refused while disconnected and for another wallet, and signs for its own', async () => {
     let W = await load();
     connect(W);
@@ -716,6 +734,252 @@ test('addAuthority → disconnect → connect again: the authority key is kept, 
     assert.equal(approvals.length, before, 'no passkey prompt');
     assertSignedBy(sent.at(-1), new PublicKey(authorityPublicKey));
     assertNoPlaintext();
+});
+
+// ─── A session or authority still landing at sign-out ───────────────────────
+
+/** Holds the paymaster's answer to the next transaction sent, until `release()`. */
+function holdNextSend() {
+    let release;
+    const gate = new Promise((resolve) => (release = resolve));
+    const realFetch = globalThis.fetch;
+    const hold = { held: false, release: () => release(), restore: () => (globalThis.fetch = realFetch) };
+    globalThis.fetch = async (url, init) => {
+        if (!hold.held && String(url) === PAYMASTER && JSON.parse(init.body).method === 'signAndSendTransaction') {
+            hold.held = true;
+            await gate;
+        }
+        return realFetch(url, init);
+    };
+    return hold;
+}
+
+for (const keep of [false, true]) {
+    test(`a createSession still landing when disconnect(${keep ? '{ keepSessionKeys: true }' : ''}) runs: its key is ${keep ? 'kept, bound to its wallet' : 'not kept, here or at rest'}`, async () => {
+        let W = await load();
+        connect(W);
+        const hold = holdNextSend();
+        const calls = [];
+        let created;
+        try {
+            const creating = W.useWalletStore.getState().createSession({
+                unrestricted: true,
+                onSuccess: () => calls.push('onSuccess'),
+                onFail: (error) => calls.push(error),
+            });
+            await until(() => hold.held, 'the session transaction to be sent');
+            await W.useWalletStore.getState().disconnect(keep ? { keepSessionKeys: true } : undefined);
+            assert.equal(W.useWalletStore.getState().wallet, null);
+            hold.release();
+            created = await creating;
+        } finally {
+            hold.restore();
+        }
+        landed(created.sessionPda);
+        assert.deepEqual(calls, ['onSuccess'], 'the session landed: a success');
+        assert.equal(W.useWalletStore.getState().isSigning, false);
+        const record = await storedRecord('session');
+        if (keep) {
+            assert.equal(record.publicKey, created.sessionPublicKey);
+            assert.equal(record.info.walletPda, WALLET.toBase58());
+            await assertRefused(W, 'signAndSendWithSession', 'no-wallet');
+            await reconnect(W, WALLET);
+            await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+            assertSignedBy(sent.at(-1), new PublicKey(created.sessionPublicKey));
+        } else {
+            assert.equal(record, undefined, 'nothing at rest once disconnect() resolved');
+            assert.ok(warnings.some((w) => w.includes(`Session ${created.sessionPda} landed after disconnect()`)), JSON.stringify(warnings));
+            await reconnect(W, WALLET);
+            await assert.rejects(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /^Error: No session key found\. Create a session first\.$/);
+            W = await load();
+            await assert.rejects(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /No session key found/);
+            assert.equal(sent.length, 1, 'only the createSession');
+        }
+        assertNoPlaintext();
+    });
+}
+
+test('an addAuthority still landing when forgetStoredKeys() runs: its key is not kept', async () => {
+    let W = await load();
+    connect(W);
+    const hold = holdNextSend();
+    let added;
+    try {
+        const adding = W.useWalletStore.getState().addAuthority({ role: W.ROLE_ADMIN });
+        await until(() => hold.held, 'the authority transaction to be sent');
+        await W.forgetStoredKeys();
+        hold.release();
+        added = await adding;
+    } finally {
+        hold.restore();
+    }
+    landed(added.authorityPda);
+    assert.equal(await storedRecord('authority'), undefined);
+    assert.ok(warnings.some((w) => w.includes(`Authority ${added.authorityPda} landed after forgetStoredKeys()`)), JSON.stringify(warnings));
+    await assert.rejects(W.useWalletStore.getState().signAndSendWithAuthority({ instructions: transfer() }), /No authority key found/);
+    W = await load();
+    connect(W);
+    await assert.rejects(W.useWalletStore.getState().signAndSendWithAuthority({ instructions: transfer() }), /No authority key found/);
+});
+
+/** Makes WebCrypto Ed25519 unavailable (iOS 16, Chrome 136) until the returned undo. */
+function withoutEd25519() {
+    const subtle = crypto.subtle;
+    const isEd25519 = (algorithm) => (typeof algorithm === 'string' ? algorithm : algorithm?.name) === 'Ed25519';
+    for (const method of ['generateKey', 'importKey']) {
+        const original = subtle[method];
+        subtle[method] = function (...args) {
+            return isEd25519(method === 'importKey' ? args[2] : args[0])
+                ? Promise.reject(new DOMException('Algorithm: Unrecognized name', 'NotSupportedError'))
+                : original.apply(this, args);
+        };
+    }
+    return () => {
+        delete subtle.generateKey;
+        delete subtle.importKey;
+    };
+}
+
+/** createSession while IndexedDB refuses the write: the key signs from memory, to be stored on a later use. */
+async function createSessionStoredLater(W) {
+    const put = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (...args) {
+        if (this.name === 'keys') throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+        return put.apply(this, args);
+    };
+    try {
+        const created = await W.useWalletStore.getState().createSession({ unrestricted: true });
+        landed(created.sessionPda);
+        assert.equal(await storedRecord('session'), undefined, 'not stored yet');
+        return created;
+    } finally {
+        IDBObjectStore.prototype.put = put;
+    }
+}
+
+for (const wipe of ['disconnect', 'forgetStoredKeys']) {
+    test(`a stored-later session key that ${wipe}() deletes while a send is storing it is not written back, nor used`, async () => {
+        const undo = withoutEd25519();
+        try {
+            let W = await load();
+            connect(W);
+            await createSessionStoredLater(W);
+            // The send stores the key first, sealing its seed: held here ...
+            const encrypt = crypto.subtle.encrypt;
+            let release;
+            const gate = new Promise((resolve) => (release = resolve));
+            let sealing = false;
+            crypto.subtle.encrypt = async function (...args) {
+                sealing = true;
+                await gate;
+                return encrypt.apply(this, args);
+            };
+            let sending;
+            try {
+                sending = W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+                await until(() => sealing, 'the stored-later key to be sealed');
+                // ... while the wipe runs to the end.
+                if (wipe === 'disconnect') await W.useWalletStore.getState().disconnect();
+                else await W.forgetStoredKeys();
+                assert.equal(await storedRecord('session'), undefined);
+                release();
+                await assert.rejects(sending, /No session key found/);
+            } finally {
+                delete crypto.subtle.encrypt;
+            }
+            assert.equal(await storedRecord('session'), undefined, 'not written back');
+            assert.equal(sent.length, 1, 'only the createSession');
+            assert.ok(!warnings.some((w) => w.includes('could not be deleted')), JSON.stringify(warnings));
+            W = await load();
+            connect(W);
+            await assert.rejects(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /No session key found/);
+        } finally {
+            undo();
+        }
+    });
+}
+
+test('a send and disconnect() started together, the session key stored later: nothing is at rest once both settle', async () => {
+    const W = await load();
+    connect(W);
+    // One IndexedDB open fails: createSession's save, so the key waits in memory.
+    const real = globalThis.indexedDB;
+    let failures = 1;
+    globalThis.indexedDB = {
+        open(...args) {
+            if (failures-- <= 0) return real.open(...args);
+            const request = { result: undefined, error: new DOMException('Connection to Indexed Database server lost', 'UnknownError') };
+            setTimeout(() => request.onerror?.({ type: 'error', target: request, preventDefault() {} }));
+            return request;
+        },
+        databases: () => real.databases(),
+        deleteDatabase: (name) => real.deleteDatabase(name),
+        cmp: (a, b) => real.cmp(a, b),
+    };
+    let created;
+    try {
+        created = await W.useWalletStore.getState().createSession({ unrestricted: true });
+    } finally {
+        globalThis.indexedDB = real;
+    }
+    landed(created.sessionPda);
+    assert.ok(warnings.some((w) => w.includes('could not be stored yet')), JSON.stringify(warnings));
+
+    const [send, disconnect] = await Promise.allSettled([
+        W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }),
+        W.useWalletStore.getState().disconnect(),
+    ]);
+    assert.equal(send.status, 'rejected');
+    assert.equal(disconnect.status, 'fulfilled');
+    assert.equal(sent.length, 1, 'only the createSession');
+    assert.equal(await storedRecord('session'), undefined);
+    assert.ok(!warnings.some((w) => w.includes('could not be deleted')), JSON.stringify(warnings));
+});
+
+// ─── A stored record is checked, not trusted ────────────────────────────────
+
+/** Rewrites the stored record in `slot`, as a script on the page (or a corrupted profile) could. */
+async function rewriteRecord(slot, change) {
+    const record = await storedRecord(slot);
+    const db = await new Promise((resolve, reject) => {
+        const request = indexedDB.open('lazorkit-keys');
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+    try {
+        await new Promise((resolve, reject) => {
+            const tx = db.transaction(['keys'], 'readwrite');
+            tx.objectStore('keys').put(change(record));
+            tx.oncomplete = resolve;
+            tx.onerror = () => reject(tx.error);
+        });
+    } finally {
+        db.close();
+    }
+}
+
+test("a record altered to name another wallet is not trusted: refused as unbound, or bound back to the wallet its account names", async () => {
+    const W = await load();
+    connect(W);
+    const created = await W.useWalletStore.getState().createSession({ unrestricted: true });
+    landed(created.sessionPda);
+    await rewriteRecord('session', (record) => ({ ...record, info: { ...record.info, walletPda: OTHER_WALLET.toBase58(), bound: true } }));
+    await reconnect(W, OTHER_WALLET);
+    // Its PDA does not derive from OTHER_WALLET, and nothing on chain names the key.
+    await assertRefused(W, 'signAndSendWithSession', 'unbound');
+
+    // The session's account names its wallet (at 8) and its key (at 40): bound back to that wallet.
+    const data = Buffer.alloc(80);
+    WALLET.toBuffer().copy(data, 8);
+    new PublicKey(created.sessionPublicKey).toBuffer().copy(data, 40);
+    accounts.set(created.sessionPda, { owner: PROGRAM.toBase58(), data });
+    await assertRefused(W, 'signAndSendWithSession', 'other-wallet');
+    assert.equal((await storedRecord('session')).info.walletPda, WALLET.toBase58(), 'the binding is stored');
+
+    await W.useWalletStore.getState().disconnect({ keepSessionKeys: true });
+    await reconnect(W, WALLET);
+    await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+    assertSignedBy(sent.at(-1), new PublicKey(created.sessionPublicKey));
 });
 
 // ─── addAuthority's role ─────────────────────────────────────────────────────

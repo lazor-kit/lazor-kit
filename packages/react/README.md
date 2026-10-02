@@ -418,6 +418,13 @@ signs, so a wallet that disconnects or switches while a send is being built
 stops it too. Connect `keyWallet` again and the key signs, or create a session
 (add an authority) for the connected wallet, which replaces it.
 
+The stored wallet is checked on every use, not taken on trust: the session
+or authority PDA in the record must derive from that wallet and the key (no
+network needed). A record that does not (one altered in IndexedDB, or made
+on another cluster) is checked as an earlier release's entry is (see
+**Upgrading** below): bound to the wallet its account on chain names, or
+refused as `'unbound'`.
+
 ```ts
 import { isKeyWalletMismatchError } from '@lazorkit/wallet';
 
@@ -469,8 +476,9 @@ if that account is LazorKit's and names this key. The binding is stored, and
 the key then signs only for that wallet, as above. **An entry whose wallet
 cannot be confirmed either way stays unbound and is never used**: every send
 rejects with `KeyWalletMismatchError` and `reason: 'unbound'`, whichever
-wallet is connected. Call `forgetStoredKeys()` and create the session (add the
-authority) again.
+wallet is connected. Create the session (add the authority) again, which
+replaces it. (`forgetStoredKeys()` deletes it as well, but it also deletes
+the other kept key.)
 
 **If your app removed `lazorkit-session` / `lazorkit-authority` at sign-out**
 (or called `localStorage.clear()`), that no longer removes the keys: they are
@@ -502,17 +510,33 @@ function SignOutButton() {
   authority.
 - `forgetStoredKeys()` deletes both, wherever they are kept: IndexedDB, this
   page's memory, and any plaintext an earlier release left. It rejects if
-  IndexedDB holds keys and could not be cleared.
+  IndexedDB holds keys and could not be cleared. A `createSession` or
+  `addAuthority` still waiting for its transaction when it runs does not keep
+  its key once it lands (a warning is logged; the session or authority stays
+  on chain).
 - A stored session key is deleted when it is read after its session expired.
 - `disconnect()` deletes the session key: from IndexedDB, this page's memory
   and any plaintext an earlier release left (with `keyStorage="memory"`, from
-  memory and plaintext; IndexedDB is not used then). `disconnect({
-  keepSessionKeys: true })` keeps it. If IndexedDB fails to delete it,
-  `disconnect` still succeeds and logs a warning; the key stays bound to its
-  wallet. `forgetStoredKeys()` rejects instead, for a sign-out that must know.
+  memory and plaintext; IndexedDB is not used then). It deletes the key
+  whichever wallet it belongs to, so a key kept for another wallet with
+  `keepSessionKeys` goes too. A `createSession` still waiting for its
+  transaction when you disconnect does not keep its key once it lands: the
+  call still succeeds, a warning is logged, and the session stays on chain
+  until it expires. `disconnect({ keepSessionKeys: true })` keeps the key (that
+  session's too). If IndexedDB fails to delete it, `disconnect` still succeeds
+  and logs a warning; the key stays bound to its wallet. `forgetStoredKeys()`
+  rejects instead, for a sign-out that must know.
 - `disconnect` keeps the authority key. Like a kept session key, it signs only
   once the wallet it was registered for is connected again (see above). On a
   shared computer, call `forgetStoredKeys()` at sign-out.
+
+**Several tabs.** `disconnect()` ends the connection in its own tab only: the
+connected wallet is not shared between tabs, so another tab of the app stays
+connected, and there the authority key keeps signing for that wallet (and so
+does a session key that tab holds in memory). The keys in IndexedDB are shared
+by every tab, so a `disconnect()` in one tab deletes the session key another
+tab is using. To end signing in every tab, call `forgetStoredKeys()` at
+sign-out: a tab still open then finds no key in IndexedDB.
 
 If a key cannot be stored after its session or authority has landed, the call
 still succeeds: the key signs for the rest of this page, and a warning is
@@ -575,8 +599,10 @@ Disconnects the wallet. `options.onSuccess` / `options.onFail` run once it is
 over, as every action's do. An action still running is not abandoned: it keeps
 `isSigning` until it ends, but a session or authority send among them no
 longer signs. The session key the SDK keeps is deleted, unless
-`options.keepSessionKeys` is `true`; the authority key is kept. A kept key
-signs only once its wallet is connected again (see
+`options.keepSessionKeys` is `true`, and so is the key of a `createSession`
+that lands after the disconnect; the authority key is kept. A kept key signs
+only once its wallet is connected again. This tab only: another tab of the
+app stays connected (see
 [Session and authority keys](#session-and-authority-keys) and
 `forgetStoredKeys()` below).
 
@@ -633,7 +659,9 @@ A function the package exports, not a `useWallet()` method. Deletes the
 session key and the authority key the SDK keeps, whatever `keyStorage` is:
 both IndexedDB slots, this page's memory copies, and any plaintext an earlier
 release left in localStorage. A session or authority stays on chain; only the
-key is gone. See [Session and authority keys](#session-and-authority-keys).
+key is gone, and a `createSession` or `addAuthority` still waiting for its
+transaction does not keep its key once it lands. See
+[Session and authority keys](#session-and-authority-keys).
 
 **Returns**
 `Promise<void>`. Rejects when IndexedDB holds keys and could not be cleared.

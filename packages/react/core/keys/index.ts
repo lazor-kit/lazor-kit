@@ -3,6 +3,8 @@ export {
     saveKey,
     loadKey,
     forgetKey,
+    wipeKey,
+    wipeMark,
     updateKeyInfo,
     migrateLegacyKeys,
     forgetStoredKeys,

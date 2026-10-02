@@ -129,6 +129,25 @@ interface MemoryKey {
 /** Keys kept for this page only: where they could not be stored, or `keyStorage: 'memory'`. */
 const inMemory = new Map<KeySlot, MemoryKey>();
 
+/** Whether `signer` is still the key this page holds in `slot`: not forgotten since, nor replaced. */
+function holds(slot: KeySlot, signer: KeySigner): boolean {
+    return inMemory.get(slot)?.signer === signer;
+}
+
+/**
+ * How many times each slot was wiped on this page: by `wipeKey` (the session
+ * key at `disconnect`) or `forgetStoredKeys`. A key generated before a wipe
+ * and registered on chain after it is not kept (`saveKey`'s
+ * `unlessWipedSince`): a sign-out leaves no key behind, even one whose
+ * transaction was still in flight.
+ */
+const wipes: Record<KeySlot, number> = { session: 0, authority: 0 };
+
+/** The slot's wipe count now. Read it when an action starts, and pass it to `saveKey` as `unlessWipedSince`. */
+export function wipeMark(slot: KeySlot): number {
+    return wipes[slot];
+}
+
 // ─── Generate, save, load, forget ───────────────────────────────────────────
 
 /** A new key: a non-extractable WebCrypto Ed25519 key where the browser has one, else a `Keypair`. */
@@ -151,13 +170,25 @@ export async function generateKey(): Promise<NewKey> {
  * earlier release left included). Never throws: called once the key is
  * registered on chain, so a key that cannot be stored is kept for this page,
  * with a warning, and the action still succeeds.
+ *
+ * With `unlessWipedSince` (a `wipeMark` read when the action started), a key
+ * whose slot was wiped since is not kept at all: `'discarded'`. That is
+ * checked again in the write's own transaction, and a wipe that starts after
+ * that write deletes it, so no wipe is ever followed by this key at rest.
  */
 export async function saveKey<S extends KeySlot>(
     storage: KeyStorage,
     slot: S,
     key: NewKey,
     info: SlotInfo[S],
-): Promise<'indexeddb' | 'memory'> {
+    options: { readonly unlessWipedSince?: number } = {},
+): Promise<'indexeddb' | 'memory' | 'discarded'> {
+    const wiped = () => options.unlessWipedSince !== undefined && wipes[slot] !== options.unlessWipedSince;
+    const discard = (): 'discarded' => {
+        if ('seed' in key.material) key.material.seed.fill(0);
+        return 'discarded';
+    };
+    if (wiped()) return discard();
     // First, so that a migration running in another tab does not write the
     // old key over this one (see `migrateSlot`).
     removeLegacy(slot);
@@ -169,7 +200,8 @@ export async function saveKey<S extends KeySlot>(
     // Kept for this page. Stored on a later read when IndexedDB failed this
     // time; not when it never can (no IndexedDB or WebCrypto, or an IndexedDB
     // that cannot hold the key).
-    const keepForPage = (error: unknown, later: boolean): 'memory' => {
+    const keepForPage = (error: unknown, later: boolean): 'memory' | 'discarded' => {
+        if (wiped()) return discard();
         inMemory.set(slot, { signer: key.signer, info, ...(later ? { unsaved: { key, createdAt } } : {}) });
         console.warn(
             later
@@ -188,7 +220,8 @@ export async function saveKey<S extends KeySlot>(
     if (!db) return keepForPage(new Error('IndexedDB is not available'), false);
     if ('seed' in key.material && !subtle()) return keepForPage(new Error('WebCrypto is not available'), false);
     try {
-        await putRecord(db, await toRecord(db, slot, key, info, createdAt));
+        const wrote = await putRecord(db, await toRecord(db, slot, key, info, createdAt), () => !wiped());
+        if (!wrote) return discard();
         inMemory.delete(slot);
         return 'indexeddb';
     } catch (error) {
@@ -204,8 +237,12 @@ export async function loadKey<S extends KeySlot>(storage: KeyStorage, slot: S): 
     await migrateSlot(storage, slot);
     const remembered = inMemory.get(slot);
     if (remembered) {
-        if (remembered.unsaved && storage !== 'memory') await storeUnsaved(slot, remembered);
-        return remembered as StoredKey<S>;
+        if (!remembered.unsaved || storage === 'memory') return remembered as StoredKey<S>;
+        // Stored now if IndexedDB works. A key forgotten meanwhile (`disconnect`,
+        // `forgetStoredKeys`, its session revoked) is neither written back nor
+        // used: read the slot again.
+        if (await storeUnsaved(slot, remembered)) return (inMemory.get(slot) ?? remembered) as StoredKey<S>;
+        return loadKey(storage, slot);
     }
     if (storage === 'memory') return null;
 
@@ -228,9 +265,10 @@ export async function loadKey<S extends KeySlot>(storage: KeyStorage, slot: S): 
 
 /**
  * Forgets the key in `slot` when `matches` its info: the session revoked or
- * expired, the authority removed, the session key at `disconnect`. Waits for a
- * migration of the slot in flight first. Never throws: called once that has
- * landed.
+ * expired, the authority removed (`wipeKey` for any key, at `disconnect`).
+ * Waits for a migration of the slot in flight first, then drops this page's
+ * memory copy before the IndexedDB delete starts (see `storeUnsaved`). Never
+ * throws: called once that has landed.
  */
 export async function forgetKey<S extends KeySlot>(
     storage: KeyStorage,
@@ -251,6 +289,16 @@ export async function forgetKey<S extends KeySlot>(
     } catch (error) {
         console.warn(`[LazorKit] The ${slot} key could not be deleted:`, error);
     }
+}
+
+/**
+ * Forgets whatever key `slot` holds, whichever wallet it is for (the session
+ * key at `disconnect`), and counts a wipe: a key generated before this and
+ * registered after it is not kept (see `saveKey`). Never throws.
+ */
+export function wipeKey(storage: KeyStorage, slot: KeySlot): Promise<void> {
+    wipes[slot]++;
+    return forgetKey(storage, slot, () => true);
 }
 
 /**
@@ -304,9 +352,12 @@ export async function migrateLegacyKeys(storage: KeyStorage): Promise<void> {
  * session key, and only where `keyStorage` keeps it.
  * Waits for a migration in flight first. Rejects when IndexedDB holds keys and
  * could not be cleared (memory and localStorage are cleared all the same);
- * resolves where there is no IndexedDB.
+ * resolves where there is no IndexedDB. A session or authority still being
+ * registered when this is called does not keep its key once it lands.
  */
 export async function forgetStoredKeys(): Promise<void> {
+    wipes.session++;
+    wipes.authority++;
     await Promise.all([...migrations.values()]);
     inMemory.clear();
     removeLegacy('session');
@@ -406,22 +457,37 @@ async function migrate(storage: KeyStorage, slot: KeySlot): Promise<void> {
     }
 }
 
-/** A key `saveKey` could not store, stored now if IndexedDB works, unless a newer key is there. Never throws. */
-async function storeUnsaved(slot: KeySlot, entry: MemoryKey): Promise<void> {
+/**
+ * A key `saveKey` could not store, stored now if IndexedDB works, unless a
+ * newer key is there. Resolves whether the key is still this page's to use:
+ * false when it was forgotten (or replaced) meanwhile. Never throws.
+ *
+ * The write checks, in its own transaction, that this page still holds the
+ * key: the forgetting (`forgetKey`, `forgetStoredKeys`) drops the memory copy
+ * before its IndexedDB delete starts, so a forget that comes first stops the
+ * write, and one that comes later deletes what it wrote.
+ */
+async function storeUnsaved(slot: KeySlot, entry: MemoryKey): Promise<boolean> {
     const { key, createdAt } = entry.unsaved!;
+    const ours = () => holds(slot, entry.signer);
     try {
         const db = await openKeysDb();
-        if (!db) return;
+        if (!db) return ours();
+        // Its info as this page has it now (its wallet may have been confirmed since).
+        const info = ours() ? inMemory.get(slot)!.info : entry.info;
         await putRecord(
             db,
-            await toRecord(db, slot, key, entry.info as object, createdAt),
-            (current) => !isKeyRecord(current, slot) || current.createdAt < createdAt,
+            await toRecord(db, slot, key, info as object, createdAt),
+            (current) => ours() && (!isKeyRecord(current, slot) || current.createdAt < createdAt),
         );
+        if (!ours()) return false;
         // Stored, or a newer key (another tab's) is: either way, read from IndexedDB from now on.
-        if (inMemory.get(slot) === entry) inMemory.delete(slot);
+        inMemory.delete(slot);
+        return true;
     } catch (error) {
-        if (isCannotHold(error) && inMemory.get(slot) === entry) inMemory.set(slot, { signer: entry.signer, info: entry.info });
+        if (isCannotHold(error) && ours()) inMemory.set(slot, { signer: entry.signer, info: inMemory.get(slot)!.info });
         warnOnce(`unsaved-${slot}`, `[LazorKit] The ${slot} key still could not be stored; it signs from this page's memory: ${String(error)}`);
+        return ours();
     }
 }
 

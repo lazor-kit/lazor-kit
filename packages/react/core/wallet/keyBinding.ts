@@ -18,6 +18,11 @@
  * is LazorKit's and names this key. An entry that is neither stays unbound: it
  * is never used, and the send is refused with reason `'unbound'`.
  *
+ * A bound record is not taken on trust either: on every use its session or
+ * authority PDA must derive from the wallet it names and the key (offline, a
+ * few PDA derivations). One that does not (a record altered in IndexedDB, or
+ * made on another cluster) is checked as an earlier release's entry is.
+ *
  * A stored session key whose session has expired is deleted when it is read.
  */
 import { Connection, PublicKey } from '@solana/web3.js';
@@ -30,8 +35,9 @@ import type { WalletState } from '../types';
  * Why a kept key was not used:
  * - `'no-wallet'`: no wallet is connected;
  * - `'other-wallet'`: a different wallet is connected;
- * - `'unbound'`: a key an earlier release kept, whose wallet could not be
- *   confirmed (see the module header).
+ * - `'unbound'`: a key whose wallet could not be confirmed: an earlier
+ *   release's entry, or a record whose PDA does not derive from the wallet it
+ *   names (see the module header).
  */
 export type KeyWalletMismatchReason = 'no-wallet' | 'other-wallet' | 'unbound';
 
@@ -39,8 +45,8 @@ export type KeyWalletMismatchReason = 'no-wallet' | 'other-wallet' | 'unbound';
  * A session or authority key the SDK keeps was not used, because the wallet
  * it signs for is not the connected one (`reason`). Nothing was signed or
  * sent. Connect `keyWallet` to use the key, or create a session (add an
- * authority) for the connected wallet. An `'unbound'` key is never used: call
- * `forgetStoredKeys()` and create it again.
+ * authority) for the connected wallet. An `'unbound'` key is never used:
+ * create the session (add the authority) again, which replaces it.
  */
 export class KeyWalletMismatchError extends Error {
     /** Matched with `name` by `isKeyWalletMismatchError`, across copies of the package. */
@@ -68,9 +74,10 @@ function mismatchMessage(
     const create = slot === 'session' ? 'create a session' : 'add an authority';
     if (reason === 'unbound') {
         return (
-            `The stored ${slot} key was kept by an earlier release, and the wallet it belongs to could not be ` +
-            `confirmed: its ${slot} PDA does not derive from the wallet it names, and no LazorKit account on chain ` +
-            `names the key. It is not used. Call forgetStoredKeys(), then ${create} again. Nothing was signed or sent.`
+            `The wallet the stored ${slot} key belongs to could not be confirmed: its ${slot} PDA does not ` +
+            `derive from the wallet its record names (on this cluster), and no LazorKit account on chain names ` +
+            `the key. It is not used: ${create} again, which replaces it (forgetStoredKeys() deletes it too, ` +
+            `with the other kept key). Nothing was signed or sent.`
         );
     }
     const which =
@@ -110,7 +117,12 @@ export async function keyForConnectedWallet<S extends KeySlot>(params: {
 
     if (slot === 'session') await pruneIfExpired(storage, connection, stored as StoredKey<'session'>);
 
-    let walletPda: string | null = info.bound ? info.walletPda : null;
+    // A bound record still has to derive from its wallet: one that does not is
+    // checked as an unbound entry is.
+    let walletPda: string | null =
+        info.bound && derives(connection, slot, new PublicKey(info.walletPda), publicKey, pdaOf(slot, info))
+            ? info.walletPda
+            : null;
     if (!walletPda) {
         walletPda = await walletOfKey(connection, slot, publicKey, info);
         if (!walletPda) throw new KeyWalletMismatchError(slot, 'unbound', undefined, get().wallet?.smartWallet);
@@ -170,7 +182,7 @@ export async function walletOfKey(
     publicKey: PublicKey,
     info: { readonly walletPda: string; readonly sessionPda?: string; readonly authorityPda?: string },
 ): Promise<string | null> {
-    const pda = new PublicKey(slot === 'session' ? info.sessionPda! : info.authorityPda!);
+    const pda = pdaOf(slot, info);
     if (derives(connection, slot, new PublicKey(info.walletPda), publicKey, pda)) return info.walletPda;
 
     const account = await connection.getAccountInfo(pda);
@@ -191,6 +203,11 @@ export async function walletOfKey(
         wallet = new PublicKey(data.subarray(16, 48));
     }
     return derives(connection, slot, wallet, publicKey, pda) ? wallet.toBase58() : null;
+}
+
+/** The session or authority PDA a kept key's record names. */
+function pdaOf(slot: KeySlot, info: { readonly sessionPda?: string; readonly authorityPda?: string }): PublicKey {
+    return new PublicKey(slot === 'session' ? info.sessionPda! : info.authorityPda!);
 }
 
 /** `pda` is the session or authority PDA the program derives for `wallet` and `key`, under v2 or v1. */
