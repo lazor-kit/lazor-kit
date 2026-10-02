@@ -54,6 +54,40 @@ test('one store, client and set of classes per page, whichever entries are impor
     }
 });
 
+// The root's exports are 3.3.1's (test/fixtures/exports-3.3.1.json: the
+// export names of dist/index.mjs in the published 3.3.1 tarball, shasum
+// 08d97bd01686a6102e9274fc2e2064f196c18ce7), none removed, plus these. Nothing
+// else: an internal binding a chunk shares with another entry never shows.
+const V331 = JSON.parse(readFileSync(new URL('./fixtures/exports-3.3.1.json', import.meta.url), 'utf8'));
+const NEW_IN_4 = [
+    'CONNECT_BUTTON_TEXT', 'ConnectButton', 'KeyRecoveryError', 'LazorkitConfigError', 'NetworkError', 'PasskeyMismatchError',
+    'PasskeyUnavailableError', 'UserRejectedError', 'WalletVerificationError', 'builtinEmbeddedUi', 'connectButtonLabel',
+    'createLazorkitClient', 'derToLowS', 'deriveStatus', 'errorKind', 'forgetEmbeddedDevice', 'getLazorkitClient',
+    'isUserRejection', 'passkeyCapabilities', 'publicKeyFromAttestation', 'resolveConfig', 'userMessage', 'validateRpId',
+];
+const REACT_ONLY = ['CONNECT_BUTTON_TEXT', 'ConnectButton', 'LazorkitProvider', 'connectButtonLabel', 'useWallet', 'useWalletStore'];
+const HOOKS = ['useLazorkitClient', 'useLazorkitState', 'useWallet', 'useWalletStatus', 'useWalletStore'];
+const names = (module) => Object.keys(module).filter((k) => k !== '__esModule' && k !== 'default').sort();
+
+test("each entry exports exactly its names: the root 3.3.1's plus 4.0's, /core the root's without React, /hooks its five (ESM, CJS, types)", async () => {
+    const root = [...new Set([...V331, ...NEW_IN_4])].sort();
+    const core = root.filter((n) => !REACT_ONLY.includes(n));
+    for (const [entry, expected] of [
+        ['index', root],
+        ['core', core],
+        ['hooks', HOOKS],
+    ]) {
+        assert.deepEqual(names(await import(join(DIST, `${entry}.mjs`))), expected, `${entry}.mjs`);
+        assert.deepEqual(names(require(join(DIST, `${entry}.js`))), expected, `${entry}.js`);
+        // The declarations: no minified alias among the names a type import sees.
+        const program = ts.createProgram([join(DIST, `${entry}.d.ts`)], { noEmit: true, skipLibCheck: true, types: [] });
+        const checker = program.getTypeChecker();
+        const exported = checker.getExportsOfModule(checker.getSymbolAtLocation(program.getSourceFile(join(DIST, `${entry}.d.ts`)))).map((s) => s.name);
+        assert.deepEqual(exported.filter((n) => n.length <= 2), [], `${entry}.d.ts`);
+        for (const name of expected) assert.ok(exported.includes(name), `${name} in ${entry}.d.ts`);
+    }
+});
+
 /** The files a dist entry loads, itself included (relative imports, transitively). */
 function graph(entry) {
     const seen = new Set();

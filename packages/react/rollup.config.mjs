@@ -33,12 +33,16 @@ const CLIENT_ENTRIES = new Set(['index', 'hooks']);
 const banner = (chunk) => (chunk.isEntry && CLIENT_ENTRIES.has(chunk.name) ? "'use client';" : '');
 
 // Two shared chunks, named for what they hold: `shared` (no React; all that
-// `core` loads) and `react`. Every entry is a facade over them.
+// `core` loads) and `react`. Every entry is a facade over them. The React
+// entries themselves stay out of the `react` chunk: an entry put in a chunk
+// becomes that chunk, and would then export the chunk's internal (minified)
+// bindings to the other entry. (`core-entry` only re-exports, and the root
+// re-exports it, so it is part of `shared`.)
 const manualChunks = (id) => {
     if (id.includes('node_modules') || id.startsWith('\0')) return undefined;
     const file = relative(process.cwd(), id);
-    if (file === 'core-entry.ts') return 'shared';
-    if (file === 'index.ts' || file === 'hooks-entry.ts' || file.startsWith(`react${sep}`)) return 'react';
+    if (file === 'index.ts' || file === 'hooks-entry.ts') return undefined;
+    if (file.startsWith(`react${sep}`)) return 'react';
     return 'shared';
 };
 
