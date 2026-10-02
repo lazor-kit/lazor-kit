@@ -37,6 +37,11 @@ import {
   withComputeUnitLimit,
 } from './core/wallet/txv1-send';
 import { logger } from './core/logger';
+import {
+  isSignedMessageClientData,
+  signedMessageChallenge,
+  type SignMessageResult,
+} from './core/message/signedMessage';
 import { API_ENDPOINTS } from './config';
 import {
   LazorKitClient,
@@ -638,24 +643,41 @@ async function performPasskeyExecute(
 
 // ─── Sign Message (portal-only, no on-chain tx) ─────────────────────
 
+/**
+ * The passkey signs `signedMessageChallenge(message)`, never the message's own
+ * bytes, so the signature cannot pass for a transaction approval (see
+ * core/message/signedMessage.ts). The portal gets that challenge as `message`
+ * and the text as `displayMessage`; a reply over any other challenge is
+ * refused. Check the result with `verifyWalletMessage`.
+ */
 export const signMessageAction = async (
   get: () => WalletStateClient,
   set: (state: Partial<WalletStateClient>) => void,
   message: string,
   options: SignOptions,
-): Promise<{ signature: string; signedPayload: string }> => {
+): Promise<SignMessageResult> => {
   return withSigningState(get, set, options, async () => {
     try {
       const { wallet, config } = requireWalletAndConnection(get);
       const { redirectUrl } = options;
-      const signUrl = `${config.portalUrl}/${API_ENDPOINTS.SIGN}&message=${encodeURIComponent(
-        message,
-      )}&credentialId=${encodeURIComponent(wallet!.credentialId)}&redirect_url=${encodeURIComponent(redirectUrl)}`;
+      const challenge = toBase64Url(signedMessageChallenge(message));
+      const signUrl =
+        `${config.portalUrl}/${API_ENDPOINTS.SIGN}&message=${encodeURIComponent(challenge)}` +
+        `&displayMessage=${encodeURIComponent(message)}` +
+        `&credentialId=${encodeURIComponent(wallet!.credentialId)}&redirect_url=${encodeURIComponent(redirectUrl)}`;
 
       const resultUrl = await openBrowser(signUrl, redirectUrl);
       const { handleBrowserResult } = await import('./core/browser/parseResult');
       const authResult = handleBrowserResult(resultUrl);
-      const result = { signature: authResult.signature, signedPayload: authResult.message };
+      if (!isSignedMessageClientData(authResult.clientDataJsonBase64, message)) {
+        throw new Error('The portal did not sign this message: its reply is over another challenge.');
+      }
+      const result: SignMessageResult = {
+        signature: authResult.signature,
+        signedPayload: authResult.message,
+        clientDataJsonBase64: authResult.clientDataJsonBase64,
+        authenticatorDataBase64: authResult.authenticatorDataBase64,
+      };
       return result;
     } catch (err) {
       const error = toActionError(err, get);

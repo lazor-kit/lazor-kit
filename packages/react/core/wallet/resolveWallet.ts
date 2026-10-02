@@ -28,7 +28,6 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { Buffer } from 'buffer';
 import {
-    createOwnershipChallenge,
     pickOwnWallet,
     recoverPasskeyPublicKeys,
     resolvePasskeyPublicKey,
@@ -39,6 +38,8 @@ import {
     type PasskeyWalletCandidate,
     type WalletFacts,
 } from '../program';
+// Domain-separated (`tag || 32 random bytes`), never sdk-legacy's bare 32.
+import { createOwnershipChallenge } from '../message/ownershipProof';
 import { PortalCancelledError, type DialogManager, type PortalAssertion } from '../portal';
 import type { WalletInfo } from '../storage';
 import { getCredentialHash, getPasskeyPublicKey, getPortalRpId } from './utils';

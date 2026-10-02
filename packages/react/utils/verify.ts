@@ -27,7 +27,14 @@ export async function importP256PublicKey(publicKeyBytes: Uint8Array): Promise<C
     )
 }
 
-// hàm verify chính 
+/**
+ * @deprecated Checks only that `signature` is over `signedPayload`, not which
+ * message was signed: any assertion the passkey ever made passes. Never
+ * use it to authenticate. Use
+ * `verifyWalletMessage({ connection, wallet, credentialId, rpId, message, ...result })`,
+ * or `verifySignedMessage({ message, publicKey, ...result })` with a key read
+ * from the chain.
+ */
 export async function verifySignatureBrowser({
     signedPayload,
     signature,

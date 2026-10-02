@@ -9,7 +9,8 @@
 // packages/react-native/test (scripts/check-txv1-identical.mjs). Each copy
 // loads its own package's txv1.ts, through TypeScript's transpileModule
 // (types are checked by the typecheck and build), with that package's
-// @solana/web3.js; @noble/curves (a devDependency) checks its signatures.
+// @solana/web3.js; @noble/curves, which the writer does not import, checks
+// its signatures.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';

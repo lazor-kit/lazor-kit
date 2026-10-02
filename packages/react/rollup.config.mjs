@@ -14,6 +14,9 @@ export default createRollupConfig({
         'react/jsx-runtime',
         '@solana/web3.js',
         'buffer',
-        'crypto'
+        'crypto',
+        // A subpath: `external` matches whole import ids, so the dependency's
+        // name alone does not keep it out of the bundle.
+        '@noble/curves/nist.js'
     ]
 });

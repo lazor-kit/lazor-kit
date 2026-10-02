@@ -93,6 +93,9 @@ class LazorkitWalletStandard implements Wallet {
             },
             'standard:disconnect': {
                 version: '1.0.0',
+                // Deletes the session key the SDK keeps, as the store's and
+                // the adapter's disconnect do by default. The standard method
+                // takes no options, so there is no keepSessionKeys here.
                 disconnect: async () => {
                     await this._adapter.disconnect();
                 },
@@ -128,6 +131,12 @@ class LazorkitWalletStandard implements Wallet {
                     throw new Error('signTransaction not supported');
                 },
             },
+            // The passkey signs `signedMessageChallenge(message)`, not the
+            // message's bytes (see LazorkitWalletAdapter.signMessage). As
+            // before, `signature` is the UTF-8 JSON of a SignMessageResult, not
+            // a 64-byte Ed25519 signature: the account's address is a program
+            // account with no key to sign with. Check it with
+            // `verifyWalletMessage`, which reads the passkey's key from chain.
             'solana:signMessage': {
                 version: '1.0.0',
                 signMessage: async (...inputs: any[]) => {
