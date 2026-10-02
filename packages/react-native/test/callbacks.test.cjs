@@ -77,7 +77,11 @@ let sends = 0;
 let sendGate = Promise.resolve();
 let heldSends = 0;
 
+/** RPC and paymaster requests made, of any kind. */
+let requests = 0;
+
 const rpcFetch = async (_url, init) => {
+  requests++;
   const { id, method, params } = JSON.parse(init.body);
   const reply = (result) => new Response(JSON.stringify({ jsonrpc: '2.0', id, result }), { status: 200 });
   if (method === 'getLatestBlockhash') {
@@ -100,6 +104,7 @@ const rpcFetch = async (_url, init) => {
   throw new Error(`unscripted RPC ${method}`);
 };
 globalThis.fetch = async (url, init) => {
+  requests++;
   assert.equal(String(url), PAYMASTER);
   const { id, method } = JSON.parse(init.body);
   const answer = (body) => new Response(JSON.stringify({ jsonrpc: '2.0', id, ...body }), { status: 200 });
@@ -373,4 +378,59 @@ test('C2: a call refused for want of a wallet calls its onFail, and records the 
     assert.equal(store.getState().error, error, name);
     assert.equal(store.getState().isSigning, false, name);
   }
+});
+
+test('addAuthorityEd25519 without a role, with one that is not a rank, or ROLE_OWNER on a v2 wallet, is refused before anything is read or prompted', async () => {
+  const newEd25519Pubkey = Keypair.generate().publicKey;
+  const before = requests;
+  const hook = M.useWallet();
+  for (const [payload, via] of [
+    [{ newEd25519Pubkey }, 'store'],
+    [{ newEd25519Pubkey, unrestricted: true, policy: new Uint8Array(8) }, 'hook'],
+    [{ newEd25519Pubkey, role: 3 }, 'store'],
+    [{ newEd25519Pubkey, role: -1 }, 'hook'],
+    [{ newEd25519Pubkey, role: '2' }, 'store'],
+    [{ newEd25519Pubkey, role: null }, 'store'],
+    [{ newEd25519Pubkey, role: 0 }, 'hook'],
+  ]) {
+    store.setState({ isSigning: false, error: null, wallet: storedWallet() });
+    const calls = [];
+    const options = { redirectUrl, onSuccess: () => calls.push('onSuccess'), onFail: (e) => calls.push([e, store.getState().isSigning]) };
+    const call = via === 'hook' ? hook.addAuthorityEd25519(payload, options) : store.getState().addAuthorityEd25519(payload, options);
+    const error = await rejection(call);
+    const what = JSON.stringify(payload);
+    assert.match(
+      error.message,
+      payload.role === undefined
+        ? /^addAuthorityEd25519 needs a role: the rank the new key gets on the wallet\. There is no default\./
+        : payload.role === 0
+          ? /^addAuthorityEd25519 does not add an Owner to a LazorKit v2 wallet: an Owner could remove every other authority, this passkey included\./
+          : /^addAuthorityEd25519: .* is not a role\./,
+      what,
+    );
+    // On v2: the two ranks it adds, then what an Owner is and that it is not added.
+    assert.match(
+      error.message,
+      /Pass one of: ROLE_ADMIN \(1\), which adds and removes delegates only.*; ROLE_SPENDER \(2\), the delegate rank.*\. On a v2 wallet addAuthorityEd25519 never adds ROLE_OWNER \(0\), which adds and removes any authority/,
+      what,
+    );
+    assert.match(error.message, /For a key your app holds, use ROLE_SPENDER with a policy\.$/, what);
+    assert.deepEqual(calls, [[error, false]], what);
+    assert.equal(store.getState().error, error, what);
+    assert.equal(store.getState().isSigning, false, what);
+  }
+  assert.equal(requests, before, 'nothing read, prompted or sent');
+});
+
+test('on a v1 wallet, addAuthorityEd25519 lists ROLE_OWNER among the ranks', async () => {
+  const before = requests;
+  store.setState({ isSigning: false, error: null, wallet: { ...storedWallet(), protocolVersion: 1 } });
+  const error = await rejection(
+    store.getState().addAuthorityEd25519({ newEd25519Pubkey: Keypair.generate().publicKey, role: 7, unrestricted: true }, { redirectUrl }),
+  );
+  assert.match(
+    error.message,
+    /^addAuthorityEd25519: 7 is not a role\. Pass one of: ROLE_OWNER \(0\), which adds and removes any authority.*; ROLE_ADMIN \(1\).*; ROLE_SPENDER \(2\), the delegate rank.*\. For a key your app holds, use ROLE_SPENDER with a policy\.$/,
+  );
+  assert.equal(requests, before, 'nothing read, prompted or sent');
 });

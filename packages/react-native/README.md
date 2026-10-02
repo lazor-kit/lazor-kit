@@ -325,6 +325,79 @@ Only a payload over the 1232-byte limit is compiled with
 limit no longer fails `signAndSendTransaction`, `authorizeAndExecute` or
 `authorizeDeferred` before the portal opens.
 
+## Session keys
+
+`createSession` registers a session key that your app generates, and
+`signAndSendWithSession` signs with the `Keypair` you pass it. The adapter
+never stores a session key, or the Ed25519 key you pass to
+`addAuthorityEd25519`. What it keeps in AsyncStorage is the connected wallet's
+public record, the configuration, and each passkey's transaction state; none of
+it is secret. (The web SDK, `@lazorkit/wallet`, generates and keeps the key
+itself, as a non-extractable WebCrypto key.)
+
+To keep a session key across restarts, store it in the OS keystore with
+`expo-secure-store` (iOS Keychain, Android Keystore). Never store it in
+AsyncStorage, which is not encrypted on disk and is included in device backups.
+
+```ts
+import * as SecureStore from 'expo-secure-store';
+import { Buffer } from 'buffer';
+import { Keypair, PublicKey } from '@solana/web3.js';
+
+const SLOT = 'myapp.lazorkit-session';
+const OPTIONS = { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY };
+
+// Once createSession has resolved. `walletPda`: the connected wallet's
+// (`wallet.walletPda`), the only one this key may sign for.
+async function keepSession(sessionKeypair: Keypair, sessionPda: PublicKey, expiresAtSlot: bigint, walletPda: string) {
+  const value = JSON.stringify({
+    seed: Buffer.from(sessionKeypair.secretKey.slice(0, 32)).toString('base64'),
+    sessionPda: sessionPda.toBase58(),
+    expiresAtSlot: expiresAtSlot.toString(),
+    walletPda,
+  });
+  await SecureStore.setItemAsync(SLOT, value, OPTIONS);
+}
+
+// The kept session, only for the wallet connected now (`wallet.walletPda`).
+async function keptSession(connectedWalletPda: string | undefined) {
+  const raw = await SecureStore.getItemAsync(SLOT, OPTIONS);
+  if (!raw) return null;
+  const { seed, sessionPda, expiresAtSlot, walletPda } = JSON.parse(raw);
+  if (!connectedWalletPda || walletPda !== connectedWalletPda) return null;
+  return {
+    sessionKeypair: Keypair.fromSeed(Buffer.from(seed, 'base64')),
+    sessionPda: new PublicKey(sessionPda),
+    expiresAtSlot: BigInt(expiresAtSlot),
+  };
+}
+
+// Once revokeSession has resolved, the session has expired, or the user
+// disconnects.
+async function forgetSession() {
+  await SecureStore.deleteItemAsync(SLOT, OPTIONS);
+}
+```
+
+- Keep the wallet the session belongs to with the key, and use the key only
+  while that wallet is connected: the session signs for its own wallet
+  whichever wallet the app shows. The web SDK does this for the keys it keeps
+  (`KeyWalletMismatchError`), and deletes its session key on `disconnect`.
+
+- `WHEN_UNLOCKED_THIS_DEVICE_ONLY` keeps the item on this device: it is not
+  restored to another one from a backup.
+- On iOS, a Keychain item survives uninstalling the app. After a reinstall,
+  the item may name a session that has expired or been revoked: check the
+  session account still exists and `expiresAtSlot` is in the future before you
+  use it, and delete the item if not.
+- On Android, exclude SecureStore's data from Auto Backup (see the
+  expo-secure-store docs). A restored item cannot be decrypted on another
+  install.
+- `requireAuthentication: true` asks for the user's biometrics on every read,
+  and the item is lost when the enrolled biometrics change.
+- What bounds a session key is what was registered on chain: its `actions`
+  (spending limits) and its expiry, not where you keep it.
+
 ## API Reference
 
 ### `useWallet()`
@@ -362,6 +435,34 @@ Signs a message string.
 
 **Returns**
 `Promise<string>` - Signature
+
+#### `addAuthorityEd25519(payload, options)`
+
+Adds an Ed25519 public key your app (or backend) holds as an authority of the
+connected wallet, with one passkey approval. `payload.role` is required: there
+is no default, and a missing or unknown role throws before anything is read or
+the portal opens.
+
+| Role | What the key may do |
+|---|---|
+| `ROLE_OWNER` (0) | Add and remove any authority, other owners included (never the last owner), and spend without limit. On a v2 wallet the protocol SDK adds an owner only with `allowOwner`, which this method does not pass, so `ROLE_OWNER` is refused there before anything is read or the portal opens. On a v1 wallet it adds one. |
+| `ROLE_ADMIN` (1) | Add and remove delegates only, and spend without limit. |
+| `ROLE_SPENDER` (2), the delegate rank | Manage no authority; spend only within its `policy` (required for this rank on v2; build it with `serializeActions([...])`). |
+
+For a key your app holds, use `ROLE_SPENDER` with a `policy`.
+
+**Parameters**
+
+| Param | Type | Description |
+|---|---|---|
+| `payload.newEd25519Pubkey` | `PublicKey` | The key to add. |
+| `payload.role` | `number` | Required: `ROLE_OWNER`, `ROLE_ADMIN` or `ROLE_SPENDER`. |
+| `payload.policy` | `Uint8Array` | The spending policy, for `ROLE_SPENDER`. |
+| `payload.unrestricted` | `boolean` | Required on a v1 wallet, where any added key can spend the whole vault. |
+| `options.redirectUrl` | `string` | Deep link URL |
+
+**Returns**
+`Promise<{ signature: string; newAuthorityPda: PublicKey }>`
 
 #### `signAndSendTransaction(payload, options)`
 

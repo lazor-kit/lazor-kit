@@ -26,7 +26,7 @@ import { reportOutcome } from '../core/wallet/utils';
 
 import { WalletInfo, WalletConfig, storage } from '../core/storage';
 import { DEFAULTS, DEFAULT_COMMITMENT } from '../config';
-import { WalletState } from '../core/types';
+import { WalletState, type AddAuthorityPayload } from '../core/types';
 /**
  * Create wallet store with integrated business logic and persistence
  */
@@ -77,7 +77,7 @@ export const useWalletStore = create<WalletState>()(
       // refused because another holds it), right before its promise settles;
       // what a callback throws changes nothing (see `reportOutcome`).
       connect: (options) => reportOutcome(options, () => connectAction(get, set, options)),
-      disconnect: (options) => reportOutcome(options, () => disconnectAction(set)),
+      disconnect: (options) => reportOutcome(options, () => disconnectAction(get, set, options)),
       signAndSendTransaction: (payload) =>
         reportOutcome(payload, () => signAndSendTransactionAction(get, set, payload)),
       signMessage: (message, options) => reportOutcome(options, () => signMessageAction(get, set, message)),
@@ -102,7 +102,8 @@ export const useWalletStore = create<WalletState>()(
             onSuccess: payload?.onSuccess && ((r) => payload.onSuccess!(r.authorityPda, r.authorityPublicKey)),
             onFail: payload?.onFail,
           },
-          () => addAuthorityAction(get, set, payload ?? {}),
+          // A call from JavaScript may omit the payload: refused for its role.
+          () => addAuthorityAction(get, set, payload ?? ({} as AddAuthorityPayload)),
         ),
       removeAuthority: (targetAuthorityPda, options) =>
         reportOutcome(options, () => removeAuthorityAction(get, set, { targetAuthorityPda })),

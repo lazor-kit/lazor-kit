@@ -45,7 +45,8 @@ export interface WalletState {
     signAndSendWithSession: (payload: SignAndSendTransactionPayload) => Promise<string>;
 
     // Ed25519 authority actions
-    addAuthority: (payload?: AddAuthorityPayload) => Promise<{ authorityPda: string; authorityPublicKey: string }>;
+    /** `payload.role` is required: see `AddAuthorityPayload.role`. */
+    addAuthority: (payload: AddAuthorityPayload) => Promise<{ authorityPda: string; authorityPublicKey: string }>;
     removeAuthority: (targetAuthorityPda: string, options?: RemoveAuthorityOptions) => Promise<void>;
     signAndSendWithAuthority: (payload: SignAndSendTransactionPayload) => Promise<string>;
 
@@ -81,11 +82,12 @@ export interface CreateSessionPayload {
     readonly unrestricted?: boolean;
     /**
      * Optional external session key to register as the authority. When
-     * omitted the SDK generates a fresh keypair client-side and persists
-     * its secretKey to localStorage for later signing. When provided, the
-     * SDK registers this pubkey on-chain without touching localStorage —
-     * useful for delegating to a backend / agent that already holds the
-     * matching private key.
+     * omitted the SDK generates a fresh key client-side and keeps it for
+     * `signAndSendWithSession`: a non-extractable WebCrypto key in IndexedDB
+     * (see `keyStorage` on the provider), not in localStorage. When provided, the
+     * SDK registers this pubkey on-chain and stores nothing — useful for
+     * delegating to a backend / agent that already holds the matching
+     * private key.
      *
      * Accepts a base58 string or a `PublicKey` instance.
      */
@@ -97,11 +99,15 @@ export interface CreateSessionPayload {
 export interface RevokeSessionPayload {
     /**
      * Optional — revoke a *specific* session by its PDA. Accepts base58
-     * or PublicKey. When omitted, the SDK revokes the session it previously
-     * created via `createSession` (tracked in localStorage).
+     * or PublicKey. When omitted, the SDK revokes the session whose key it
+     * keeps (the last `createSession` without `sessionKey`), which must be
+     * the connected wallet's: `KeyWalletMismatchError` otherwise, before the
+     * passkey prompt. A kept key whose session has expired is deleted then,
+     * and the call rejects.
      *
      * Use this when you registered an external session key (e.g. a backend /
-     * agent session) and want to revoke it without touching localStorage.
+     * agent session). The key the SDK keeps is deleted once the session it
+     * belongs to is revoked, and left alone when another session is.
      */
     readonly sessionPda?: import('@solana/web3.js').PublicKey | string;
     readonly onSuccess?: () => void;
@@ -109,7 +115,24 @@ export interface RevokeSessionPayload {
 }
 
 export interface AddAuthorityPayload {
-    readonly role?: number;
+    /**
+     * Required: the rank the new key gets on the wallet. There is no default;
+     * a missing or unknown role throws before the passkey prompt.
+     * - `ROLE_OWNER` (0): adds and removes any authority, other owners
+     *   included (never the last owner), and spends without limit. On a v2
+     *   wallet the protocol SDK adds an owner only with `allowOwner`, which
+     *   this method does not pass, so it refuses `ROLE_OWNER` before the
+     *   prompt.
+     * - `ROLE_ADMIN` (1): adds and removes delegates only, and spends without
+     *   limit: no policy, no expiry, until `removeAuthority`.
+     * - `ROLE_SPENDER` (2), the delegate rank: manages no authority, and
+     *   spends only within its `policy`, which v2 requires for it.
+     *
+     * For a key your app holds, use `ROLE_SPENDER` with a `policy`. The SDK
+     * keeps the key for `signAndSendWithAuthority` (see `keyStorage`), bound to
+     * this wallet.
+     */
+    readonly role: number;
     /**
      * Spending policy, required when the role is ROLE_SPENDER (Delegate) on a
      * v2 wallet. Build it with `serializeActions([...])`. v2 rejects a Delegate
@@ -171,6 +194,13 @@ export interface ActionCallbacks<T> {
 
 /** As with every action: called once the call is over, right before its promise settles; what they throw changes nothing. */
 export interface DisconnectOptions {
+    /**
+     * Keep the session key the SDK keeps (`createSession`). By default
+     * `disconnect` deletes it. A kept one signs only once its wallet is
+     * connected again. The authority key (`addAuthority`) is always kept, on
+     * the same terms; `removeAuthority` or `forgetStoredKeys()` deletes it.
+     */
+    readonly keepSessionKeys?: boolean;
     readonly onSuccess?: () => void;
     readonly onFail?: (error: Error) => void;
 }

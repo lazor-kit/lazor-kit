@@ -55,9 +55,11 @@ export interface WalletHookInterface {
     spendingLimits?: SpendingLimits;
     /**
      * Optional pubkey to register as the session authority. When set, the
-     * SDK skips local keypair generation + localStorage persistence — the
-     * caller owns the matching secretKey (typical for backend / agent
-     * delegation). Accepts base58 string or `PublicKey`.
+     * SDK generates and stores no key — the caller owns the matching secret
+     * key (typical for backend / agent delegation). When omitted, the SDK
+     * generates one and keeps it as a non-extractable WebCrypto key in
+     * IndexedDB (see the provider's `keyStorage`). Accepts base58 string or
+     * `PublicKey`.
      */
     sessionKey?: PublicKey | string;
     /**
@@ -69,18 +71,42 @@ export interface WalletHookInterface {
     onSuccess?: (sessionPda: string, sessionPublicKey: string) => void;
     onFail?: (error: Error) => void;
   }) => Promise<{ sessionPda: string; sessionPublicKey: string }>;
+  /**
+   * Revokes `sessionPda`, or without it the session whose key the SDK keeps,
+   * which must be the connected wallet's (`KeyWalletMismatchError` otherwise,
+   * before the passkey prompt).
+   */
   revokeSession: (payload?: { sessionPda?: PublicKey | string; onSuccess?: () => void; onFail?: (error: Error) => void }) => Promise<void>;
+  /**
+   * Signs with the session key the SDK keeps, no passkey prompt. Only while
+   * the wallet the session belongs to is connected: otherwise it rejects with
+   * `KeyWalletMismatchError`, and nothing is signed or sent. A key whose
+   * session has expired is deleted, and the call rejects.
+   */
   signAndSendWithSession: (payload: SendTxPayload & ActionCallbacks<string>) => Promise<string>;
 
   // Ed25519 authority actions
-  addAuthority: (payload?: {
-    role?: number;
+  /**
+   * Adds a new Ed25519 key the SDK generates and keeps, with one passkey
+   * approval. `role` is required (no default): `ROLE_OWNER` (0) manages every
+   * authority, `ROLE_ADMIN` (1) manages delegates only, both spend without
+   * limit; `ROLE_SPENDER` (2), the delegate rank, manages nothing and spends
+   * within its `policy` (required on v2). For an app key use `ROLE_SPENDER`
+   * with a policy. A missing or unknown role throws before the prompt.
+   */
+  addAuthority: (payload: {
+    role: number;
     policy?: Uint8Array;
     unrestricted?: boolean;
     onSuccess?: (authorityPda: string, authorityPublicKey: string) => void;
     onFail?: (error: Error) => void;
   }) => Promise<{ authorityPda: string; authorityPublicKey: string }>;
   removeAuthority: (targetAuthorityPda: string, options?: RemoveAuthorityOptions) => Promise<void>;
+  /**
+   * Signs with the authority key the SDK keeps, no passkey prompt. Only while
+   * the wallet the authority was added to is connected: otherwise it rejects
+   * with `KeyWalletMismatchError`, and nothing is signed or sent.
+   */
   signAndSendWithAuthority: (payload: SendTxPayload & ActionCallbacks<string>) => Promise<string>;
 
   // Deferred execution
@@ -237,7 +263,7 @@ export const useWallet = (): WalletHookInterface => {
 
     // Ed25519 authority actions
     addAuthority: useCallback(
-      (payload?: Parameters<WalletHookInterface['addAuthority']>[0]) => addAuthority(payload),
+      (payload: Parameters<WalletHookInterface['addAuthority']>[0]) => addAuthority(payload),
       [addAuthority]
     ),
     removeAuthority: useCallback(
