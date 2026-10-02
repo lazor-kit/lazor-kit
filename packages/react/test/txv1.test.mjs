@@ -1,5 +1,6 @@
 // The v1 writer (txv1.ts), offline, on Node 18 or later: U1 the golden
-// vectors, U2 edges and guards, U3 signing and the web3.js read-back, U6 the
+// vectors, U2 edges and guards, U3 signing (with a secret key, or by a key
+// that signs the message itself) and the web3.js read-back, U6 the
 // program ceilings, and the limit policy, v0 measurement, WebAuthn
 // placeholder and errors. The kit 8.4.0 differential (U11) is
 // tools/txv1-oracle.
@@ -549,6 +550,77 @@ test('U3: the writer imports only @solana/web3.js and signs with its ed25519, so
       `slot ${i}`
     );
   });
+});
+
+test('U3: signTransactionV1Async places what each key signs: on every vector, the bytes signTransactionV1 gives', async () => {
+  // A key that signs the message itself (here noble, standing in for a
+  // non-extractable WebCrypto key), and web3.js's signer behind the same
+  // interface (keypairMessageSigner).
+  const external = (keypair) => ({
+    publicKey: keypair.publicKey,
+    signMessage: async (message) => ed25519.sign(message, keypair.secretKey.subarray(0, 32)),
+  });
+  let signed = 0;
+  for (const vector of VECTORS.vectors) {
+    if (!vector.expected.fits) continue;
+    const compiled = T.compileTransactionV1(decodeInput(vector.input));
+    const keys = vector.sign.map(key);
+    const expected = base64(T.signTransactionV1(compiled, keys));
+    assert.equal(base64(await T.signTransactionV1Async(compiled, keys.map(external))), expected, vector.name);
+    assert.equal(
+      base64(await T.signTransactionV1Async(compiled, keys.map(T.keypairMessageSigner))),
+      expected,
+      vector.name
+    );
+    signed++;
+  }
+  assert.ok(signed >= 11);
+  // The fee payer's slot stays empty, as with signTransactionV1.
+  const authority = key('authority');
+  const compiled = compile([ix(LAZORKIT, [meta(authority.publicKey, true, false), ...accounts(2)], 9)]);
+  const wire = await T.signTransactionV1Async(compiled, [external(authority)]);
+  assert.ok(wire.subarray(compiled.messageLength, compiled.messageLength + 64).every((b) => b === 0));
+  assert.deepEqual(wire, T.signTransactionV1(compiled, [authority]));
+});
+
+test('U3: signTransactionV1Async asks no key to sign unless every key is a signer; each gets its own copy of the message', async () => {
+  const authority = key('authority');
+  const compiled = compile([ix(LAZORKIT, [meta(authority.publicKey, true, false), ...accounts(2)], 9)]);
+  const message = compiled.wire.slice(0, compiled.messageLength);
+  const before = base64(compiled.wire);
+  const seen = [];
+  const recording = (keypair, answer) => ({
+    publicKey: keypair.publicKey,
+    signMessage: async (bytes) => {
+      seen.push(keypair.publicKey.toBase58());
+      assert.deepEqual(bytes, message);
+      const signature = answer ? answer(bytes) : ed25519.sign(bytes, keypair.secretKey.subarray(0, 32));
+      bytes.fill(0xff); // a key that scribbles on what it was given changes nothing
+      return signature;
+    },
+  });
+  // A stranger anywhere in the list: nothing is signed, by anyone.
+  await assert.rejects(
+    T.signTransactionV1Async(compiled, [recording(authority), recording(key('stranger'))]),
+    /not a signer/
+  );
+  assert.deepEqual(seen, []);
+  // Both slots, one after the other, each from its own copy.
+  const both = await T.signTransactionV1Async(compiled, [recording(key('payer')), recording(authority)]);
+  assert.deepEqual(seen, [PAYER.toBase58(), authority.publicKey.toBase58()]);
+  assert.deepEqual(both, T.signTransactionV1(compiled, [key('payer'), authority]));
+  assert.equal(base64(compiled.wire), before);
+  // An answer that is not a 64-byte signature is refused; the key's own error passes through.
+  for (const answer of [() => new Uint8Array(63), () => new Uint8Array(65), () => Array(64).fill(1)]) {
+    await assert.rejects(T.signTransactionV1Async(compiled, [recording(authority, answer)]), /is not 64 bytes/);
+  }
+  const refusing = { publicKey: authority.publicKey, signMessage: async () => { throw new Error('key refused'); } };
+  await assert.rejects(T.signTransactionV1Async(compiled, [refusing]), /key refused/);
+  // keypairMessageSigner checks the secret key as signTransactionV1 does.
+  const forged = T.keypairMessageSigner({ publicKey: authority.publicKey, secretKey: key('stranger').secretKey });
+  await assert.rejects(T.signTransactionV1Async(compiled, [forged]), /not its own/);
+  const tooBig = compile([ix(address('program-a'), accounts(63))]);
+  await assert.rejects(T.signTransactionV1Async(tooBig, [recording(key('payer'))]), /does not fit/);
 });
 
 // ─── U6: program ceilings ───────────────────────────────────────────────────

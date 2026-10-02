@@ -9,7 +9,10 @@
 //   program, accounts, roles and data) is the input's;
 // - web3.js reads back version 1 with the same keys, instructions and config;
 // - the signatures verify, sit in their signers' slots, leave the other slots
-//   empty, and equal kit's own partiallySignTransaction.
+//   empty, and equal kit's own partiallySignTransaction;
+// - signTransactionV1Async, with the same keys as non-extractable WebCrypto
+//   keys that sign the message themselves (as the web wallet's kept keys do),
+//   gives the same signed bytes.
 // One case in fifty is also sent with its first instruction's program set to
 // the fee payer: kit and web3.js compile and read that, but Agave refuses the
 // message at sanitize (a program index of 0), so the writer must throw rather

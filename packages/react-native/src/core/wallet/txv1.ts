@@ -12,8 +12,10 @@
  *
  * No network, storage, globals, TextEncoder or WebCrypto, and no import but
  * @solana/web3.js, so the same file runs on Hermes, and an app bundles one
- * ed25519 signer, web3.js's own (`signTransactionV1`). BigInt is needed only
- * for a priority fee, which the wallets never set.
+ * ed25519 signer, web3.js's own (`signTransactionV1`). A key that signs
+ * without handing out its secret, such as a non-extractable WebCrypto key,
+ * signs through `signTransactionV1Async`, which only places what it returns.
+ * BigInt is needed only for a priority fee, which the wallets never set.
  *
  * Wire layout (the signatures come last, unlike legacy and v0):
  *
@@ -284,26 +286,85 @@ export function signTransactionV1(
   compiled: Pick<CompiledTransactionV1, 'wire' | 'messageLength'>,
   signers: readonly Signer[]
 ): Uint8Array {
+  const { wire, messageLength } = signable(compiled);
+  const signed = wire.slice();
+  const message = signed.subarray(0, messageLength);
+  for (const signer of signers) {
+    const index = signerSlot(signed, signer.publicKey);
+    signed.set(ed25519Sign(message, signer), messageLength + SIGNATURE_BYTES * index);
+  }
+  return signed;
+}
+
+/**
+ * A key that signs a message itself and returns the signature, without
+ * handing out its secret: a non-extractable WebCrypto Ed25519 key, say.
+ * `signMessage` returns `publicKey`'s 64-byte ed25519 signature of exactly the
+ * bytes it is given.
+ */
+export interface TxV1MessageSigner {
+  readonly publicKey: PublicKey;
+  signMessage(message: Uint8Array): Promise<Uint8Array>;
+}
+
+/**
+ * `signTransactionV1` for keys that sign the message themselves
+ * (`TxV1MessageSigner`). Every signer's slot is found before any of them is
+ * asked to sign, so a key that is not a signer of this transaction throws with
+ * nothing signed. Each signer is given its own copy of the message bytes, one
+ * after the other, and its answer is placed in its slot as it is: this does not
+ * verify it, as web3.js does not verify what `Transaction.addSignature` is
+ * given; a wrong signature fails the paymaster's simulation. Over the same
+ * message and key, an RFC 8032 signer gives the bytes `signTransactionV1`
+ * gives.
+ */
+export async function signTransactionV1Async(
+  compiled: Pick<CompiledTransactionV1, 'wire' | 'messageLength'>,
+  signers: readonly TxV1MessageSigner[]
+): Promise<Uint8Array> {
+  const { wire, messageLength } = signable(compiled);
+  const signed = wire.slice();
+  const slots = signers.map((signer) => signerSlot(signed, signer.publicKey));
+  for (let i = 0; i < signers.length; i++) {
+    const signature = await signers[i].signMessage(wire.slice(0, messageLength));
+    if (!(signature instanceof Uint8Array) || signature.length !== SIGNATURE_BYTES) {
+      throw new Error(`txv1: the signature from ${signers[i].publicKey.toBase58()} is not ${SIGNATURE_BYTES} bytes`);
+    }
+    signed.set(signature, messageLength + SIGNATURE_BYTES * slots[i]);
+  }
+  return signed;
+}
+
+/**
+ * `keypair` as a `TxV1MessageSigner`: it signs with web3.js's own ed25519, as
+ * `signTransactionV1` does, and checks the secret key the same way.
+ */
+export function keypairMessageSigner(keypair: Signer): TxV1MessageSigner {
+  return {
+    publicKey: keypair.publicKey,
+    signMessage: async (message) => ed25519Sign(message, keypair),
+  };
+}
+
+function signable(
+  compiled: Pick<CompiledTransactionV1, 'wire' | 'messageLength'>
+): { wire: Uint8Array; messageLength: number } {
   const { wire, messageLength } = compiled;
   if (!wire || messageLength === undefined) {
     throw new Error('txv1: this transaction does not fit, so it cannot be signed');
   }
-  const signed = wire.slice();
-  const message = signed.subarray(0, messageLength);
-  const requiredSignatures = signed[1];
-  for (const signer of signers) {
-    const publicKey = signer.publicKey.toBytes();
-    let index = -1;
-    for (let i = 0; i < requiredSignatures && index < 0; i++) {
-      const at = FIXED_BYTES + ADDRESS_BYTES * i;
-      if (equalBytes(signed.subarray(at, at + ADDRESS_BYTES), publicKey)) index = i;
-    }
-    if (index < 0) {
-      throw new Error(`txv1: ${signer.publicKey.toBase58()} is not a signer of this transaction`);
-    }
-    signed.set(ed25519Sign(message, signer), messageLength + SIGNATURE_BYTES * index);
+  return { wire, messageLength };
+}
+
+/** The signature slot of `publicKey` in a signed or unsigned wire: its index among the required signers. */
+function signerSlot(wire: Uint8Array, publicKey: PublicKey): number {
+  const key = publicKey.toBytes();
+  const requiredSignatures = wire[1];
+  for (let i = 0; i < requiredSignatures; i++) {
+    const at = FIXED_BYTES + ADDRESS_BYTES * i;
+    if (equalBytes(wire.subarray(at, at + ADDRESS_BYTES), key)) return i;
   }
-  return signed;
+  throw new Error(`txv1: ${publicKey.toBase58()} is not a signer of this transaction`);
 }
 
 /**

@@ -277,6 +277,19 @@ export async function crossCheck(T, input, signers = [], { legacyCompiler = fals
   const kitKeys = await Promise.all(signers.map(kitKeyPair));
   const kitSigned = kit.getTransactionEncoder().encode(await kit.partiallySignTransaction(kitKeys, decoded));
   if (!equalBytes(kitSigned, signed)) fail("signed bytes differ from kit's partiallySignTransaction");
+  // The same keys as non-extractable WebCrypto keys (kit's), each signing the
+  // message itself through signTransactionV1Async, as the web wallet's kept
+  // session and authority keys do: the same bytes.
+  const messageSigners = signers.map((signer, i) => {
+    if (kitKeys[i].privateKey.extractable) fail('a WebCrypto test key is extractable', signer.publicKey.toBase58());
+    return {
+      publicKey: signer.publicKey,
+      signMessage: async (bytes) => new Uint8Array(await crypto.subtle.sign('Ed25519', kitKeys[i].privateKey, bytes)),
+    };
+  });
+  if (!equalBytes(await T.signTransactionV1Async(ours, messageSigners), signed)) {
+    fail('signTransactionV1Async with non-extractable WebCrypto keys differs from signTransactionV1');
+  }
   const sameBytesAsKit = equalBytes(theirs.transaction.messageBytes, message);
   return { ours, failures, signed, sameBytesAsKit };
 }
