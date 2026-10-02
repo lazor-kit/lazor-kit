@@ -394,6 +394,13 @@ reason is logged once (`[TxV1] … goes out as v0: <reason>`):
 `executeDeferred` take it. `connect` and the session and authority management
 calls ignore it.
 
+A `'v1'` session or authority send is signed by the key the SDK keeps (see
+**Session and authority keys** below), exactly as a v0 send is: the key signs
+the v1 message itself (in the default tier, `crypto.subtle` with the
+non-extractable key, so no secret is read), only for its own wallet
+(`KeyWalletMismatchError` otherwise), and it checks the connected wallet again
+when it signs, after the limits are set.
+
 A `'v1'` request that goes out as v0 makes the paymaster requests and RPC
 calls a `'v0'` one makes. It differs only before the prompt, where it rejects
 what a `'v0'` request would only fail on later: a v0 transaction that no
@@ -441,8 +448,9 @@ not check the v1 limits below.
   its simulation banner may fail, as for a large swap today; signing is not
   blocked.
 - **Bundle size.** The v1 code is in the package whether or not you use it:
-  about 6 KB gzip in an app. It adds no dependency: v1 transactions are signed
-  with `@solana/web3.js`'s own ed25519.
+  about 6 KB gzip in an app. It adds no dependency: a key with a secret signs
+  with `@solana/web3.js`'s own ed25519, and a kept key signs with WebCrypto, as
+  for v0.
 
 | Error | When |
 |---|---|

@@ -212,7 +212,7 @@ function buildAndSendTxV1(params: Parameters<typeof buildAndSendTx>[0]): Promise
         paymaster: params.paymaster,
         connection: params.connection,
         feePayer: params.feePayer,
-        extraSigners: params.extraSigners ?? [],
+        signers: params.signers ?? [],
         turn: params.turn,
         createsAuthority: params.createsAuthority,
         sendV0: () => buildAndSendTx({ ...params, txVersion: 'v0', v1: undefined }),

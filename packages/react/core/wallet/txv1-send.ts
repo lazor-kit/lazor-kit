@@ -27,8 +27,8 @@ import {
     TransactionInstruction,
     type AddressLookupTableAccount,
     type Connection,
-    type Keypair,
 } from '@solana/web3.js';
+import type { KeySigner } from '../keys';
 import { Paymaster, txV1Availability } from '../paymaster/paymaster';
 import {
     PROGRAM_ID_DEVNET,
@@ -49,7 +49,7 @@ import {
     limitsFromSimulation,
     measureV0,
     placeholderWebAuthn,
-    signTransactionV1,
+    signTransactionV1Async,
     type TxV1Config,
     type TxV1LimitOptions,
     type TxV1LimitsSource,
@@ -314,7 +314,8 @@ export async function sendPlannedTxV1(params: {
     paymaster: Paymaster;
     connection: Connection;
     feePayer: PublicKey;
-    extraSigners: readonly Keypair[];
+    /** The kept session or authority key, which signs the v1 message itself; none for a passkey transaction. */
+    signers: readonly KeySigner[];
     turn?: AuthorityTurn;
     createsAuthority?: PublicKey;
     sendV0: () => Promise<string>;
@@ -334,7 +335,7 @@ export async function sendPlannedTxV1(params: {
         connection: params.connection,
         feePayer: params.feePayer,
         instructions: draft.instructions,
-        extraSigners: params.extraSigners,
+        signers: params.signers,
         lazorkitProgramId: plan.decision.lazorkitProgramId,
         limits: plan.limits,
         turn: params.turn,
@@ -352,8 +353,12 @@ export async function sendPlannedTxV1(params: {
  *    the final transaction.
  * 3. The limits: the caller's, else one simulation of the draft (see
  *    `txV1Limits`), else the ceilings.
- * 4. The final transaction, the same size; the local keys sign it, after its
- *    config is final.
+ * 4. The final transaction, the same size; once its config is final, the
+ *    kept session or authority key signs its message itself
+ *    (`signTransactionV1Async`, with `KeySigner.signMessage`: a
+ *    non-extractable WebCrypto key in the default tier, so no secret bytes
+ *    are read), and only while the key's wallet is connected (the
+ *    `checkedSigner` of ./keyBinding checks again here).
  * 5. `Paymaster.signAndSendRaw`: retries resend these same bytes, and a
  *    -32051 is not retried.
  */
@@ -362,7 +367,7 @@ async function sendTxV1(params: {
     connection: Connection;
     feePayer: PublicKey;
     instructions: readonly TransactionInstruction[];
-    extraSigners: readonly Keypair[];
+    signers: readonly KeySigner[];
     lazorkitProgramId: PublicKey;
     limits: TxV1LimitOptions;
     turn?: AuthorityTurn;
@@ -382,7 +387,7 @@ async function sendTxV1(params: {
     if (!final.fits || final.bytes !== draft.bytes) {
         throw new Error('txv1: internal error: the transaction is not the size of its draft');
     }
-    const signed = signTransactionV1(final, params.extraSigners);
+    const signed = await signTransactionV1Async(final, params.signers);
     log().debug(
         `v1: ${final.bytes} bytes, ${final.addresses} addresses, ` +
             `cu=${config.computeUnitLimit} lad=${config.loadedAccountsDataSizeLimit} (${source})`,
