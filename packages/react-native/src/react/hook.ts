@@ -23,8 +23,8 @@ import {
   SignOptions,
   TransferSolPayload,
   TxCallbacks,
+  WalletInfo,
 } from '../types';
-import { logger } from '../core/logger';
 
 export function useWallet(): LazorWalletHook {
   const {
@@ -56,33 +56,17 @@ export function useWallet(): LazorWalletHook {
   const vaultPubkey = smartWalletPubkey; // alias for clarity
   const walletPdaPubkey = wallet?.walletPda ? new PublicKey(wallet.walletPda) : null;
 
-  const handleConnect = async (connectOptions: ConnectOptions) => {
-    try {
-      const result = await connect(connectOptions);
-      connectOptions?.onSuccess?.(result);
-      return result;
-    } catch (e) {
-      const err = e instanceof Error ? e : new Error(String(e));
-      logger.error('Hook connect failed:', err, { redirectUrl: connectOptions.redirectUrl });
-      connectOptions?.onFail?.(err);
-      throw err;
-    }
-  };
-
-  const handleDisconnect = async (disconnectOptions?: DisconnectOptions) => {
-    try {
-      await disconnect();
-      disconnectOptions?.onSuccess?.();
-    } catch (e) {
-      const err = e instanceof Error ? e : new Error(String(e));
-      logger.error('Hook disconnect failed:', err);
-      disconnectOptions?.onFail?.(err);
-      throw err;
-    }
-  };
-
   // Each action's promise settles, and its callbacks run, once `isSigning`
-  // is false again: `await send(a); await send(b)` runs both.
+  // (or `isConnecting`) is false again: `await send(a); await send(b)` runs
+  // both, and so does a send from `onSuccess`. A call refused because another
+  // is running settles at once, while that call still holds the flag. What a
+  // callback throws is logged and changes nothing. The store reports to the
+  // callbacks, so the hook passes them through.
+  const handleConnect = (connectOptions: ConnectOptions): Promise<WalletInfo> => connect(connectOptions);
+
+  const handleDisconnect = (disconnectOptions?: DisconnectOptions): Promise<void> =>
+    disconnect(disconnectOptions);
+
   const handleSignAndSend = (
     payload: SignAndSendTransactionPayload,
     signOptions: SignOptions,

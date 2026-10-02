@@ -1,5 +1,10 @@
 /**
  * SDK Actions - Core wallet operations
+ *
+ * An action settles its promise only: the store reports the outcome to the
+ * call's `onSuccess` / `onFail` once the action is over, with `isSigning` /
+ * `isConnecting` already cleared, or at once for a call refused because
+ * another holds the flag (see `reportOutcome` in ./utils).
  */
 import { sha256 } from 'js-sha256';
 import { Buffer } from 'buffer';
@@ -16,7 +21,7 @@ import {
 import { SignResult } from '../portal';
 import { StorageManager, WalletInfo } from '../storage';
 import { Paymaster } from '../paymaster/paymaster';
-import { WalletState, ConnectOptions, DisconnectOptions, SignAndSendTransactionPayload, CreateSessionPayload, RevokeSessionPayload, AddAuthorityPayload, AuthorizeAndExecutePayload, AuthorizeDeferredPayload, ExecuteDeferredPayload } from '../types';
+import { WalletState, ConnectOptions, SignAndSendTransactionPayload, CreateSessionPayload, RevokeSessionPayload, AddAuthorityPayload, AuthorizeAndExecutePayload, AuthorizeDeferredPayload, ExecuteDeferredPayload } from '../types';
 import {
     createDialogManager,
     getCredentialHash,
@@ -57,6 +62,18 @@ function toBase64Url(bytes: Uint8Array): string {
         .replace(/=+$/, '');
 }
 
+/**
+ * A call refused before it started because something it needs is missing (a
+ * connected wallet, a connection): reported like any failure, in `error` too.
+ * A refusal because another call is running ('Already signing') leaves
+ * `error` alone: it belongs to that call.
+ */
+function refuse(set: (state: Partial<WalletState>) => void, message: string): never {
+    const error = new Error(message);
+    set({ error });
+    throw error;
+}
+
 /** The connected wallet's protocol, for error reporting. */
 function walletVersion(get: () => WalletState): ProtocolVersion | undefined {
     const wallet = get().wallet;
@@ -70,6 +87,7 @@ function walletVersion(get: () => WalletState): ProtocolVersion | undefined {
 function paymasterFor(config: WalletConfig, version: ProtocolVersion): Paymaster {
     return new Paymaster(
         version === 1 ? (config.v1PaymasterConfig ?? config.paymasterConfig) : config.paymasterConfig,
+        { protocolVersion: version },
     );
 }
 
@@ -203,7 +221,6 @@ export const connectAction = async (
             }
             if (attempt.signal.aborted) throw connectAbandoned();
             set({ wallet: existingWallet });
-            options?.onSuccess?.(existingWallet);
             return existingWallet;
         }
 
@@ -239,18 +256,15 @@ export const connectAction = async (
         if (attempt.signal.aborted) throw connectAbandoned();
         await StorageManager.saveWallet(walletInfo);
         set({ wallet: walletInfo });
-        options?.onSuccess?.(walletInfo);
         return walletInfo;
 
     } catch (error: unknown) {
         if (attempt.signal.aborted) {
             // Abandoned by disconnect, which already reset the store: leave
             // its `error` alone, but still fail this call.
-            const err = connectAbandoned();
-            options?.onFail?.(err);
-            throw err;
+            throw connectAbandoned();
         }
-        return handleActionError(error, set, options?.onFail, walletVersion(get));
+        return handleActionError(error, set, walletVersion(get));
     } finally {
         // An abandoned connect no longer owns `isConnecting`: disconnect reset
         // it, and a connect started since may have set it again.
@@ -267,11 +281,13 @@ function namesWallet(wallet: WalletInfo, address: string): boolean {
 }
 
 /**
- * Disconnect wallet action
+ * Disconnect wallet action. `isSigning` is left to the action that set it, as
+ * on mobile: an action already running is not abandoned (its passkey prompt
+ * may still be open), and clearing its flag here would let a second one start
+ * beside it, whose flag the first would then clear when it ends.
  */
 export const disconnectAction = async (
     set: (state: Partial<WalletState>) => void,
-    options?: DisconnectOptions
 ): Promise<void> => {
 
     try {
@@ -281,10 +297,9 @@ export const disconnectAction = async (
         connectInFlight = null;
         clearPendingConfirmation();
         await StorageManager.clearWallet();
-        set({ wallet: null, error: null, isConnecting: false, isSigning: false, isLoading: false });
-        options?.onSuccess?.();
+        set({ wallet: null, error: null, isConnecting: false, isLoading: false });
     } catch (error: unknown) {
-        return handleActionError(error, set, options?.onFail);
+        return handleActionError(error, set);
     }
 };
 
@@ -308,11 +323,11 @@ export const signAndSendTransactionAction = async (
     }
 
     if (!wallet) {
-        throw new Error('No wallet connected');
+        refuse(set, 'No wallet connected');
     }
 
     if (!connection) {
-        throw new Error('No connection available');
+        refuse(set, 'No connection available');
     }
 
     set({ isSigning: true, error: null });
@@ -366,11 +381,10 @@ export const signAndSendTransactionAction = async (
             }
         });
 
-        payload.onSuccess?.(txSignature);
         return txSignature;
 
     } catch (error: unknown) {
-        return handleActionError(error, set, payload.onFail, walletVersion(get));
+        return handleActionError(error, set, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -453,8 +467,8 @@ export const createSessionAction = async (
 ): Promise<{ sessionPda: string; sessionPublicKey: string }> => {
     const { isSigning, connection, wallet, config } = get();
     if (isSigning) throw new Error('Already signing');
-    if (!wallet) throw new Error('No wallet connected');
-    if (!connection) throw new Error('No connection available');
+    if (!wallet) refuse(set, 'No wallet connected');
+    if (!connection) refuse(set, 'No connection available');
 
     set({ isSigning: true, error: null });
     try {
@@ -480,7 +494,6 @@ export const createSessionAction = async (
         const [preExistingSessionPda] = client.findSession(walletPda, sessionPublicKey.toBytes());
         const preExistingAccount = await connection.getAccountInfo(preExistingSessionPda);
         if (preExistingAccount) {
-            payload.onSuccess?.(preExistingSessionPda.toBase58(), sessionPublicKey.toBase58());
             return {
                 sessionPda: preExistingSessionPda.toBase58(),
                 sessionPublicKey: sessionPublicKey.toBase58(),
@@ -552,10 +565,9 @@ export const createSessionAction = async (
             }));
         }
 
-        payload.onSuccess?.(sessionPda.toBase58(), sessionPublicKey.toBase58());
         return { sessionPda: sessionPda.toBase58(), sessionPublicKey: sessionPublicKey.toBase58() };
     } catch (error) {
-        return handleActionError(error, set, payload.onFail, walletVersion(get));
+        return handleActionError(error, set, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -578,8 +590,8 @@ export const revokeSessionAction = async (
 ): Promise<void> => {
     const { isSigning, connection, wallet, config } = get();
     if (isSigning) throw new Error('Already signing');
-    if (!wallet) throw new Error('No wallet connected');
-    if (!connection) throw new Error('No connection available');
+    if (!wallet) refuse(set, 'No wallet connected');
+    if (!connection) refuse(set, 'No connection available');
 
     set({ isSigning: true, error: null });
     try {
@@ -641,9 +653,8 @@ export const revokeSessionAction = async (
 
         // Only clear localStorage when we revoked an SDK-managed session.
         if (!external) localStorage.removeItem('lazorkit-session');
-        payload.onSuccess?.();
     } catch (error) {
-        return handleActionError(error, set, payload.onFail, walletVersion(get));
+        return handleActionError(error, set, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -659,7 +670,7 @@ export const signAndSendWithSessionAction = async (
 ): Promise<string> => {
     const { isSigning, connection, config } = get();
     if (isSigning) throw new Error('Already signing');
-    if (!connection) throw new Error('No connection available');
+    if (!connection) refuse(set, 'No connection available');
 
     set({ isSigning: true, error: null });
     // The protocol this flow runs on, from its own account — for error reporting.
@@ -695,10 +706,9 @@ export const signAndSendWithSessionAction = async (
             addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
             txVersion: payload.transactionOptions?.txVersion,
         });
-        payload.onSuccess?.(txSignature);
         return txSignature;
     } catch (error) {
-        return handleActionError(error, set, payload.onFail, flowVersion ?? walletVersion(get));
+        return handleActionError(error, set, flowVersion ?? walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -715,8 +725,8 @@ export const addAuthorityAction = async (
 ): Promise<{ authorityPda: string; authorityPublicKey: string }> => {
     const { isSigning, connection, wallet, config } = get();
     if (isSigning) throw new Error('Already signing');
-    if (!wallet) throw new Error('No wallet connected');
-    if (!connection) throw new Error('No connection available');
+    if (!wallet) refuse(set, 'No wallet connected');
+    if (!connection) refuse(set, 'No connection available');
 
     set({ isSigning: true, error: null });
     try {
@@ -780,10 +790,9 @@ export const addAuthorityAction = async (
             role,
         }));
 
-        payload.onSuccess?.(newAuthorityPda.toBase58(), authorityKeypair.publicKey.toBase58());
         return { authorityPda: newAuthorityPda.toBase58(), authorityPublicKey: authorityKeypair.publicKey.toBase58() };
     } catch (error) {
-        return handleActionError(error, set, payload.onFail, walletVersion(get));
+        return handleActionError(error, set, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -795,16 +804,12 @@ export const addAuthorityAction = async (
 export const removeAuthorityAction = async (
     get: () => WalletState,
     set: (state: Partial<WalletState>) => void,
-    payload: {
-        targetAuthorityPda: string;
-        onSuccess?: () => void;
-        onFail?: (error: Error) => void;
-    }
+    payload: { targetAuthorityPda: string }
 ): Promise<void> => {
     const { isSigning, connection, wallet, config } = get();
     if (isSigning) throw new Error('Already signing');
-    if (!wallet) throw new Error('No wallet connected');
-    if (!connection) throw new Error('No connection available');
+    if (!wallet) refuse(set, 'No wallet connected');
+    if (!connection) refuse(set, 'No connection available');
 
     set({ isSigning: true, error: null });
     try {
@@ -839,10 +844,8 @@ export const removeAuthorityAction = async (
                 dialogManager.destroy();
             }
         });
-
-        payload.onSuccess?.();
     } catch (error) {
-        return handleActionError(error, set, payload.onFail, walletVersion(get));
+        return handleActionError(error, set, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -865,8 +868,8 @@ export const authorizeAndExecuteAction = async (
 ): Promise<string> => {
     const { isSigning, connection, wallet, config } = get();
     if (isSigning) throw new Error('Already signing');
-    if (!wallet) throw new Error('No wallet connected');
-    if (!connection) throw new Error('No connection available');
+    if (!wallet) refuse(set, 'No wallet connected');
+    if (!connection) refuse(set, 'No connection available');
 
     set({ isSigning: true, error: null });
     try {
@@ -939,10 +942,9 @@ export const authorizeAndExecuteAction = async (
             }
         });
 
-        payload.onSuccess?.(txSignature);
         return txSignature;
     } catch (error) {
-        return handleActionError(error, set, payload.onFail, walletVersion(get));
+        return handleActionError(error, set, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -961,8 +963,8 @@ export const authorizeDeferredAction = async (
 ): Promise<{ signature: string; deferredPayload: string }> => {
     const { isSigning, connection, wallet, config } = get();
     if (isSigning) throw new Error('Already signing');
-    if (!wallet) throw new Error('No wallet connected');
-    if (!connection) throw new Error('No connection available');
+    if (!wallet) refuse(set, 'No wallet connected');
+    if (!connection) refuse(set, 'No connection available');
 
     set({ isSigning: true, error: null });
     try {
@@ -1010,10 +1012,9 @@ export const authorizeDeferredAction = async (
         });
 
         const serialized = serializeDeferred(version, deferredPayload);
-        payload.onSuccess?.({ signature, deferredPayload: serialized });
         return { signature, deferredPayload: serialized };
     } catch (error) {
-        return handleActionError(error, set, payload.onFail, walletVersion(get));
+        return handleActionError(error, set, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -1031,7 +1032,7 @@ export const executeDeferredAction = async (
 ): Promise<string> => {
     const { isSigning, connection, config } = get();
     if (isSigning) throw new Error('Already signing');
-    if (!connection) throw new Error('No connection available');
+    if (!connection) refuse(set, 'No connection available');
 
     set({ isSigning: true, error: null });
     // The protocol this flow runs on, from its own account — for error reporting.
@@ -1064,10 +1065,9 @@ export const executeDeferredAction = async (
                 }),
         });
 
-        payload.onSuccess?.(signature);
         return signature;
     } catch (error) {
-        return handleActionError(error, set, payload.onFail, flowVersion ?? walletVersion(get));
+        return handleActionError(error, set, flowVersion ?? walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -1083,7 +1083,7 @@ export const signAndSendWithAuthorityAction = async (
 ): Promise<string> => {
     const { isSigning, connection, config } = get();
     if (isSigning) throw new Error('Already signing');
-    if (!connection) throw new Error('No connection available');
+    if (!connection) refuse(set, 'No connection available');
 
     set({ isSigning: true, error: null });
     // The protocol this flow runs on, from its own account — for error reporting.
@@ -1118,10 +1118,9 @@ export const signAndSendWithAuthorityAction = async (
             addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
             txVersion: payload.transactionOptions?.txVersion,
         });
-        payload.onSuccess?.(txSignature);
         return txSignature;
     } catch (error) {
-        return handleActionError(error, set, payload.onFail, flowVersion ?? walletVersion(get));
+        return handleActionError(error, set, flowVersion ?? walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -1142,7 +1141,7 @@ export const signMessageAction = async (
     }
 
     if (!wallet) {
-        throw new Error('No wallet connected');
+        refuse(set, 'No wallet connected');
     }
 
     set({ isSigning: true, error: null });

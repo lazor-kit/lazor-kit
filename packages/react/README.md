@@ -86,9 +86,10 @@ v2 addresses and are wrong for a v1 wallet. How `connect` finds a returning
 user's wallet on either protocol is below.
 
 Once LazorKit retires v1, a v1 wallet's transactions fail with
-`V1WalletRetiredError`. Its funds are safe; move it with
-`LazorKitClient.migrateV1Wallet` from `@lazorkit/sdk-legacy`, or send the user
-to the LazorKit migration page.
+`V1WalletRetiredError`, on the paymaster's first answer: the retired program
+answers every attempt with the same 4018, so it is not retried. Its funds are
+safe; move it with `LazorKitClient.migrateV1Wallet` from `@lazorkit/sdk-legacy`,
+or send the user to the LazorKit migration page.
 
 ## Which wallet is the user's
 
@@ -277,6 +278,29 @@ counter at `confirmed` from an RPC node that has executed it
 the store, the adapter or both, run one after another. The store still
 refuses a second call while one of its own is signing ("Already signing").
 
+**Callbacks.** Every action of `useWallet()` and the store takes `onSuccess`
+and `onFail` (`connect` and `disconnect` in their options, `removeAuthority`
+and `signMessage` as their second argument). Exactly one of them runs per
+call, and it agrees with the promise: `onSuccess` with what the promise
+resolves with, `onFail` with the error it rejects with, a refusal ("Already
+signing", "No wallet connected") included. It runs once the action is over,
+with `isSigning` (or `isConnecting`) already `false`, right before the promise
+settles. So a send made from `onSuccess` runs, as one made on the line after
+`await` does. The one exception is a call refused because another is running
+("Already signing", "Already connecting"): its `onFail` runs at once, and the
+flag stays `true`, since it belongs to the call that is running. What a
+callback throws is logged and changes nothing: a transaction that landed is
+never reported as failed, `onFail` is not called for it and `error` stays
+clear, and a throwing `onFail` does not replace the error. A refusal because
+another call is signing leaves `error` alone (it is that call's); one for want
+of a wallet sets it. `disconnect` leaves `isSigning` to an action still
+running, which goes on to its end and its callbacks; until then a new action
+is refused with "Already signing". `@lazorkit/wallet-mobile-adapter` keeps the
+same contract. `LazorkitWalletAdapter` and the Wallet Standard wallet call
+each `connect`, `disconnect` or `change` listener on its own, and log what one
+throws: it neither stops the listeners after it nor fails a connect that has
+happened.
+
 | Error | When |
 |---|---|
 | `TransactionFailedError` | The transaction landed and failed: fees were paid, nothing else changed. `signature`, `transactionError`, `slot`, and `logs` when they were read. |
@@ -318,6 +342,25 @@ program cannot be told, is thrown as it came. An error from sending TX2 carries
 whose logs name LazorKit as the first program to fail; not for a 3014 that
 names no program.
 
+**Recognising errors.** `isSignatureReusedError`, `isDeferredExpiredError` and
+`isRetiredDeploymentError(error, version?)` are true for the SDK's own error
+(`SignatureReusedError`, `DeferredExpiredError`, `V1WalletRetiredError`):
+- from whichever copy of the package made it. An app whose dependencies load
+  both the ESM and the CJS build has two copies of every class, and
+  `instanceof` fails between them; the predicates match by `name` and `code`.
+- wrapped, in `cause` or in a wallet-adapter `WalletError`'s `error`. A dApp
+  that reaches the wallet through the Wallet Standard gets every error as
+  `WalletSendTransactionError(message, error)`.
+
+They also recognise the raw program error, as web3.js text (`0xbbe`, `0xbc6`,
+`0xfb2`), a TransactionError (`"Custom":3006`), Kora's text (`Custom(3006)`)
+or with the logs in a paymaster's `data`. For a raw error the logs decide
+whose it is: a 3006 with no logs counts as LazorKit's, a 3014 with no logs
+does not, and a 4018 counts when the logs name the v1 program or `version` is
+1. The other error classes have no predicate: compare `error.name`
+(`'TransactionFailedError'`, `'PaymasterError'`, `'V1WalletMigratedError'`,
+`'WalletNeedsConfirmationError'`, …), which holds across copies too.
+
 The portal's transaction preview is compiled without lookup tables whenever it
 fits in a packet, so the portal sees every account the transaction touches.
 Only a payload over the 1232-byte limit is compiled with the lookup tables the
@@ -340,18 +383,22 @@ Connects the stored wallet, or finds the passkey's own (see
 |---|---|---|
 | `options.confirmWallet` | `string` | Vault (or wallet) address the user recognised after `WalletNeedsConfirmationError`. |
 | `options.onConfirmWallet` | `'builtin' \| 'throw' \| (req) => …` | Overrides the provider's for this call. |
+| `options.onSuccess` | `(wallet: WalletInfo) => void` | Runs once `isConnecting` is `false`, right before the promise resolves (see [Callbacks](#sending-transactions)). |
+| `options.onFail` | `(error: Error) => void` | Runs with the error the promise rejects with. |
 
 **Returns**
 `Promise<WalletInfo>`
 
-#### `disconnect()`
+#### `disconnect(options?)`
 
-Disconnects the wallet.
+Disconnects the wallet. `options.onSuccess` / `options.onFail` run once it is
+over, as every action's do. An action still running is not abandoned: it keeps
+`isSigning` until it ends.
 
 **Returns** 
 `Promise<void>`
 
-#### `signMessage(message)`
+#### `signMessage(message, options?)`
 
 Signs a message string key.
 
@@ -360,6 +407,8 @@ Signs a message string key.
 | Param | Type | Description |
 |---|---|---|
 | `message` | `string` | Message content |
+| `options.onSuccess` | `(result: { signature: string, signedPayload: string }) => void` | Runs once `isSigning` is `false`, right before the promise resolves (see [Callbacks](#sending-transactions)). |
+| `options.onFail` | `(error: Error) => void` | Runs with the error the promise rejects with. |
 
 **Returns**
 `Promise<{ signature: string, signedPayload: string }>`
@@ -378,6 +427,8 @@ Signs and sends transaction via Paymaster.
 | `transactionOptions.computeUnitLimit` | `number` | Max compute units. |
 | `transactionOptions.addressLookupTableAccounts` | `AddressLookupTableAccount[]` | Lookup tables for v0 txs (the portal preview uses them too). |
 | `transactionOptions.clusterSimulation` | `'devnet' \| 'mainnet'` | Network for simulation. |
+| `payload.onSuccess` | `(signature: string) => void` | Runs once `isSigning` is `false`, right before the promise resolves (see [Callbacks](#sending-transactions)). |
+| `payload.onFail` | `(error: Error) => void` | Runs with the error the promise rejects with. |
 
 **Returns**
 `Promise<string>` - Transaction signature, once the transaction is confirmed

@@ -229,9 +229,24 @@ Errors:
 | `LazorKitError` with `code: 'PORTAL_ERROR'` | The portal redirected with an `error`; its text is the message. |
 
 A second sign action while one is running rejects with `SigningError` (and
-calls its `onFail`). Each action's promise settles, and its `onSuccess` or
+calls its `onFail` at once, while `isSigning` is still `true`: the flag is the
+running action's). Each action's promise settles, and its `onSuccess` or
 `onFail` runs, only once `isSigning` is `false` again, so the next call can be
-made on the line after `await`, or from `onSuccess`.
+made on the line after `await`, or from `onSuccess`. `disconnect` leaves
+`isSigning` to an action still running, which goes on to its end and its
+callbacks.
+
+The same holds for every action, from the store as from the hook: `connect`
+and `disconnect` call back once `isConnecting` is `false` (the store's
+`connect` honours them too, and its `disconnect` takes them), except a
+`connect` refused because another is running ("Already connecting"), which
+calls back at once. Exactly one
+callback runs per call, and it agrees with the promise: `onSuccess` with what
+it resolves with, `onFail` with the error it rejects with, a refusal included
+(another call signing, "No wallet connected", `transferSol` too). What a
+callback throws is logged and changes nothing: a transaction that landed is
+never reported as failed, and a throwing `onFail` does not replace the error.
+The web SDK, `@lazorkit/wallet`, keeps the same contract.
 
 ## Sending transactions
 
@@ -288,6 +303,21 @@ TX1) and `expiresAtSlot` (when it was read): `DeferredFailureContext`.
 whose logs name LazorKit as the first program to fail; not for a 3014 that
 names no program.
 
+**Recognising errors.** `isSignatureReusedError`, `isDeferredExpiredError` and
+`isRetiredDeploymentError(error, version?)` are true for the SDK's own error
+(`SignatureReusedError`, `DeferredExpiredError`, `V1WalletRetiredError`) from
+whichever copy of the package made it (matched by `name` and `code`, since
+`instanceof` fails between two copies), and for one wrapped in `cause` or in a
+wallet-adapter `WalletError`'s `error`. They also recognise the raw program
+error, as web3.js text (`0xbbe`, `0xbc6`, `0xfb2`), a TransactionError
+(`"Custom":3006`), Kora's text (`Custom(3006)`) or with the logs in a
+paymaster's `data`. For a raw error the logs decide whose it is: a 3006 with
+no logs counts as LazorKit's, a 3014 with no logs does not, and a 4018 counts
+when the logs name the v1 program or `version` is 1. The other error classes
+have no predicate: compare `error.name` (`'TransactionFailedError'`,
+`'PaymasterError'`, `'V1WalletMigratedError'`, `'SigningError'`, …), which
+holds across copies too.
+
 The portal's transaction preview is compiled without lookup tables whenever it
 fits in a packet, so the portal sees every account the transaction touches.
 Only a payload over the 1232-byte limit is compiled with
@@ -310,11 +340,14 @@ Connects to the wallet.
 | `options.redirectUrl` | `string` | Deep link URL |
 | `options.confirmWallet` | `string` | The wallet the user chose (vault or wallet PDA). See [Which wallet is the user's](#which-wallet-is-the-users). |
 | `options.onConfirmWallet` | `'builtin' \| 'throw' \| (request) => …` | Overrides the provider's setting for this call. |
+| `options.onSuccess` | `(wallet: WalletInfo) => void` | Runs once `isConnecting` is `false`, right before the promise resolves. |
+| `options.onFail` | `(error: Error) => void` | Runs with the error the promise rejects with. |
 
-#### `disconnect()`
+#### `disconnect(options?)`
 
 Disconnects the wallet. A `connect` still running is abandoned: it rejects
-with `PortalCancelledError` and connects nothing.
+with `PortalCancelledError` and connects nothing. `options.onSuccess` /
+`options.onFail` run once the disconnect is over.
 
 #### `signMessage(message, options)`
 

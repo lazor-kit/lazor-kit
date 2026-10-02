@@ -28,11 +28,16 @@ export interface WalletState {
     setError: (error: Error | null) => void;
     clearError: () => void;
 
-    // Actions
+    // Actions. A call's `onSuccess` / `onFail` runs once the action is over
+    // (`isSigning` / `isConnecting` already false), right before its promise
+    // settles the same way; what a callback throws is logged and changes
+    // nothing. A call refused because another is running ('Already signing',
+    // 'Already connecting') calls `onFail` at once, while the flag is still
+    // `true`: it belongs to the call that is running.
     connect: (options?: ConnectOptions & { feeMode?: 'paymaster' | 'user' }) => Promise<WalletInfo>;
-    disconnect: () => Promise<void>;
+    disconnect: (options?: DisconnectOptions) => Promise<void>;
     signAndSendTransaction: (payload: SignAndSendTransactionPayload) => Promise<string>;
-    signMessage: (message: string) => Promise<{ signature: string, signedPayload: string }>;
+    signMessage: (message: string, options?: SignMessageOptions) => Promise<{ signature: string, signedPayload: string }>;
 
     // Session key actions
     createSession: (payload?: CreateSessionPayload) => Promise<{ sessionPda: string; sessionPublicKey: string }>;
@@ -41,7 +46,7 @@ export interface WalletState {
 
     // Ed25519 authority actions
     addAuthority: (payload?: AddAuthorityPayload) => Promise<{ authorityPda: string; authorityPublicKey: string }>;
-    removeAuthority: (targetAuthorityPda: string) => Promise<void>;
+    removeAuthority: (targetAuthorityPda: string, options?: RemoveAuthorityOptions) => Promise<void>;
     signAndSendWithAuthority: (payload: SignAndSendTransactionPayload) => Promise<string>;
 
     // Deferred execution
@@ -134,14 +139,50 @@ export interface ConnectOptions {
     readonly confirmWallet?: string;
     /** Overrides the provider's `onConfirmWallet` for this call. */
     readonly onConfirmWallet?: OnConfirmWallet;
+    /**
+     * Called with the connected wallet once `isConnecting` is false again,
+     * right before the promise resolves. What it throws is logged and does
+     * not fail the connect.
+     */
     readonly onSuccess?: (wallet: WalletInfo) => void;
+    /**
+     * Called with the error the promise rejects with, once `isConnecting` is
+     * false again. A refusal because another connect is running ('Already
+     * connecting') calls it at once, while `isConnecting` is still `true`: the
+     * flag belongs to that connect.
+     */
     readonly onFail?: (error: Error) => void;
 }
 
+/**
+ * What an action reports its outcome to: `onSuccess` with what its promise
+ * resolves with, `onFail` with the error it rejects with, refusals included.
+ * Either runs once the action is over, with `isSigning` / `isConnecting`
+ * already false, right before the promise settles. The one exception is a
+ * refusal because another call is running ('Already signing', 'Already
+ * connecting'): its `onFail` runs at once, and the flag stays `true`, since it
+ * belongs to the call that is running. What a callback throws is logged and
+ * changes nothing.
+ */
+export interface ActionCallbacks<T> {
+    readonly onSuccess?: (result: T) => void;
+    readonly onFail?: (error: Error) => void;
+}
+
+/** As with every action: called once the call is over, right before its promise settles; what they throw changes nothing. */
 export interface DisconnectOptions {
     readonly onSuccess?: () => void;
     readonly onFail?: (error: Error) => void;
 }
+
+/** As with every action: called once the call is over (`isSigning` false), right before its promise settles. */
+export interface RemoveAuthorityOptions {
+    readonly onSuccess?: () => void;
+    readonly onFail?: (error: Error) => void;
+}
+
+/** `signMessage`'s callbacks, as every action's: called once the call is over (`isSigning` false), right before its promise settles. */
+export type SignMessageOptions = ActionCallbacks<{ signature: string; signedPayload: string }>;
 
 export interface SignAndSendTransactionPayload {
     readonly transactionOptions?: {

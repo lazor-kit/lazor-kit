@@ -45,9 +45,11 @@ import {
   versionOf,
   versionOfAccount,
   isRetiredDeploymentError,
+  RETIRED_DEPLOYMENT_CODE,
   V1WalletRetiredError,
   V1WalletMigratedError,
 } from './program';
+import { isNamedError } from './program/errorShape';
 import {
   AddAuthorityPayload,
   AuthorizeExecutePayload,
@@ -56,6 +58,7 @@ import {
   ConfirmWalletRequest,
   ConnectOptions,
   CreateSessionPayload,
+  DisconnectOptions,
   ExecuteDeferredPayload,
   ListAuthoritiesResult,
   PendingWalletConfirmation,
@@ -84,7 +87,8 @@ import { getFeePayer } from './core/paymaster';
  *
  * A second request while one is running rejects with `SigningError` (and
  * calls its onFail): resolving it with nothing would leave its caller
- * waiting forever.
+ * waiting forever. That refusal is reported at once, while `isSigning` is
+ * still `true`: the flag belongs to the request that is running.
  */
 async function withSigningState<T>(
   get: () => WalletStateClient,
@@ -132,12 +136,40 @@ function notify<A>(callback: ((arg: A) => void) | undefined, arg: A): void {
 }
 
 /**
+ * Runs a call that keeps no `isSigning` (connect, disconnect) and reports its
+ * outcome as `withSigningState` does: to `callbacks`, once the call is over
+ * (`isConnecting` cleared), right before the returned promise settles the
+ * same way. Refusals included; a connect refused because another is running
+ * is over at once, and `isConnecting` stays `true` (it is that connect's).
+ * What a callback throws is logged and changes nothing.
+ */
+async function reportOutcome<T>(
+  callbacks:
+    | { readonly onSuccess?: (result: T) => void; readonly onFail?: (error: Error) => void }
+    | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  let result: T;
+  try {
+    result = await fn();
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    notify(callbacks?.onFail, err);
+    throw err;
+  }
+  notify(callbacks?.onSuccess, result);
+  return result;
+}
+
+/**
  * The error an action reports, to its onFail and to its caller alike. A v1
  * wallet after LazorKit v1 was retired gets `V1WalletRetiredError`, which
- * says what happened and what to do, rather than a bare `0xfb2`.
+ * says what happened and what to do, rather than a bare `0xfb2`; one that
+ * already is that error (from any copy of this package) is reported as it is.
  */
 function toActionError(error: unknown, get: () => WalletStateClient, flowVersion?: ProtocolVersion): Error {
   if (error instanceof V1WalletRetiredError || error instanceof V1WalletMigratedError) return error;
+  if (isNamedError(error, 'V1WalletRetiredError', RETIRED_DEPLOYMENT_CODE)) return error as Error;
   const wallet = get().wallet;
   if (isRetiredDeploymentError(error, flowVersion ?? (wallet ? versionOf(wallet) : undefined))) {
     return new V1WalletRetiredError(error);
@@ -229,12 +261,21 @@ let connectInFlight: AbortController | null = null;
  * Returns the connected wallet when there is one; otherwise opens the portal,
  * proves which wallet is the passkey's (asking the user when the SDK cannot
  * tell) and persists it — creating one on-chain when it has none.
+ *
+ * `options.onSuccess` / `onFail` run once `isConnecting` is false again,
+ * right before the promise settles (see `reportOutcome`).
  */
-export const connectAction = async (
+export const connectAction = (
   get: () => WalletStateClient,
   set: (state: Partial<WalletStateClient>) => void,
   options: ConnectOptions,
-) => {
+): Promise<WalletInfo> => reportOutcome(options, () => connectWallet(get, set, options));
+
+const connectWallet = async (
+  get: () => WalletStateClient,
+  set: (state: Partial<WalletStateClient>) => void,
+  options: ConnectOptions,
+): Promise<WalletInfo> => {
   const { isConnecting, config } = get();
   if (isConnecting) {
     logger.error('Connect attempt while already connecting');
@@ -383,7 +424,14 @@ function openWalletChooser(
   });
 }
 
-export const disconnectAction = async (
+/** `options.onSuccess` / `onFail` run once the disconnect is over (see `reportOutcome`). */
+export const disconnectAction = (
+  get: () => WalletStateClient,
+  set: (state: Partial<WalletStateClient>) => void,
+  options?: DisconnectOptions,
+): Promise<void> => reportOutcome(options, () => disconnectWallet(get, set));
+
+const disconnectWallet = async (
   get: () => WalletStateClient,
   set: (state: Partial<WalletStateClient>) => void,
 ) => {
@@ -1176,34 +1224,47 @@ export const listAuthoritiesAction = async (
 
 // ─── Convenience: transferSol ──────────────────────────────────────
 
-/** Convenience helper — wraps `signAndExecuteTransaction` with a vault→recipient transfer. */
+/**
+ * Convenience helper — `signAndExecuteTransaction` with a vault→recipient
+ * transfer. Built inside the signing state, so a refusal (no wallet) reaches
+ * `onFail` and `error` as any other action's does.
+ */
 export const transferSolAction = async (
   get: () => WalletStateClient,
   set: (state: Partial<WalletStateClient>) => void,
   payload: TransferSolPayload,
   options: SignOptions,
 ): Promise<string> => {
-  const { wallet } = requireWalletAndConnection(get);
-  // smartWallet now IS the vault address — funds live there.
-  const vaultPda = new PublicKey(wallet!.smartWallet);
-  const lamports =
-    typeof payload.lamports === 'bigint'
-      ? Number(payload.lamports)
-      : payload.lamports;
-  const ix = SystemProgram.transfer({
-    fromPubkey: vaultPda,
-    toPubkey: payload.recipient,
-    lamports,
+  return withSigningState(get, set, options, async () => {
+    try {
+      const { wallet } = requireWalletAndConnection(get);
+      // smartWallet now IS the vault address — funds live there.
+      const vaultPda = new PublicKey(wallet!.smartWallet);
+      const lamports =
+        typeof payload.lamports === 'bigint'
+          ? Number(payload.lamports)
+          : payload.lamports;
+      const ix = SystemProgram.transfer({
+        fromPubkey: vaultPda,
+        toPubkey: payload.recipient,
+        lamports,
+      });
+      return await performPasskeyExecute(
+        get,
+        {
+          instructions: [ix],
+          transactionOptions: payload.transactionOptions,
+        },
+        options,
+      );
+    } catch (err) {
+      logger.error('transferSol failed:', err, {
+        smartWallet: get().wallet?.smartWallet,
+        redirectUrl: options.redirectUrl,
+      });
+      throw toActionError(err, get);
+    }
   });
-  return signAndExecuteTransaction(
-    get,
-    set,
-    {
-      instructions: [ix],
-      transactionOptions: payload.transactionOptions,
-    },
-    options,
-  );
 };
 
 // Re-export toBase64Url for callers that want to build custom challenges.
