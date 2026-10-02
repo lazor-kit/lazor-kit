@@ -92,12 +92,23 @@ function walletVersion(get: () => WalletState): ProtocolVersion | undefined {
 
 /**
  * The paymaster for a wallet's protocol. v1 wallets keep the relayer the app
- * used before v2 (`v1PaymasterConfig`, defaulting to the main one).
+ * used before v2 (`v1PaymasterConfig`, defaulting to the main one). A new one
+ * for each action.
+ *
+ * `beforeAttempt`: a session or authority send passes its kept key's
+ * `assertSendable`. The paymaster runs it right before each attempt to send,
+ * whichever of its send methods the transaction goes out by, so nothing a
+ * kept key signed goes out once the wallet has been disconnected (see
+ * ./keyBinding).
  */
-function paymasterFor(config: WalletConfig, version: ProtocolVersion): Paymaster {
+function paymasterFor(
+    config: WalletConfig,
+    version: ProtocolVersion,
+    options: { beforeAttempt?: () => void } = {},
+): Paymaster {
     return new Paymaster(
         version === 1 ? (config.v1PaymasterConfig ?? config.paymasterConfig) : config.paymasterConfig,
-        { protocolVersion: version },
+        { protocolVersion: version, beforeAttempt: options.beforeAttempt },
     );
 }
 
@@ -117,10 +128,6 @@ function paymasterFor(config: WalletConfig, version: ProtocolVersion): Paymaster
  * the paymaster's feePayer, pass it in `signers`: each adds its signature to
  * its own slot, in v0 and legacy alike, before the paymaster adds the fee
  * payer's. A transaction is signed once: `sendAndConfirm` never re-signs it.
- *
- * `beforeSend` runs right before each attempt to hand the transaction to the
- * paymaster; what it throws stops the send (a kept key's `assertSendable`:
- * nothing goes out once the wallet has been disconnected).
  */
 async function buildAndSendTx(params: {
     paymaster: Paymaster;
@@ -128,7 +135,6 @@ async function buildAndSendTx(params: {
     feePayer: PublicKey;
     instructions: TransactionInstruction[];
     signers?: KeySigner[];
-    beforeSend?: () => void;
     addressLookupTables?: AddressLookupTableAccount[];
     txVersion?: 'legacy' | 'v0';
     turn?: AuthorityTurn;
@@ -138,7 +144,6 @@ async function buildAndSendTx(params: {
     const { paymaster, connection, feePayer, instructions } = params;
     const signers = params.signers ?? [];
     const txVersion = params.txVersion ?? 'v0';
-    const sendOptions = { beforeAttempt: params.beforeSend };
     const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
 
     let send: () => Promise<string>;
@@ -152,7 +157,7 @@ async function buildAndSendTx(params: {
         tx.recentBlockhash = blockhash;
         tx.feePayer = feePayer;
         for (const signer of signers) await signer.signTransaction(tx);
-        send = () => paymaster.signAndSend(tx, undefined, undefined, sendOptions);
+        send = () => paymaster.signAndSend(tx);
         simulateLogs = async () => (await connection.simulateTransaction(tx)).value.logs;
     } else {
         const v0Message = new TransactionMessage({
@@ -162,7 +167,7 @@ async function buildAndSendTx(params: {
         }).compileToV0Message(params.addressLookupTables ?? []);
         const tx = new VersionedTransaction(v0Message);
         for (const signer of signers) await signer.signTransaction(tx);
-        send = () => paymaster.signAndSendVersionedTransaction(tx, undefined, undefined, sendOptions);
+        send = () => paymaster.signAndSendVersionedTransaction(tx);
         simulateLogs = async () =>
             (await connection.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true })).value.logs;
     }
@@ -745,7 +750,8 @@ export const signAndSendWithSessionAction = async (
         // A stored session may predate v2; its owner says which program it is.
         const version = await versionOfAccount(connection, sessionPda);
         flowVersion = version;
-        const paymaster = paymasterFor(config, version);
+        // Every attempt to send checks the key again (see paymasterFor).
+        const paymaster = paymasterFor(config, version, { beforeAttempt: stored.assertSendable });
         const client = clientFor(version, connection);
         const feePayer = await paymaster.getPayer();
 
@@ -762,7 +768,6 @@ export const signAndSendWithSessionAction = async (
             feePayer,
             instructions,
             signers: [sessionKey],
-            beforeSend: stored.assertSendable,
             addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
             txVersion: payload.transactionOptions?.txVersion,
         });
@@ -1211,7 +1216,8 @@ export const signAndSendWithAuthorityAction = async (
 
         const version = await versionOfAccount(connection, authorityPda);
         flowVersion = version;
-        const paymaster = paymasterFor(config, version);
+        // Every attempt to send checks the key again (see paymasterFor).
+        const paymaster = paymasterFor(config, version, { beforeAttempt: stored.assertSendable });
         const client = clientFor(version, connection);
         const feePayer = await paymaster.getPayer();
 
@@ -1228,7 +1234,6 @@ export const signAndSendWithAuthorityAction = async (
             feePayer,
             instructions,
             signers: [authorityKey],
-            beforeSend: stored.assertSendable,
             addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
             txVersion: payload.transactionOptions?.txVersion,
         });
