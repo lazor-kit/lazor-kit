@@ -56,16 +56,23 @@ The SDK creates and manages smart wallets on Solana:
 - Monitor for suspicious activity
 
 ### Data Storage Security
-Wallet data is stored using AsyncStorage:
-- Wallet credentials and state
-- Authentication tokens
+The SDK keeps in AsyncStorage, which is not encrypted, only data that is not
+secret:
+- The connected wallet's public record (addresses, the passkey's public key and
+  credential id)
 - Configuration data
+- Each passkey's transaction state (the slot of its last transaction, and a
+  send whose outcome is not known yet)
+
+It never stores a session key, or an Ed25519 key added with
+`addAuthorityEd25519`: your app generates those and keeps them.
 
 **Best practices:**
-- Implement secure storage encryption if needed
+- Keep session keys in the OS keystore (expo-secure-store, with
+  `WHEN_UNLOCKED_THIS_DEVICE_ONLY`), never in AsyncStorage. See the README,
+  "Session keys"
+- Delete a session key once its session is revoked or has expired
 - Clear sensitive data on logout
-- Use secure key derivation
-- Consider additional encryption for high-security applications
 
 ## Security Checklist for Users
 
@@ -88,7 +95,7 @@ Before using this SDK in production:
 - **Type Safety**: Full TypeScript support prevents type-related vulnerabilities
 - **Error Boundaries**: Proper error handling prevents crashes
 - **Input Validation**: All inputs are validated before processing
-- **Secure Storage**: Uses AsyncStorage with proper key management
+- **Storage**: AsyncStorage holds nothing secret; session keys stay with your app (see the README, "Session keys")
 - **HTTPS Enforcement**: WebAuthn operations require secure connections
 
 ### Security Audits

@@ -325,6 +325,69 @@ Only a payload over the 1232-byte limit is compiled with
 limit no longer fails `signAndSendTransaction`, `authorizeAndExecute` or
 `authorizeDeferred` before the portal opens.
 
+## Session keys
+
+`createSession` registers a session key that your app generates, and
+`signAndSendWithSession` signs with the `Keypair` you pass it. The adapter
+never stores a session key, or the Ed25519 key you pass to
+`addAuthorityEd25519`. What it keeps in AsyncStorage is the connected wallet's
+public record, the configuration, and each passkey's transaction state; none of
+it is secret. (The web SDK, `@lazorkit/wallet`, generates and keeps the key
+itself, as a non-extractable WebCrypto key.)
+
+To keep a session key across restarts, store it in the OS keystore with
+`expo-secure-store` (iOS Keychain, Android Keystore). Never store it in
+AsyncStorage, which is not encrypted on disk and is included in device backups.
+
+```ts
+import * as SecureStore from 'expo-secure-store';
+import { Buffer } from 'buffer';
+import { Keypair, PublicKey } from '@solana/web3.js';
+
+const SLOT = 'myapp.lazorkit-session';
+const OPTIONS = { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY };
+
+// Once createSession has resolved.
+async function keepSession(sessionKeypair: Keypair, sessionPda: PublicKey, expiresAtSlot: bigint) {
+  const value = JSON.stringify({
+    seed: Buffer.from(sessionKeypair.secretKey.slice(0, 32)).toString('base64'),
+    sessionPda: sessionPda.toBase58(),
+    expiresAtSlot: expiresAtSlot.toString(),
+  });
+  await SecureStore.setItemAsync(SLOT, value, OPTIONS);
+}
+
+async function keptSession() {
+  const raw = await SecureStore.getItemAsync(SLOT, OPTIONS);
+  if (!raw) return null;
+  const { seed, sessionPda, expiresAtSlot } = JSON.parse(raw);
+  return {
+    sessionKeypair: Keypair.fromSeed(Buffer.from(seed, 'base64')),
+    sessionPda: new PublicKey(sessionPda),
+    expiresAtSlot: BigInt(expiresAtSlot),
+  };
+}
+
+// Once revokeSession has resolved, or the session has expired.
+async function forgetSession() {
+  await SecureStore.deleteItemAsync(SLOT, OPTIONS);
+}
+```
+
+- `WHEN_UNLOCKED_THIS_DEVICE_ONLY` keeps the item on this device: it is not
+  restored to another one from a backup.
+- On iOS, a Keychain item survives uninstalling the app. After a reinstall,
+  the item may name a session that has expired or been revoked: check the
+  session account still exists and `expiresAtSlot` is in the future before you
+  use it, and delete the item if not.
+- On Android, exclude SecureStore's data from Auto Backup (see the
+  expo-secure-store docs). A restored item cannot be decrypted on another
+  install.
+- `requireAuthentication: true` asks for the user's biometrics on every read,
+  and the item is lost when the enrolled biometrics change.
+- What bounds a session key is what was registered on chain: its `actions`
+  (spending limits) and its expiry, not where you keep it.
+
 ## API Reference
 
 ### `useWallet()`

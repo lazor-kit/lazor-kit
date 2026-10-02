@@ -352,6 +352,11 @@ export interface TxCallbacks {
 
 /** Payload for session-signed send (Ed25519 signed locally, no portal prompt). */
 export interface SessionSignPayload {
+  /**
+   * The session key, which your app keeps: the adapter signs with it and
+   * stores none of it. Keep it in the OS keystore (expo-secure-store), never in
+   * AsyncStorage, which is not encrypted. See the README, "Session keys".
+   */
   readonly sessionKeypair: Keypair;
   readonly sessionPda: PublicKey;
   readonly instructions: TransactionInstruction[];
@@ -360,7 +365,12 @@ export interface SessionSignPayload {
 
 /** Payload for `createSession`. */
 export interface CreateSessionPayload {
-  /** New session public key (Ed25519). Clients typically generate a fresh Keypair. */
+  /**
+   * New session public key (Ed25519). Clients typically generate a fresh
+   * Keypair and keep its secret in the OS keystore (expo-secure-store): the
+   * adapter registers only this public key and stores nothing. See the README,
+   * "Session keys".
+   */
   readonly sessionKey: PublicKey;
   /** Absolute slot at which the session expires. */
   readonly expiresAtSlot: bigint;
