@@ -103,7 +103,8 @@ export interface WalletHookInterface extends EasyWallet {
 
   // Session key actions. The session, authority and deferred actions move to
   // the Advanced hooks a later 4.x adds to `@lazorkit/wallet/hooks`, with
-  // the same names and parameters; they stay here until 5.0.
+  // the same names and parameters; they stay here until 5.0, and warn once
+  // each when first called.
   /** @deprecated Moves to `useSessions()` in `@lazorkit/wallet/hooks` in a later 4.x, with the same parameters. */
   createSession: (payload?: {
     expiresInSlots?: bigint;
@@ -234,6 +235,16 @@ function deprecated<T>(name: string, use: string, value: T): T {
   return value;
 }
 
+/** A deprecated function, called: warns once per page. It still runs. */
+function deprecatedCall(name: string, hook: string): void {
+  if (warned.has(name)) return;
+  warned.add(name);
+  console.warn(
+    `[LazorKit] useWallet().${name} is deprecated: it moves to ${hook} in @lazorkit/wallet/hooks in a later 4.x, ` +
+      'with the same parameters, and leaves useWallet() in 5.0. It still works.',
+  );
+}
+
 export const useWallet = (): WalletHookInterface => {
   const {
     wallet,
@@ -324,44 +335,70 @@ export const useWallet = (): WalletHookInterface => {
 
     // Session key actions
     createSession: useCallback(
-      (payload?: Parameters<WalletHookInterface['createSession']>[0]) => createSession(payload),
+      (payload?: Parameters<WalletHookInterface['createSession']>[0]) => {
+        deprecatedCall('createSession', 'useSessions()');
+        return createSession(payload);
+      },
       [createSession]
     ),
     revokeSession: useCallback(
-      (payload?: Parameters<WalletHookInterface['revokeSession']>[0]) => revokeSession(payload),
+      (payload?: Parameters<WalletHookInterface['revokeSession']>[0]) => {
+        deprecatedCall('revokeSession', 'useSessions()');
+        return revokeSession(payload);
+      },
       [revokeSession]
     ),
     signAndSendWithSession: useCallback(
-      (payload: SendTxPayload & ActionCallbacks<string>) => signAndSendWithSession(payload),
+      (payload: SendTxPayload & ActionCallbacks<string>) => {
+        deprecatedCall('signAndSendWithSession', 'useSessions()');
+        return signAndSendWithSession(payload);
+      },
       [signAndSendWithSession]
     ),
 
     // Ed25519 authority actions
     addAuthority: useCallback(
-      (payload: Parameters<WalletHookInterface['addAuthority']>[0]) => addAuthority(payload),
+      (payload: Parameters<WalletHookInterface['addAuthority']>[0]) => {
+        deprecatedCall('addAuthority', 'useAuthorities()');
+        return addAuthority(payload);
+      },
       [addAuthority]
     ),
     removeAuthority: useCallback(
-      (targetAuthorityPda: string, options?: RemoveAuthorityOptions) => removeAuthority(targetAuthorityPda, options),
+      (targetAuthorityPda: string, options?: RemoveAuthorityOptions) => {
+        deprecatedCall('removeAuthority', 'useAuthorities()');
+        return removeAuthority(targetAuthorityPda, options);
+      },
       [removeAuthority]
     ),
     signAndSendWithAuthority: useCallback(
-      (payload: SendTxPayload & ActionCallbacks<string>) => signAndSendWithAuthority(payload),
+      (payload: SendTxPayload & ActionCallbacks<string>) => {
+        deprecatedCall('signAndSendWithAuthority', 'useAuthorities()');
+        return signAndSendWithAuthority(payload);
+      },
       [signAndSendWithAuthority]
     ),
 
     // Deferred execution
     authorizeAndExecute: useCallback(
-      (payload: DeferredTxPayload & ActionCallbacks<string>) => authorizeAndExecute(payload),
+      (payload: DeferredTxPayload & ActionCallbacks<string>) => {
+        deprecatedCall('authorizeAndExecute', 'useDeferred()');
+        return authorizeAndExecute(payload);
+      },
       [authorizeAndExecute]
     ),
     authorizeDeferred: useCallback(
-      (payload: DeferredTxPayload & ActionCallbacks<{ signature: string; deferredPayload: string }>) =>
-        authorizeDeferred(payload),
+      (payload: DeferredTxPayload & ActionCallbacks<{ signature: string; deferredPayload: string }>) => {
+        deprecatedCall('authorizeDeferred', 'useDeferred()');
+        return authorizeDeferred(payload);
+      },
       [authorizeDeferred]
     ),
     executeDeferred: useCallback(
-      (payload: ExecuteDeferredHookPayload & ActionCallbacks<string>) => executeDeferred(payload),
+      (payload: ExecuteDeferredHookPayload & ActionCallbacks<string>) => {
+        deprecatedCall('executeDeferred', 'useDeferred()');
+        return executeDeferred(payload);
+      },
       [executeDeferred]
     ),
   };

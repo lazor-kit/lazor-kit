@@ -147,6 +147,39 @@ test('the 3.x flags still work and warn once each when read', async () => {
     await unmount();
 });
 
+test('the session, authority and deferred functions on useWallet still run, and warn once each when first called', async () => {
+    warnings.length = 0;
+    let wallet;
+    function Old() {
+        wallet = W.useWallet();
+        return null;
+    }
+    const { unmount } = await mount(h(W.LazorkitProvider, embeddedProps(), h(Old)));
+    assert.equal(warnings.filter((w) => /is deprecated/.test(w)).length, 0, 'nothing on render');
+    const calls = {
+        createSession: () => wallet.createSession({ unrestricted: true }),
+        revokeSession: () => wallet.revokeSession(),
+        signAndSendWithSession: () => wallet.signAndSendWithSession({ instructions: [] }),
+        addAuthority: () => wallet.addAuthority({ role: 2 }),
+        removeAuthority: () => wallet.removeAuthority('11111111111111111111111111111111'),
+        signAndSendWithAuthority: () => wallet.signAndSendWithAuthority({ instructions: [] }),
+        authorizeAndExecute: () => wallet.authorizeAndExecute({ instructions: [] }),
+        authorizeDeferred: () => wallet.authorizeDeferred({ instructions: [] }),
+        executeDeferred: () => wallet.executeDeferred({ deferredPayload: 'x' }),
+    };
+    for (const [name, call] of Object.entries(calls)) {
+        for (let i = 0; i < 2; i++) {
+            // Disconnected: each still runs, and refuses the way it did in 3.x.
+            const error = await call().then(() => null, (e) => e);
+            assert.ok(error instanceof Error, `${name} ran and refused`);
+        }
+    }
+    const deprecations = warnings.filter((w) => /is deprecated/.test(w)).map((w) => w.match(/useWallet\(\)\.(\w+)/)[1]);
+    assert.deepEqual(deprecations.sort(), Object.keys(calls).sort(), 'one warning per function');
+    assert.match(warnings.find((w) => w.includes('createSession')), /useSessions\(\) in @lazorkit\/wallet\/hooks/);
+    await unmount();
+});
+
 test('a reload is connected on its first effect (no flash of "disconnected")', async () => {
     globalThis.fetch = (url, init) => chain.fetch(url, init);
     // Connect on this page, through the client, with the built-in sheet answered.
