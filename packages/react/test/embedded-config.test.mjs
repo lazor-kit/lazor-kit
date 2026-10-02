@@ -144,20 +144,35 @@ test('no WebAuthn here (an in-app browser view): unavailable, and connect reject
     }
 });
 
-test('one client per page: the same config returns it; one that changes the relayer, rpId or review throws unless replace', () => {
+test('one client per page: the same config returns it; one that changes the relayer, rpId, review, screens or chooser throws unless replace', () => {
     const ui = scriptedUi();
     const first = W.createLazorkitClient(embeddedConfig({ ui }), { replace: true });
     assert.equal(W.createLazorkitClient(embeddedConfig({ ui })), first);
-    for (const change of [
-        { paymasterConfig: { paymasterUrl: 'https://other.example.com' } },
-        { rpId: 'other.app.test' },
-        { confirm: false },
-        { trustedAuthorities: ['11111111111111111111111111111111'] },
-        { mode: 'portal', rpId: undefined, appName: undefined },
+    // Screens that approve every review, and a chooser policy that picks for the
+    // user: functions, which JSON cannot compare, so compared by identity.
+    const autoApprove = { ...scriptedUi(), reviewTransaction: async () => true };
+    for (const [label, change] of [
+        ['paymaster', { paymasterConfig: { paymasterUrl: 'https://other.example.com' } }],
+        ['rpId', { rpId: 'other.app.test' }],
+        ['confirm', { confirm: false }],
+        ['trusted keys', { trustedAuthorities: ['11111111111111111111111111111111'] }],
+        ['watched mints', { watchMints: ['So11111111111111111111111111111111111111112'] }],
+        ['mode', { mode: 'portal', rpId: undefined, appName: undefined }],
+        ['another ui', { ui: autoApprove }],
+        ['no ui', { ui: undefined }],
+        ['a chooser function', { onConfirmWallet: (request) => ({ wallet: request.candidates[0].vault }) }],
+        ["'throw'", { onConfirmWallet: 'throw' }],
     ]) {
         const error = configError(() => W.createLazorkitClient(embeddedConfig({ ui, ...change })));
-        assert.equal(error.problem, 'reconfigured', JSON.stringify(change));
+        assert.equal(error?.problem, 'reconfigured', label);
+        assert.equal(W.useWalletStore.getState().config.ui, ui, `${label}: the app's screens stay`);
+        assert.equal(W.useWalletStore.getState().config.onConfirmWallet, undefined, `${label}: the chooser policy stays`);
     }
+    // The same function again is the same config.
+    const choose = (request) => ({ wallet: request.candidates[0].vault });
+    W.createLazorkitClient(embeddedConfig({ ui, onConfirmWallet: choose }), { replace: true });
+    assert.equal(W.createLazorkitClient(embeddedConfig({ ui, onConfirmWallet: choose })), first);
+    W.createLazorkitClient(embeddedConfig({ ui }), { replace: true });
     // A change that guards nothing (the app's name) reconfigures quietly.
     assert.equal(W.createLazorkitClient(embeddedConfig({ ui, appName: 'Renamed' })), first);
     assert.equal(W.useWalletStore.getState().config.appName, 'Renamed');

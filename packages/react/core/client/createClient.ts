@@ -4,10 +4,11 @@
  *
  * A second call with an equivalent config returns the same client. One that
  * changes what decides where funds go or who is trusted (mode, rpId,
- * paymaster, RPC or cluster, trusted keys, the review sheet) throws
+ * paymaster, RPC or cluster, portal, trusted keys, watched mints, the review
+ * sheet, the screens, `onConfirmWallet`) throws
  * `LazorkitConfigError('reconfigured')`, unless it passes `{ replace: true }`:
- * a widget calling it with a partial config must not switch the relayer or
- * turn off the review for every send on the page.
+ * a widget calling it with a partial config must not switch the relayer,
+ * approve every send on the page or settle the wallet chooser.
  */
 import type { WalletInfo } from '../storage';
 import type { ActionCallbacks, ConnectOptions, DisconnectOptions, SignAndSendPayload, SignMessageOptions, WalletState } from '../types';
@@ -87,8 +88,24 @@ export function clientStateOf(state: WalletState): LazorkitClientState {
     };
 }
 
-/** What may not change under a page's existing client without `replace`. */
-const GUARDED = ['mode', 'rpId', 'paymasterConfig', 'v1PaymasterConfig', 'rpcUrl', 'cluster', 'trustedAuthorities', 'confirm'] as const;
+/** What may not change under a page's existing client without `replace`, compared by content. */
+const GUARDED = [
+    'mode',
+    'rpId',
+    'paymasterConfig',
+    'v1PaymasterConfig',
+    'rpcUrl',
+    'cluster',
+    'portalUrl',
+    'trustedAuthorities',
+    'watchMints',
+    'confirm',
+] as const;
+/**
+ * The same, compared by identity: JSON drops functions, and these can answer
+ * the review sheet (`ui.reviewTransaction`) or the chooser for the user.
+ */
+const GUARDED_BY_IDENTITY = ['ui', 'onConfirmWallet'] as const;
 
 let client: LazorkitClient | null = null;
 /** The last client state handed out, so `getState` is stable between changes (for `useSyncExternalStore`). */
@@ -161,9 +178,10 @@ export function createLazorkitClient(config: LazorkitClientConfig, options: { re
     const resolved = resolveConfig(config);
     const current = currentConfig();
     if (current && !options.replace) {
-        const changed = GUARDED.filter(
-            (key) => JSON.stringify(current[key] ?? null) !== JSON.stringify(resolved[key] ?? null),
-        );
+        const changed: string[] = [
+            ...GUARDED.filter((key) => JSON.stringify(current[key] ?? null) !== JSON.stringify(resolved[key] ?? null)),
+            ...GUARDED_BY_IDENTITY.filter((key) => (current[key] ?? null) !== (resolved[key] ?? null)),
+        ];
         if (changed.length) {
             throw new LazorkitConfigError(
                 'reconfigured',
