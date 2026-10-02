@@ -572,6 +572,76 @@ tests check this byte for byte). Safari signs with a random nonce instead, so
 the same message gets a different signature each time. Each one is valid, and
 nothing in the SDK depends on the signature bytes.
 
+## Signing messages
+
+`signMessage` (the hook and the store), `LazorkitWalletAdapter.signMessage`
+and the Wallet Standard `solana:signMessage` never sign the app's bytes as the
+passkey's WebAuthn challenge. The LazorKit programs approve a transaction by
+the challenge a passkey signed, so a message signature must not be usable as
+anything else the passkey approves. They sign this challenge instead
+(format v1):
+
+```
+tag       = UTF-8 "LazorKit signed message v1"     (26 bytes)
+challenge = tag || SHA-256(tag || message)        (58 bytes)
+```
+
+`message` is the UTF-8 bytes of a string, or the bytes given. Every
+transaction challenge the programs accept, and every other challenge the SDK
+asks the passkey for, is 32 bytes; a message challenge is 58 bytes and starts
+with the tag, so it is never one of them. `signedMessageChallenge(message)`
+computes it, and `SIGNED_MESSAGE_DOMAIN` is the tag.
+
+The portal gets the challenge as `message` and the text to show as
+`displayMessage` (a string, or bytes that are valid UTF-8). Until the hosted
+portal shows `displayMessage`, its review screen shows the encoded challenge,
+as it already did for adapter and Wallet Standard messages. The SDK checks
+the portal's reply: one over any other challenge is refused.
+
+**What comes back.** The hook and the store resolve with a
+`SignMessageResult`:
+
+| Field | What it is |
+|---|---|
+| `signature` | The P-256 signature, 64 bytes (r \|\| s, low-S), base64. |
+| `signedPayload` | What the passkey signed: authenticatorData \|\| SHA-256(clientDataJSON), base64. |
+| `clientDataJsonBase64` | The WebAuthn clientDataJSON, base64. Its `challenge` is base64url(challenge). |
+| `authenticatorDataBase64` | The WebAuthn authenticatorData, base64. |
+
+`LazorkitWalletAdapter.signMessage` and the Wallet Standard `signature` are,
+as before, the UTF-8 bytes of a JSON object, now with these four fields. They
+are not a 64-byte Ed25519 signature: a LazorKit wallet's address is a program
+account, with no key to sign with, so the signer is the wallet's passkey.
+
+**Checking one.** `verifySignedMessage` checks a message signature offline, in
+a browser or on a server (Node 18+), with no RPC:
+
+```ts
+import { verifySignedMessage } from '@lazorkit/wallet';
+
+// In the app
+const result = await signMessage('Sign in to example.com\nNonce: 8f2c…');
+
+// On the server, with the wallet's passkey public key
+// (`wallet.passkeyPubkey`: 33 bytes, compressed)
+const ok = verifySignedMessage({
+  message: 'Sign in to example.com\nNonce: 8f2c…',
+  publicKey: passkeyPubkey,
+  ...result,                       // signature, clientDataJsonBase64, authenticatorDataBase64, signedPayload
+  rpId: 'portal.lazor.sh',         // optional: the passkey's relying party
+  origin: 'https://portal.lazor.sh', // optional: the page that ran the passkey
+});
+```
+
+For an adapter or Wallet Standard signature, pass
+`...JSON.parse(new TextDecoder().decode(signature))` instead of `...result`.
+It is `true` only when that passkey signed a `webauthn.get` over
+`signedMessageChallenge(message)` with the user present; a signature over any
+other challenge, the raw message bytes included, is `false`. It never throws.
+Put your domain and a fresh nonce in the message, and check them, as with any
+sign-in message. `useWallet().verifyMessage` is deprecated: it checks only
+that `signature` is over `signedPayload`, not which message was signed.
+
 ## API Reference
 
 ### `useWallet()`
@@ -619,18 +689,21 @@ app stays connected (see
 
 #### `signMessage(message, options?)`
 
-Signs a message string key.
+Signs a message with the passkey. The passkey signs
+`signedMessageChallenge(message)`, never the message's bytes (see
+[Signing messages](#signing-messages)).
 
 **Parameters**
 
 | Param | Type | Description |
 |---|---|---|
-| `message` | `string` | Message content |
-| `options.onSuccess` | `(result: { signature: string, signedPayload: string }) => void` | Runs once `isSigning` is `false`, right before the promise resolves (see [Callbacks](#sending-transactions)). |
+| `message` | `string` | Message content, signed as its UTF-8 bytes |
+| `options.onSuccess` | `(result: SignMessageResult) => void` | Runs once `isSigning` is `false`, right before the promise resolves (see [Callbacks](#sending-transactions)). |
 | `options.onFail` | `(error: Error) => void` | Runs with the error the promise rejects with. |
 
 **Returns**
-`Promise<{ signature: string, signedPayload: string }>`
+`Promise<SignMessageResult>`: `{ signature, signedPayload, clientDataJsonBase64, authenticatorDataBase64 }`,
+all base64. Check it with `verifySignedMessage`.
 
 #### `signAndSendTransaction(payload)`
 
@@ -652,6 +725,27 @@ Signs and sends transaction via Paymaster.
 **Returns**
 `Promise<string>` - Transaction signature, once the transaction is confirmed
 (see [Sending transactions](#sending-transactions)).
+
+### `verifySignedMessage(params)`
+
+A function the package exports. `true` when `params.publicKey`'s passkey
+signed a `webauthn.get` over `signedMessageChallenge(params.message)` with the
+user present, and `false` otherwise; it never throws. See
+[Signing messages](#signing-messages).
+
+| Param | Type | Description |
+|---|---|---|
+| `message` | `string \| Uint8Array` | The message that was signed. |
+| `publicKey` | `string \| Uint8Array \| number[]` | The passkey's P-256 key: 33 bytes (compressed), 65 or 64, or their base64. |
+| `signature` | `string \| Uint8Array` | The 64-byte signature, or its base64. |
+| `clientDataJsonBase64` | `string` | From the `SignMessageResult`. |
+| `authenticatorDataBase64` | `string` | From the `SignMessageResult`. |
+| `signedPayload` | `string` | Optional; checked when given. |
+| `rpId` | `string` | Optional: the authenticatorData's rpIdHash must be its SHA-256. |
+| `origin` | `string` | Optional: clientDataJSON's `origin` must equal it. |
+
+**Returns**
+`boolean`
 
 ### `forgetStoredKeys()`
 

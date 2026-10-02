@@ -398,6 +398,61 @@ async function forgetSession() {
 - What bounds a session key is what was registered on chain: its `actions`
   (spending limits) and its expiry, not where you keep it.
 
+## Signing messages
+
+`signMessage` never signs the app's bytes as the passkey's WebAuthn
+challenge. The LazorKit programs approve a transaction by the challenge a
+passkey signed, so a message signature must not be usable as anything else
+the passkey approves. It signs this challenge instead (format v1, the same as
+`@lazorkit/wallet`'s):
+
+```
+tag       = UTF-8 "LazorKit signed message v1"     (26 bytes)
+challenge = tag || SHA-256(tag || message)        (58 bytes)
+```
+
+`message` is the UTF-8 bytes of the string. Every transaction challenge the
+programs accept, and every other challenge the adapter asks the passkey for,
+is 32 bytes; a message challenge is 58 bytes and starts with the tag, so it is
+never one of them. `signedMessageChallenge(message)` computes it, and
+`SIGNED_MESSAGE_DOMAIN` is the tag.
+
+The portal gets the challenge as `message` and the text as `displayMessage`.
+Until the hosted portal shows `displayMessage`, its review screen shows the
+encoded challenge. The adapter checks the portal's redirect: a reply over any
+other challenge is refused.
+
+`signMessage` resolves with a `SignMessageResult`, all base64:
+
+| Field | What it is |
+|---|---|
+| `signature` | The P-256 signature, 64 bytes (r \|\| s, low-S). |
+| `signedPayload` | What the passkey signed: authenticatorData \|\| SHA-256(clientDataJSON). |
+| `clientDataJsonBase64` | The WebAuthn clientDataJSON. Its `challenge` is base64url(challenge). |
+| `authenticatorDataBase64` | The WebAuthn authenticatorData. |
+
+`verifySignedMessage` checks one offline, in the app or on a server (Node
+18+), with no RPC:
+
+```ts
+import { verifySignedMessage } from '@lazorkit/wallet-mobile-adapter';
+// or, on a server without React Native: from '@lazorkit/wallet'
+
+const ok = verifySignedMessage({
+  message: 'Sign in to example.com\nNonce: 8f2c…',
+  publicKey: passkeyPubkey,        // wallet.passkeyPubkey: 33 bytes, compressed
+  ...result,                       // what signMessage resolved with
+  rpId: 'portal.lazor.sh',         // optional: the passkey's relying party
+  origin: 'https://portal.lazor.sh', // optional: the page that ran the passkey
+});
+```
+
+It is `true` only when that passkey signed a `webauthn.get` over
+`signedMessageChallenge(message)` with the user present; a signature over any
+other challenge, the raw message bytes included, is `false`. It never throws.
+Put your domain and a fresh nonce in the message, and check them, as with any
+sign-in message.
+
 ## API Reference
 
 ### `useWallet()`
@@ -424,17 +479,22 @@ with `PortalCancelledError` and connects nothing. `options.onSuccess` /
 
 #### `signMessage(message, options)`
 
-Signs a message string.
+Signs a message with the passkey. The passkey signs
+`signedMessageChallenge(message)`, never the message's bytes (see
+[Signing messages](#signing-messages)).
 
 **Parameters**
 
 | Param | Type | Description |
 |---|---|---|
-| `message` | `string` | Content to sign |
+| `message` | `string` | Content to sign, signed as its UTF-8 bytes |
 | `options.redirectUrl` | `string` | Deep link URL |
+| `options.onSuccess` | `(result: SignMessageResult) => void` | Runs once `isSigning` is `false`, right before the promise resolves. |
+| `options.onFail` | `(error: Error) => void` | Runs with the error the promise rejects with. |
 
 **Returns**
-`Promise<string>` - Signature
+`Promise<SignMessageResult>`: `{ signature, signedPayload, clientDataJsonBase64, authenticatorDataBase64 }`,
+all base64. Check it with `verifySignedMessage`.
 
 #### `addAuthorityEd25519(payload, options)`
 

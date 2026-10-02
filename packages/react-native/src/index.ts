@@ -15,6 +15,18 @@ export { useWallet, useWallet as useLazorWallet } from './react/hook';
 export { useWalletStore } from './react/store';
 export * from './types';
 export { logger } from './core/logger';
+// Signed messages: the challenge every signMessage signs (never the app's
+// bytes), and the offline check for a message signature.
+export {
+  SIGNED_MESSAGE_DOMAIN,
+  signedMessageChallenge,
+  verifySignedMessage,
+} from './core/message/signedMessage';
+export type {
+  SignMessageResult,
+  SignedMessageInput,
+  VerifySignedMessageParams,
+} from './core/message/signedMessage';
 // How a sent transaction ended: every send resolves once it is confirmed.
 export {
   TransactionFailedError,

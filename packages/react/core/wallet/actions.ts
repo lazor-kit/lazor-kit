@@ -51,6 +51,7 @@ import { buildPreviewTransactionBase64 } from './preview';
 import { deferredExpiryOffset, executeBeforeExpiry } from './deferred';
 import { type KeySigner, type KeyStorage, forgetKey, generateKey, saveKey, wipeKey, wipeMark } from '../keys';
 import { keyForConnectedWallet } from './keyBinding';
+import type { SignMessageResult } from '../message/signedMessage';
 
 export function randomBytes(size: number): Uint8Array {
     return globalThis.crypto.getRandomValues(new Uint8Array(size));
@@ -1221,13 +1222,15 @@ export const signAndSendWithAuthorityAction = async (
 };
 
 /**
- * Sign message action
+ * Sign message action. The passkey signs `signedMessageChallenge(message)`,
+ * not the message's bytes (see core/message/signedMessage.ts); check the
+ * result with `verifySignedMessage`.
  */
 export const signMessageAction = async (
     get: () => WalletState,
     set: (state: Partial<WalletState>) => void,
     message: string
-): Promise<{ signature: string, signedPayload: string }> => {
+): Promise<SignMessageResult> => {
     const { isSigning, wallet, config } = get();
 
     if (isSigning) {
@@ -1245,7 +1248,12 @@ export const signMessageAction = async (
 
         try {
             const signResult = await dialogManager.openSignMessage(message, wallet.credentialId);
-            return { signature: signResult.signature, signedPayload: signResult.signedPayload };
+            return {
+                signature: signResult.signature,
+                signedPayload: signResult.signedPayload,
+                clientDataJsonBase64: signResult.clientDataJsonBase64,
+                authenticatorDataBase64: signResult.authenticatorDataBase64,
+            };
         } finally {
             dialogManager.destroy();
         }

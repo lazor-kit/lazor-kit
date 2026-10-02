@@ -10,6 +10,13 @@ import { getDialogStyles } from './styles/DialogStyles';
 import { ensureChoiceStyles, renderWalletChoices } from './WalletChoiceView';
 import { Logger } from '../../utils/logger';
 import type { WalletChoice } from '../wallet/confirmation';
+import {
+  isSignedMessageClientData,
+  signedMessageChallenge,
+  signedMessageDisplayText,
+  toBase64Url,
+  type SignedMessageInput,
+} from '../message/signedMessage';
 
 /** A WebAuthn assertion as the portal sends it (base64 fields, like a sign reply). */
 export interface PortalAssertion {
@@ -123,7 +130,10 @@ export class DialogManager extends EventEmitter {
 
   /**
    * Open portal signing dialog
-   * @param message - Message to sign
+   * @param message - The challenge to sign, base64 or base64url: one the SDK
+   *   computed for a transaction or a proof. Never bytes an app chose — a
+   *   message goes through `openSignMessage`, which signs its domain-separated
+   *   challenge instead.
    * @returns Promise that resolves with signature result
    */
   async openSign(message: string, transaction: string, credentialId: string, clusterSimulation?: 'devnet' | 'mainnet'): Promise<SignResult> {
@@ -139,18 +149,33 @@ export class DialogManager extends EventEmitter {
   }
 
   /**
-   * Open portal message signing dialog
-   * @param message - Message to sign
+   * Open the portal to sign a message. The passkey signs
+   * `signedMessageChallenge(message)` — never the message's own bytes — so the
+   * signature cannot pass for a transaction approval (see
+   * core/message/signedMessage.ts). The portal gets that challenge as
+   * `message`, and the text to show the user as `displayMessage` (the string,
+   * or bytes that are valid UTF-8). A portal that shows `displayMessage` must
+   * first check that `message` is its challenge.
+   *
+   * Rejects when the reply is not a `webauthn.get` over that challenge.
+   * @param message - The message: a string (signed as UTF-8) or bytes
    * @param credentialId - Credential ID
-   * @returns Promise that resolves with signature result
    */
-  async openSignMessage(message: string, credentialId: string): Promise<SignResult> {
-    const encodedMessage = encodeURIComponent(message);
-    const signUrl = `${this.config.portalUrl}?action=${API_ENDPOINTS.SIGN}&message=${encodedMessage}&credentialId=${encodeURIComponent(credentialId)}`;
-    return this.awaitPortal<SignResult>('sign-result', 'Signing timed out after 60 seconds', () => {
+  async openSignMessage(message: SignedMessageInput, credentialId: string): Promise<SignResult> {
+    const challenge = toBase64Url(signedMessageChallenge(message));
+    let signUrl = `${this.config.portalUrl}?action=${API_ENDPOINTS.SIGN}&message=${encodeURIComponent(challenge)}&credentialId=${encodeURIComponent(credentialId)}`;
+    const displayMessage = signedMessageDisplayText(message);
+    if (displayMessage !== undefined) {
+      signUrl += `&displayMessage=${encodeURIComponent(displayMessage)}`;
+    }
+    const result = await this.awaitPortal<SignResult>('sign-result', 'Signing timed out after 60 seconds', () => {
       this._currentAction = API_ENDPOINTS.SIGN;
       return this.shouldUsePopup('sign') ? this.openPopup(signUrl) : this.openSignDialog(signUrl);
     });
+    if (!result.clientDataJsonBase64 || !isSignedMessageClientData(result.clientDataJsonBase64, message)) {
+      throw new Error('The portal did not sign this message: its reply is over another challenge.');
+    }
+    return result;
   }
 
   /**

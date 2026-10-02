@@ -5,6 +5,7 @@ import {
 } from '@solana/web3.js';
 import { WalletInfo, WalletConfig } from '../storage';
 import type { OnConfirmWallet } from '../wallet/confirmation';
+import type { SignMessageResult } from '../message/signedMessage';
 
 export interface WalletState {
     // Data
@@ -37,7 +38,7 @@ export interface WalletState {
     connect: (options?: ConnectOptions & { feeMode?: 'paymaster' | 'user' }) => Promise<WalletInfo>;
     disconnect: (options?: DisconnectOptions) => Promise<void>;
     signAndSendTransaction: (payload: SignAndSendTransactionPayload) => Promise<string>;
-    signMessage: (message: string, options?: SignMessageOptions) => Promise<{ signature: string, signedPayload: string }>;
+    signMessage: (message: string, options?: SignMessageOptions) => Promise<SignMessageResult>;
 
     // Session key actions
     createSession: (payload?: CreateSessionPayload) => Promise<{ sessionPda: string; sessionPublicKey: string }>;
@@ -212,7 +213,7 @@ export interface RemoveAuthorityOptions {
 }
 
 /** `signMessage`'s callbacks, as every action's: called once the call is over (`isSigning` false), right before its promise settles. */
-export type SignMessageOptions = ActionCallbacks<{ signature: string; signedPayload: string }>;
+export type SignMessageOptions = ActionCallbacks<SignMessageResult>;
 
 export interface SignAndSendTransactionPayload {
     readonly transactionOptions?: {

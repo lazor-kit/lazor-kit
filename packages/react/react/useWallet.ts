@@ -10,6 +10,7 @@ import { useWalletStore } from './store';
 import { WalletInfo } from '../core/storage';
 import type { ActionCallbacks, DisconnectOptions, RemoveAuthorityOptions, SignMessageOptions, SpendingLimits } from '../core/types';
 import type { OnConfirmWallet } from '../core/wallet/confirmation';
+import type { SignMessageResult } from '../core/message/signedMessage';
 
 export interface WalletHookInterface {
   // State
@@ -46,7 +47,16 @@ export interface WalletHookInterface {
   connect: (options?: ConnectHookOptions) => Promise<WalletInfo>;
   disconnect: (options?: DisconnectOptions) => Promise<void>;
   signAndSendTransaction: (payload: SendTxPayload & ActionCallbacks<string>) => Promise<string>;
-  signMessage: (message: string, options?: SignMessageOptions) => Promise<{ signature: string, signedPayload: string }>;
+  /**
+   * The passkey signs `signedMessageChallenge(message)`, not the message's
+   * bytes. Check the result with `verifySignedMessage`.
+   */
+  signMessage: (message: string, options?: SignMessageOptions) => Promise<SignMessageResult>;
+  /**
+   * @deprecated Checks only that `signature` is over `signedPayload`, not which
+   * message was signed: any passkey signature passes. Use
+   * `verifySignedMessage({ message, publicKey, ...result })`.
+   */
   verifyMessage: (args: { signedPayload: Uint8Array, signature: Uint8Array, publicKey: Uint8Array }) => Promise<boolean>;
 
   // Session key actions

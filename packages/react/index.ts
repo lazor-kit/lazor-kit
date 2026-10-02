@@ -12,6 +12,18 @@ export { useWalletStore } from './react/store';
 export type { WalletInfo, WalletConfig } from '././core/storage';
 export type { WalletHookInterface, ConnectHookOptions, DeferredTxPayload } from './react/useWallet';
 export type { SpendingLimits, ActionCallbacks, DisconnectOptions, RemoveAuthorityOptions, SignMessageOptions } from './core/types';
+// Signed messages: the challenge every signMessage signs (never the app's
+// bytes), and the offline check for a message signature.
+export {
+  SIGNED_MESSAGE_DOMAIN,
+  signedMessageChallenge,
+  verifySignedMessage,
+} from './core/message/signedMessage';
+export type {
+  SignMessageResult,
+  SignedMessageInput,
+  VerifySignedMessageParams,
+} from './core/message/signedMessage';
 
 // Core exports (for advanced usage)
 export { DialogManager, PortalCancelledError } from './core/portal';

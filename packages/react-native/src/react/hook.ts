@@ -25,6 +25,7 @@ import {
   TxCallbacks,
   WalletInfo,
 } from '../types';
+import type { SignMessageResult } from '../core/message/signedMessage';
 
 export function useWallet(): LazorWalletHook {
   const {
@@ -75,7 +76,7 @@ export function useWallet(): LazorWalletHook {
   const handleSignMessage = (
     message: string,
     signOptions: SignOptions,
-  ): Promise<{ signature: string; signedPayload: string }> => signMessage(message, signOptions);
+  ): Promise<SignMessageResult> => signMessage(message, signOptions);
 
   const handleCreateSession = async (
     payload: CreateSessionPayload,
