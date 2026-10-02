@@ -3,11 +3,13 @@ import { sha256 } from 'js-sha256';
 // unless it polyfills one.
 import { Buffer } from 'buffer';
 import {
+    RETIRED_DEPLOYMENT_CODE,
     V1WalletMigratedError,
     V1WalletRetiredError,
     isRetiredDeploymentError,
     type ProtocolVersion,
 } from '../program/protocol';
+import { isNamedError } from '../program/errorShape';
 import { StorageManager } from '../storage';
 import { DialogManager } from '../portal';
 import { WalletConfig } from '../storage';
@@ -44,6 +46,20 @@ export const getCredentialHash = (credentialIdBase64: string): Uint8Array => {
 };
 
 /**
+ * The error a wallet action reports. A v1 wallet after LazorKit v1 was
+ * retired gets `V1WalletRetiredError`, which says what happened and what to
+ * do, rather than a bare `custom program error: 0xfb2`; one that already is
+ * that error is reported as it is.
+ */
+export const toActionError = (error: unknown, version?: ProtocolVersion): Error => {
+    if (error instanceof V1WalletRetiredError || isNamedError(error, 'V1WalletRetiredError', RETIRED_DEPLOYMENT_CODE)) {
+        return error as Error;
+    }
+    if (isRetiredDeploymentError(error, version)) return new V1WalletRetiredError(error);
+    return error instanceof Error ? error : new Error(String(error));
+};
+
+/**
  * Standardized error handling for wallet actions
  */
 export const handleActionError = (
@@ -53,13 +69,7 @@ export const handleActionError = (
     /** The protocol of the wallet the action ran for, when there was one. */
     version?: ProtocolVersion,
 ): never => {
-    // A v1 wallet after LazorKit v1 was retired: say what happened and what to
-    // do, rather than surface a bare `custom program error: 0xfb2`.
-    const err = isRetiredDeploymentError(error, version)
-        ? new V1WalletRetiredError(error)
-        : error instanceof Error
-          ? error
-          : new Error(String(error));
+    const err = toActionError(error, version);
     if (err instanceof V1WalletMigratedError) {
         // The stored wallet is gone from the chain; stop showing its address.
         void StorageManager.clearWallet();

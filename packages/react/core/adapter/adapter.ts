@@ -29,12 +29,10 @@ import {
     clientFor,
     versionOf,
     readPasskeyPubkey,
-    isRetiredDeploymentError,
-    V1WalletRetiredError,
     registerCluster,
     V1WalletMigratedError,
 } from '../program';
-import { getCredentialHash } from '../wallet/utils';
+import { getCredentialHash, toActionError } from '../wallet/utils';
 import { sendAndConfirm, withAuthority } from '../wallet/sequence';
 import { buildPreviewTransactionBase64 } from '../wallet/preview';
 import { clearPendingConfirmation, connectAbandoned, connectFreshWallet } from '../wallet/resolveWallet';
@@ -489,9 +487,8 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
             });
 
         } catch (error: any) {
-            const err = isRetiredDeploymentError(error, this._wallet ? versionOf(this._wallet) : undefined)
-                ? new V1WalletRetiredError(error)
-                : error;
+            // A retired v1 wallet's failure as `V1WalletRetiredError`, once.
+            const err: any = toActionError(error, this._wallet ? versionOf(this._wallet) : undefined);
             this.emit('error', err);
             throw err;
         }

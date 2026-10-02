@@ -45,9 +45,11 @@ import {
   versionOf,
   versionOfAccount,
   isRetiredDeploymentError,
+  RETIRED_DEPLOYMENT_CODE,
   V1WalletRetiredError,
   V1WalletMigratedError,
 } from './program';
+import { isNamedError } from './program/errorShape';
 import {
   AddAuthorityPayload,
   AuthorizeExecutePayload,
@@ -134,10 +136,12 @@ function notify<A>(callback: ((arg: A) => void) | undefined, arg: A): void {
 /**
  * The error an action reports, to its onFail and to its caller alike. A v1
  * wallet after LazorKit v1 was retired gets `V1WalletRetiredError`, which
- * says what happened and what to do, rather than a bare `0xfb2`.
+ * says what happened and what to do, rather than a bare `0xfb2`; one that
+ * already is that error (from any copy of this package) is reported as it is.
  */
 function toActionError(error: unknown, get: () => WalletStateClient, flowVersion?: ProtocolVersion): Error {
   if (error instanceof V1WalletRetiredError || error instanceof V1WalletMigratedError) return error;
+  if (isNamedError(error, 'V1WalletRetiredError', RETIRED_DEPLOYMENT_CODE)) return error as Error;
   const wallet = get().wallet;
   if (isRetiredDeploymentError(error, flowVersion ?? (wallet ? versionOf(wallet) : undefined))) {
     return new V1WalletRetiredError(error);

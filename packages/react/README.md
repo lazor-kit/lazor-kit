@@ -318,6 +318,25 @@ program cannot be told, is thrown as it came. An error from sending TX2 carries
 whose logs name LazorKit as the first program to fail; not for a 3014 that
 names no program.
 
+**Recognising errors.** `isSignatureReusedError`, `isDeferredExpiredError` and
+`isRetiredDeploymentError(error, version?)` are true for the SDK's own error
+(`SignatureReusedError`, `DeferredExpiredError`, `V1WalletRetiredError`):
+- from whichever copy of the package made it. An app whose dependencies load
+  both the ESM and the CJS build has two copies of every class, and
+  `instanceof` fails between them; the predicates match by `name` and `code`.
+- wrapped, in `cause` or in a wallet-adapter `WalletError`'s `error`. A dApp
+  that reaches the wallet through the Wallet Standard gets every error as
+  `WalletSendTransactionError(message, error)`.
+
+They also recognise the raw program error, as web3.js text (`0xbbe`, `0xbc6`,
+`0xfb2`), a TransactionError (`"Custom":3006`), Kora's text (`Custom(3006)`)
+or with the logs in a paymaster's `data`. For a raw error the logs decide
+whose it is: a 3006 with no logs counts as LazorKit's, a 3014 with no logs
+does not, and a 4018 counts when the logs name the v1 program or `version` is
+1. The other error classes have no predicate: compare `error.name`
+(`'TransactionFailedError'`, `'PaymasterError'`, `'V1WalletMigratedError'`,
+`'WalletNeedsConfirmationError'`, …), which holds across copies too.
+
 The portal's transaction preview is compiled without lookup tables whenever it
 fits in a packet, so the portal sees every account the transaction touches.
 Only a payload over the 1232-byte limit is compiled with the lookup tables the

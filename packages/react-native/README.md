@@ -288,6 +288,21 @@ TX1) and `expiresAtSlot` (when it was read): `DeferredFailureContext`.
 whose logs name LazorKit as the first program to fail; not for a 3014 that
 names no program.
 
+**Recognising errors.** `isSignatureReusedError`, `isDeferredExpiredError` and
+`isRetiredDeploymentError(error, version?)` are true for the SDK's own error
+(`SignatureReusedError`, `DeferredExpiredError`, `V1WalletRetiredError`) from
+whichever copy of the package made it (matched by `name` and `code`, since
+`instanceof` fails between two copies), and for one wrapped in `cause` or in a
+wallet-adapter `WalletError`'s `error`. They also recognise the raw program
+error, as web3.js text (`0xbbe`, `0xbc6`, `0xfb2`), a TransactionError
+(`"Custom":3006`), Kora's text (`Custom(3006)`) or with the logs in a
+paymaster's `data`. For a raw error the logs decide whose it is: a 3006 with
+no logs counts as LazorKit's, a 3014 with no logs does not, and a 4018 counts
+when the logs name the v1 program or `version` is 1. The other error classes
+have no predicate: compare `error.name` (`'TransactionFailedError'`,
+`'PaymasterError'`, `'V1WalletMigratedError'`, `'SigningError'`, …), which
+holds across copies too.
+
 The portal's transaction preview is compiled without lookup tables whenever it
 fits in a packet, so the portal sees every account the transaction touches.
 Only a payload over the 1232-byte limit is compiled with
