@@ -347,20 +347,24 @@ import { Keypair, PublicKey } from '@solana/web3.js';
 const SLOT = 'myapp.lazorkit-session';
 const OPTIONS = { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY };
 
-// Once createSession has resolved.
-async function keepSession(sessionKeypair: Keypair, sessionPda: PublicKey, expiresAtSlot: bigint) {
+// Once createSession has resolved. `walletPda`: the connected wallet's
+// (`wallet.walletPda`), the only one this key may sign for.
+async function keepSession(sessionKeypair: Keypair, sessionPda: PublicKey, expiresAtSlot: bigint, walletPda: string) {
   const value = JSON.stringify({
     seed: Buffer.from(sessionKeypair.secretKey.slice(0, 32)).toString('base64'),
     sessionPda: sessionPda.toBase58(),
     expiresAtSlot: expiresAtSlot.toString(),
+    walletPda,
   });
   await SecureStore.setItemAsync(SLOT, value, OPTIONS);
 }
 
-async function keptSession() {
+// The kept session, only for the wallet connected now (`wallet.walletPda`).
+async function keptSession(connectedWalletPda: string | undefined) {
   const raw = await SecureStore.getItemAsync(SLOT, OPTIONS);
   if (!raw) return null;
-  const { seed, sessionPda, expiresAtSlot } = JSON.parse(raw);
+  const { seed, sessionPda, expiresAtSlot, walletPda } = JSON.parse(raw);
+  if (!connectedWalletPda || walletPda !== connectedWalletPda) return null;
   return {
     sessionKeypair: Keypair.fromSeed(Buffer.from(seed, 'base64')),
     sessionPda: new PublicKey(sessionPda),
@@ -368,11 +372,17 @@ async function keptSession() {
   };
 }
 
-// Once revokeSession has resolved, or the session has expired.
+// Once revokeSession has resolved, the session has expired, or the user
+// disconnects.
 async function forgetSession() {
   await SecureStore.deleteItemAsync(SLOT, OPTIONS);
 }
 ```
+
+- Keep the wallet the session belongs to with the key, and use the key only
+  while that wallet is connected: the session signs for its own wallet
+  whichever wallet the app shows. The web SDK does this for the keys it keeps
+  (`KeyWalletMismatchError`), and deletes its session key on `disconnect`.
 
 - `WHEN_UNLOCKED_THIS_DEVICE_ONLY` keeps the item on this device: it is not
   restored to another one from a backup.
