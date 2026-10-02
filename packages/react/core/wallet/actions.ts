@@ -20,7 +20,7 @@ import {
 import { SignResult } from '../portal';
 import { StorageManager, WalletInfo } from '../storage';
 import { Paymaster } from '../paymaster/paymaster';
-import { WalletState, ConnectOptions, SignAndSendTransactionPayload, CreateSessionPayload, RevokeSessionPayload, AddAuthorityPayload, AuthorizeAndExecutePayload, AuthorizeDeferredPayload, ExecuteDeferredPayload } from '../types';
+import { WalletState, ConnectOptions, DisconnectOptions, SignAndSendTransactionPayload, CreateSessionPayload, RevokeSessionPayload, AddAuthorityPayload, AuthorizeAndExecutePayload, AuthorizeDeferredPayload, ExecuteDeferredPayload } from '../types';
 import {
     createDialogManager,
     getCredentialHash,
@@ -291,10 +291,19 @@ function namesWallet(wallet: WalletInfo, address: string): boolean {
  * Disconnect wallet action. `isSigning` is left to the action that set it, as
  * on mobile: an action already running is not abandoned (its passkey prompt
  * may still be open), and clearing its flag here would let a second one start
- * beside it, whose flag the first would then clear when it ends.
+ * beside it, whose flag the first would then clear when it ends. (A session
+ * or authority send still running does not sign once the wallet is gone: see
+ * ./keyBinding.)
+ *
+ * The session key the SDK keeps is deleted, unless `keepSessionKeys`; the
+ * authority key is kept, and signs only once its wallet is connected again.
+ * A key that cannot be deleted is logged, not thrown: it stays bound to its
+ * wallet.
  */
 export const disconnectAction = async (
+    get: () => WalletState,
     set: (state: Partial<WalletState>) => void,
+    options?: DisconnectOptions,
 ): Promise<void> => {
 
     try {
@@ -307,6 +316,9 @@ export const disconnectAction = async (
         set({ wallet: null, error: null, isConnecting: false, isLoading: false });
     } catch (error: unknown) {
         return handleActionError(error, set);
+    } finally {
+        // Whatever else failed: the session key goes with the wallet.
+        if (!options?.keepSessionKeys) await forgetKey(keyStorageOf(get().config), 'session', () => true);
     }
 };
 

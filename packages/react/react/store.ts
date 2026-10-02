@@ -77,7 +77,7 @@ export const useWalletStore = create<WalletState>()(
       // refused because another holds it), right before its promise settles;
       // what a callback throws changes nothing (see `reportOutcome`).
       connect: (options) => reportOutcome(options, () => connectAction(get, set, options)),
-      disconnect: (options) => reportOutcome(options, () => disconnectAction(set)),
+      disconnect: (options) => reportOutcome(options, () => disconnectAction(get, set, options)),
       signAndSendTransaction: (payload) =>
         reportOutcome(payload, () => signAndSendTransactionAction(get, set, payload)),
       signMessage: (message, options) => reportOutcome(options, () => signMessageAction(get, set, message)),

@@ -300,7 +300,8 @@ export async function migrateLegacyKeys(storage: KeyStorage): Promise<void> {
  * Deletes every session and authority key the SDK keeps, whatever
  * `keyStorage` is: both IndexedDB slots (and the AES-GCM key seeds are sealed
  * under), this page's memory copies, and the plaintext entries an earlier
- * release left in localStorage. For sign-out: `disconnect` keeps the keys.
+ * release left in localStorage. For sign-out: `disconnect` deletes only the
+ * session key, and only where `keyStorage` keeps it.
  * Waits for a migration in flight first. Rejects when IndexedDB holds keys and
  * could not be cleared (memory and localStorage are cleared all the same);
  * resolves where there is no IndexedDB.

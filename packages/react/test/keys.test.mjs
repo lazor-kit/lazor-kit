@@ -941,6 +941,74 @@ test('an expired session key a page holds in memory only, and its plaintext, are
     assert.equal(sent.length, 0);
 });
 
+// ─── disconnect ──────────────────────────────────────────────────────────────
+
+test('disconnect deletes the kept session key wherever it is (IndexedDB, plaintext), and keeps the authority key', async () => {
+    let W = await page();
+    plantSession(W, SEEDS[0]);
+    plantAuthority(W, SEEDS[1]);
+    await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+    assert.ok(await storedRecord('session'));
+    // A plaintext session key not moved yet goes too.
+    W = await page();
+    const { entry } = plantSession(W, SEEDS[2]);
+    assert.equal(storage.get('lazorkit-session'), entry);
+
+    await W.useWalletStore.getState().disconnect();
+    assert.equal(W.useWalletStore.getState().wallet, null);
+    assert.equal(storage.get('lazorkit-session'), undefined, 'the plaintext is gone');
+    assert.equal(await storedRecord('session'), undefined, 'the IndexedDB record is gone');
+    assert.ok(storage.get('lazorkit-authority'), 'the authority key is kept');
+
+    W.useWalletStore.setState({ wallet: walletInfo(WALLET) });
+    await assert.rejects(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /^Error: No session key found\. Create a session first\.$/);
+    await W.useWalletStore.getState().signAndSendWithAuthority({ instructions: transfer() });
+    assertSignedAsWeb3(SEEDS[1], 'v0');
+});
+
+test("keyStorage: 'memory': disconnect deletes the session key this page holds", async () => {
+    const W = await page({ keyStorage: 'memory' });
+    plantSession(W, SEEDS[3]);
+    await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+    await W.useWalletStore.getState().disconnect();
+    W.useWalletStore.setState({ wallet: walletInfo(WALLET) });
+    await assert.rejects(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /No session key found/);
+    assert.deepEqual(await indexedDB.databases(), [], 'IndexedDB not opened');
+});
+
+test('disconnect({ keepSessionKeys: true }) keeps the session key, which signs once its wallet is connected again', async () => {
+    const W = await page();
+    plantSession(W, SEEDS[4]);
+    await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+    await W.useWalletStore.getState().disconnect({ keepSessionKeys: true });
+    assert.ok(await storedRecord('session'), 'kept');
+    const error = await rejection(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }));
+    assert.equal(error.reason, 'no-wallet');
+    W.useWalletStore.setState({ wallet: walletInfo(WALLET) });
+    await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+    assertSignedAsWeb3(SEEDS[4], 'v0');
+});
+
+test('a session key IndexedDB cannot delete at disconnect: disconnect still succeeds and warns, and the key stays bound to its wallet', async () => {
+    let W = await page();
+    plantSession(W, SEEDS[0]);
+    await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+    W = await page();
+    const restore = failingOpens(1);
+    const calls = [];
+    try {
+        await W.useWalletStore.getState().disconnect({ onSuccess: () => calls.push('onSuccess'), onFail: (e) => calls.push(e) });
+    } finally {
+        restore();
+    }
+    assert.deepEqual(calls, ['onSuccess']);
+    assert.equal(W.useWalletStore.getState().wallet, null);
+    assert.ok(warnings.some((w) => w.includes('session key could not be deleted') && w.includes('UnknownError')), JSON.stringify(warnings));
+    const error = await rejection(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }));
+    assert.equal(error.reason, 'no-wallet');
+    assert.equal(sent.length, 1);
+});
+
 // ─── forgetStoredKeys: sign-out ──────────────────────────────────────────────
 
 test('forgetStoredKeys deletes every key the SDK keeps: IndexedDB, memory and plaintext', async () => {

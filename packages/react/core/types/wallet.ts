@@ -182,6 +182,13 @@ export interface ActionCallbacks<T> {
 
 /** As with every action: called once the call is over, right before its promise settles; what they throw changes nothing. */
 export interface DisconnectOptions {
+    /**
+     * Keep the session key the SDK keeps (`createSession`). By default
+     * `disconnect` deletes it. A kept one signs only once its wallet is
+     * connected again. The authority key (`addAuthority`) is always kept, on
+     * the same terms; `removeAuthority` or `forgetStoredKeys()` deletes it.
+     */
+    readonly keepSessionKeys?: boolean;
     readonly onSuccess?: () => void;
     readonly onFail?: (error: Error) => void;
 }

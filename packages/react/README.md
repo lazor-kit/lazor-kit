@@ -474,7 +474,8 @@ authority) again.
 
 **If your app removed `lazorkit-session` / `lazorkit-authority` at sign-out**
 (or called `localStorage.clear()`), that no longer removes the keys: they are
-in IndexedDB now. Call `forgetStoredKeys()` instead:
+in IndexedDB now. `disconnect` deletes the session key; call
+`forgetStoredKeys()` as well to delete the authority key too:
 
 ```tsx
 import { forgetStoredKeys, useWallet } from '@lazorkit/wallet';
@@ -503,9 +504,15 @@ function SignOutButton() {
   page's memory, and any plaintext an earlier release left. It rejects if
   IndexedDB holds keys and could not be cleared.
 - A stored session key is deleted when it is read after its session expired.
-- `disconnect` keeps both keys. A kept key signs only once the wallet it was
-  registered for is connected again (see above). On a shared computer, call
-  `forgetStoredKeys()` at sign-out.
+- `disconnect()` deletes the session key: from IndexedDB, this page's memory
+  and any plaintext an earlier release left (with `keyStorage="memory"`, from
+  memory and plaintext; IndexedDB is not used then). `disconnect({
+  keepSessionKeys: true })` keeps it. If IndexedDB fails to delete it,
+  `disconnect` still succeeds and logs a warning; the key stays bound to its
+  wallet. `forgetStoredKeys()` rejects instead, for a sign-out that must know.
+- `disconnect` keeps the authority key. Like a kept session key, it signs only
+  once the wallet it was registered for is connected again (see above). On a
+  shared computer, call `forgetStoredKeys()` at sign-out.
 
 If a key cannot be stored after its session or authority has landed, the call
 still succeeds: the key signs for the rest of this page, and a warning is
@@ -548,8 +555,20 @@ Connects the stored wallet, or finds the passkey's own (see
 
 Disconnects the wallet. `options.onSuccess` / `options.onFail` run once it is
 over, as every action's do. An action still running is not abandoned: it keeps
-`isSigning` until it ends. The session and authority keys the SDK keeps stay
-(see `forgetStoredKeys()` below).
+`isSigning` until it ends, but a session or authority send among them no
+longer signs. The session key the SDK keeps is deleted, unless
+`options.keepSessionKeys` is `true`; the authority key is kept. A kept key
+signs only once its wallet is connected again (see
+[Session and authority keys](#session-and-authority-keys) and
+`forgetStoredKeys()` below).
+
+**Parameters**
+
+| Param | Type | Description |
+|---|---|---|
+| `options.keepSessionKeys` | `boolean` | Keep the session key (default `false`: it is deleted). |
+| `options.onSuccess` | `() => void` | Runs once the disconnect is over, right before the promise resolves. |
+| `options.onFail` | `(error: Error) => void` | Runs with the error the promise rejects with. |
 
 **Returns** 
 `Promise<void>`

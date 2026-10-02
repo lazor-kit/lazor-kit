@@ -6,8 +6,10 @@
 // A scripted chain and paymaster, no network. Also: what LazorkitProvider
 // moves when it mounts, a key that cannot be stored after its transaction
 // landed (stored on a later use), a caller's own session key, deleting the
-// key once its session is revoked or its authority removed, and
-// forgetStoredKeys at sign-out. Run with `pnpm test`.
+// key once its session is revoked or its authority removed, forgetStoredKeys
+// at sign-out, and a kept key across disconnect and connect: the session key
+// deleted (or kept with keepSessionKeys), the authority key kept, and either
+// refused unless its own wallet is connected. Run with `pnpm test`.
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import { test, beforeEach, after } from 'node:test';
@@ -516,7 +518,8 @@ test('forgetStoredKeys at sign-out: no session or authority key is left, here or
     localStorage.removeItem('lazorkit-session');
     localStorage.removeItem('lazorkit-authority');
     await W.useWalletStore.getState().disconnect();
-    assert.ok(await storedRecord('session'), 'disconnect keeps the keys');
+    assert.equal(await storedRecord('session'), undefined, 'disconnect deletes the session key');
+    assert.ok(await storedRecord('authority'), 'and keeps the authority key');
 
     await W.forgetStoredKeys();
     assert.equal(await storedRecord('session'), undefined);
@@ -599,6 +602,115 @@ test('removeAuthority deletes the kept key once its authority is removed, and le
     await W.useWalletStore.getState().removeAuthority(authorityPda);
     assert.equal(await storedRecord('authority'), undefined);
     await assert.rejects(W.useWalletStore.getState().signAndSendWithAuthority({ instructions: transfer() }), /No authority key found/);
+});
+
+// ─── Disconnect, and connecting again ────────────────────────────────────────
+
+const OTHER_WALLET = fixed(47);
+
+/** The stored record of `walletPda`, as connect saves it. */
+function walletRecord(W, walletPda) {
+    return {
+        credentialId: CREDENTIAL_ID,
+        passkeyPubkey: [2, ...new Array(32).fill(0x11)],
+        smartWallet: walletPda.toBase58(),
+        vaultPda: W.findVaultPda(walletPda, PROGRAM)[0].toBase58(),
+        walletDevice: '',
+        platform: 'web',
+        expo: '',
+        protocolVersion: 2,
+    };
+}
+
+/** Connects `walletPda` through `connect()`, as when the portal has found it and saved it. */
+async function reconnect(W, walletPda) {
+    await W.StorageManager.saveWallet(walletRecord(W, walletPda));
+    const connected = await W.useWalletStore.getState().connect();
+    assert.equal(connected.smartWallet, walletPda.toBase58());
+}
+
+/** A send with the kept key that must be refused for `reason`, with nothing prompted, signed or sent. */
+async function assertRefused(W, send, reason) {
+    const prompts = approvals.length;
+    const sends = sent.length;
+    const calls = [];
+    const error = await rejection(
+        W.useWalletStore.getState()[send]({ instructions: transfer(), onSuccess: () => calls.push('onSuccess'), onFail: (e) => calls.push(e) }),
+    );
+    assert.ok(W.isKeyWalletMismatchError(error), String(error));
+    assert.equal(error.reason, reason);
+    assert.deepEqual(calls, [error]);
+    assert.equal(W.useWalletStore.getState().isSigning, false);
+    assert.equal(approvals.length, prompts, 'no passkey prompt');
+    assert.equal(sent.length, sends, 'nothing sent');
+}
+
+test('createSession → disconnect → connect again: disconnect deleted the session key, so there is none to sign with', async () => {
+    let W = await load();
+    connect(W);
+    const { sessionPda } = await W.useWalletStore.getState().createSession({ unrestricted: true });
+    landed(sessionPda);
+    assert.ok(await storedRecord('session'));
+
+    const calls = [];
+    await W.useWalletStore.getState().disconnect({ onSuccess: () => calls.push('onSuccess'), onFail: (e) => calls.push(e) });
+    assert.deepEqual(calls, ['onSuccess']);
+    assert.equal(W.useWalletStore.getState().wallet, null);
+    assert.equal(await storedRecord('session'), undefined, 'deleted from IndexedDB');
+    await assert.rejects(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /^Error: No session key found\. Create a session first\.$/);
+
+    W = await load();
+    await reconnect(W, WALLET);
+    await assert.rejects(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /^Error: No session key found\. Create a session first\.$/);
+    assert.equal(sent.length, 1, 'only the createSession');
+    assertNoPlaintext();
+});
+
+test('createSession → disconnect({ keepSessionKeys: true }) → connect again: refused while disconnected and for another wallet, signs for its own', async () => {
+    let W = await load();
+    connect(W);
+    const { sessionPda, sessionPublicKey } = await W.useWalletStore.getState().createSession({ unrestricted: true });
+    landed(sessionPda);
+
+    await W.useWalletStore.getState().disconnect({ keepSessionKeys: true });
+    assert.equal((await storedRecord('session')).publicKey, sessionPublicKey, 'kept');
+    await assertRefused(W, 'signAndSendWithSession', 'no-wallet');
+
+    W = await load();
+    await assertRefused(W, 'signAndSendWithSession', 'no-wallet');
+    await reconnect(W, OTHER_WALLET);
+    await assertRefused(W, 'signAndSendWithSession', 'other-wallet');
+    await W.useWalletStore.getState().disconnect({ keepSessionKeys: true });
+
+    await reconnect(W, WALLET);
+    await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+    assertSignedBy(sent.at(-1), new PublicKey(sessionPublicKey));
+    assertNoPlaintext();
+});
+
+test('addAuthority → disconnect → connect again: the authority key is kept, refused while disconnected and for another wallet, and signs for its own', async () => {
+    let W = await load();
+    connect(W);
+    const { authorityPda, authorityPublicKey } = await W.useWalletStore.getState().addAuthority({ role: W.ROLE_ADMIN });
+    landed(authorityPda);
+
+    await W.useWalletStore.getState().disconnect();
+    assert.equal((await storedRecord('authority')).publicKey, authorityPublicKey, 'disconnect keeps the authority key');
+    await assertRefused(W, 'signAndSendWithAuthority', 'no-wallet');
+
+    W = await load();
+    await assertRefused(W, 'signAndSendWithAuthority', 'no-wallet');
+    await reconnect(W, OTHER_WALLET);
+    await assertRefused(W, 'signAndSendWithAuthority', 'other-wallet');
+    await W.useWalletStore.getState().disconnect();
+    assert.ok(await storedRecord('authority'));
+
+    await reconnect(W, WALLET);
+    const before = approvals.length;
+    await W.useWalletStore.getState().signAndSendWithAuthority({ instructions: transfer() });
+    assert.equal(approvals.length, before, 'no passkey prompt');
+    assertSignedBy(sent.at(-1), new PublicKey(authorityPublicKey));
+    assertNoPlaintext();
 });
 
 // ─── keyStorage: 'memory' ───────────────────────────────────────────────────
