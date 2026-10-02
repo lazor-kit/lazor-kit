@@ -58,7 +58,8 @@ export interface EmbeddedOptions extends CommonOptions {
      * The relying party: this page's host name, or a registrable parent of it
      * (`example.com` for `app.example.com`), in canonical form (lowercase
      * ASCII, punycode for an IDN, no trailing dot). Not an IP; `localhost` is
-     * fine in development. Permanent: every passkey and wallet is bound to it.
+     * fine in development. Permanent: every passkey and wallet is bound to it,
+     * so write it as a constant, never from `location`.
      */
     rpId: string;
     /** Your app's name: passkeys are named "<appName> · <short vault>", and sheets show it. */

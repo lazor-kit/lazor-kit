@@ -758,7 +758,7 @@ popup or `postMessage` is involved.
 | Prop | Required | Description |
 |---|---|---|
 | `mode` | yes | `"embedded"`. |
-| `rpId` | yes | The relying party: this page's host name (`app.example.com`), or a registrable parent of it (`example.com`). Lowercase ASCII (punycode for an international name), no scheme, port, path or trailing dot, not an IP address. `localhost` works in development. A mistake throws `LazorkitConfigError` when the provider renders. |
+| `rpId` | yes | The relying party: this page's host name (`app.example.com`), or a registrable parent of it (`example.com`). Lowercase ASCII (punycode for an international name), no scheme, port, path or trailing dot, not an IP address. `localhost` works in development. Permanent, so write it as a constant, never from `location`. A mistake throws `LazorkitConfigError` when the provider renders. |
 | `appName` | yes | Your app's name. Passkeys are named `"<appName> · <short vault>"`, at most 60 bytes, and the sheets show it. |
 | `paymasterConfig` | on mainnet | Your relayer: it pays fees and the rent of every new wallet (D11). On mainnet, leaving it out throws; LazorKit's relayer is for devnet and testing. |
 | `cluster` | when the RPC URL does not say | `'devnet'` or `'mainnet'`. An RPC URL that names neither is taken as mainnet. The review sheet simulates on this cluster. |
@@ -980,15 +980,23 @@ optional peers for `/core` users.
 ```ts
 import { createLazorkitClient } from '@lazorkit/wallet/core';
 
-const client = createLazorkitClient({ mode: 'embedded', rpId: location.hostname, appName: 'Example', cluster: 'devnet' });
+const client = createLazorkitClient({ mode: 'embedded', rpId: 'app.example.com', appName: 'Example', cluster: 'devnet' });
 client.subscribe((state) => render(state.status, state.address));
 button.onclick = () => client.connect().catch(() => {});
 ```
 
+Write `rpId` as a constant; never derive it from `location`. A derived rpId
+lets a preview or staging host, or a mirror that serves your bundle, create
+wallets under its own host name, and after a domain move your users would
+quietly get new, empty wallets. With a constant, a page on any other host
+fails with `LazorkitConfigError('rp-id-refused')` instead.
+
 A second `createLazorkitClient` call with an equal config returns the same
-client. One with a different mode, rpId, relayer, RPC, cluster, trusted keys
-or `confirm` throws `LazorkitConfigError('reconfigured')`, unless it passes
-`{ replace: true }`.
+client. One with a different mode, rpId, relayer, RPC, cluster, portal, trusted
+keys, `watchMints` or `confirm`, other `ui` screens or another
+`onConfirmWallet` throws `LazorkitConfigError('reconfigured')`, unless it
+passes `{ replace: true }`. `ui` and `onConfirmWallet` are compared by
+identity, so pass the same object and function again.
 
 ## Upgrading from 3.x
 
@@ -997,35 +1005,47 @@ or `confirm` throws `LazorkitConfigError('reconfigured')`, unless it passes
 1. **`mode` is required.** Add `mode="portal"` to keep your users' wallets:
 
    ```bash
-   grep -rl '<LazorkitProvider' src | xargs sed -i '' 's/<LazorkitProvider\b/<LazorkitProvider mode="portal"/'
+   perl -0777 -pi -e 's/<LazorkitProvider(?![\w-])(?![^>]*\bmode=)/<LazorkitProvider mode="portal"/g' \
+     $(grep -rl '<LazorkitProvider' src)
    ```
 
-   (On Linux, `sed -i` without `''`.) Without it the app does not compile, and
-   throws `LazorkitConfigError('no-mode')` from JavaScript.
+   It works the same on macOS and Linux, and running it twice changes nothing.
+   It skips a tag that already sets `mode`, unless a prop before `mode` holds
+   a `>` (an arrow function): then TypeScript reports the duplicate. Without
+   `mode` the app does not compile, and throws
+   `LazorkitConfigError('no-mode')` from JavaScript.
 2. **A user rejection no longer sets `error`.** This covers a closed portal or
    sheet, and "None of these". The promise still rejects, and `onFail` still
    runs. `PortalCancelledError` and `WalletConfirmationDeclinedError` are now
-   `UserRejectedError`s; branch on `errorKind(e) === 'rejected'`.
-3. **The root and `/hooks` entries are client modules** (`'use client'`).
+   `UserRejectedError`s, with `code: 'USER_REJECTED'` and a `reason`; their
+   names and messages are unchanged. Branch on `errorKind(e) === 'rejected'`.
+3. **A passkey whose key cannot be recovered** at connect rejects with
+   `KeyRecoveryError` (`code: 'KEY_RECOVERY'`), in portal mode too, instead
+   of a plain `Error`. The message is unchanged.
+4. **The root and `/hooks` entries are client modules** (`'use client'`).
    Next.js server code imports helpers from `@lazorkit/wallet/core`.
-4. **The first render can already be connected**: the stored wallet is read
+5. **The first render can already be connected**: the stored wallet is read
    synchronously. `connect()` on mount still works; it returns the stored
    wallet.
-5. **`@lazorkit/sdk-legacy` 1.3.1 or later.**
+6. **The stored config is never read back.** The provider's props are the
+   config from the first render; 3.3.1 put the config it had stored in the
+   state until the provider's effect replaced it. What is stored is unchanged.
+7. **`@lazorkit/sdk-legacy` 1.3.1 or later.**
 
 **New:** `status`, `address`, `signAndSend`, `onSubmitted`, `ConnectButton`,
 `useWalletStatus`, `createLazorkitClient`, `errorKind`, `userMessage`, `onEvent`,
-`/core` and `/hooks`.
+`/core` and `/hooks`. `react` and `react-dom` are optional peers, for apps
+that use only `/core`.
 
 **Deprecated:**
 - `isLoading`, `isConnecting` and `isSigning`: use `status`. They warn once,
   and are removed in 5.0.
 - The session, authority and deferred functions on `useWallet`: they move to
   hooks in `/hooks` in a later 4.x, with the same names and parameters. They
-  still work, with no warning yet.
+  still work, and warn once each when first called.
 
 **Unchanged:**
-- portal mode's behaviour and its stored bytes;
+- portal mode's flows and its stored bytes;
 - the `signMessage` format (changed in 3.3);
 - `addAuthority`'s required `role`;
 - the wallet adapter and the Wallet Standard wallet, which stay portal-only in

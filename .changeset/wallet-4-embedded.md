@@ -2,14 +2,16 @@
 '@lazorkit/wallet': major
 ---
 
-4.0 (alpha on `feat/wallet-4-embedded`): Embedded mode, the Easy tier, and the `/core` and `/hooks` entry points.
+4.0: Embedded mode, the Easy tier, and the `/core` and `/hooks` entry points.
 
 **Breaking**
 
 - `LazorkitProvider` requires `mode`: `"embedded"` or `"portal"`, with no default. Add `mode="portal"` to a 3.x app to keep its users' wallets. A missing mode does not compile, and throws `LazorkitConfigError('no-mode')` from JavaScript.
-- A user rejection never sets the store's `error`, in either mode: a closed sheet or portal, "Not now", "None of these". The promise still rejects and `onFail` still runs. `PortalCancelledError` and `WalletConfirmationDeclinedError` now extend the new `UserRejectedError`; their names and messages are unchanged.
+- A user rejection never sets the store's `error`, in either mode: a closed sheet or portal, "Not now", "None of these". The promise still rejects and `onFail` still runs. `PortalCancelledError` and `WalletConfirmationDeclinedError` now extend the new `UserRejectedError`, so they carry `code: 'USER_REJECTED'` and a `reason`; their names and messages are unchanged.
+- A passkey whose public key cannot be recovered at connect rejects with `KeyRecoveryError` (`code: 'KEY_RECOVERY'`), in portal mode too, instead of a plain `Error`. The message is unchanged.
 - The root and `/hooks` entries are client modules (`'use client'`). Server code imports from `@lazorkit/wallet/core`.
 - The stored wallet is read synchronously when the provider first renders, so the first render can already be connected.
+- The stored config is never read back: the provider's props are the config from the first render. (3.3.1 put its stored config in the state until the provider's effect replaced it.) What is stored is unchanged.
 - Requires `@lazorkit/sdk-legacy` 1.3.1 or later.
 
 **Embedded mode**
@@ -41,13 +43,14 @@ The passkey lives on the app's own `rpId`, and the SDK runs every ceremony in th
 - `onEvent` instrumentation (experimental).
 - `forgetEmbeddedDevice()`.
 - `passkeyCapabilities()`.
+- `react` and `react-dom` are optional peer dependencies, for apps that use only `/core`.
 
 **Deprecated**
 
 - `isLoading`, `isConnecting` and `isSigning`: use `status`. They warn once when read.
-- The session, authority and deferred functions on `useWallet`: they move to `/hooks` in a later 4.x, with the same names and parameters.
+- The session, authority and deferred functions on `useWallet`: they move to `/hooks` in a later 4.x, with the same names and parameters. They warn once each when first called.
 
 **Unchanged**
 
-- Portal mode's behaviour and stored bytes.
+- Portal mode's flows and stored bytes.
 - The wallet adapter and the Wallet Standard wallet, which stay portal-only.
