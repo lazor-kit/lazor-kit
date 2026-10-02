@@ -7,16 +7,19 @@
  * browser extension, a session-replay tool or a look at dev tools could copy
  * them. Now, best first:
  *
- * 1. a non-extractable WebCrypto Ed25519 key in IndexedDB: it signs, and its
- *    secret never reaches JavaScript, so it cannot be copied out (a script on
- *    the page can still use it while the page is open);
+ * 1. a non-extractable WebCrypto Ed25519 key in IndexedDB: it signs, and no
+ *    script can read its secret (a script on the page can still make it sign
+ *    while the page is open). It is still at rest in the browser profile:
+ *    Chromium writes its bytes to the profile's IndexedDB files unencrypted;
  * 2. where the browser has no WebCrypto Ed25519 (iOS 16, Chrome 136 and
  *    older): the seed, sealed with AES-GCM under a non-extractable key in the
- *    same IndexedDB, and moved to (1) once the browser has Ed25519;
+ *    same IndexedDB, and moved to (1) once the browser has Ed25519. Any script
+ *    on the page can decrypt it, as it could read 3.2's plaintext: this only
+ *    keeps it out of localStorage;
  * 3. where there is no IndexedDB, or the app asked for it (`keyStorage:
  *    'memory'`): this page's memory only. The key is gone on reload.
  *
- * Nothing is written in the clear. A key the caller supplies
+ * Nothing is written to localStorage. A key the caller supplies
  * (`createSession({ sessionKey })`) is never stored: only its owner has it.
  *
  * A plaintext key an earlier release left in localStorage moves on the first

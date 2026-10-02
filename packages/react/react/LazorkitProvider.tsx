@@ -50,11 +50,15 @@ export interface LazorkitProviderProps {
   watchMints?: string[];
   /**
    * Where the SDK keeps the session and authority keys it generates
-   * (`createSession`, `addAuthority`). `'auto'` (default): a non-extractable
-   * WebCrypto key in IndexedDB, which survives a reload and cannot be copied
-   * out by a script. `'memory'`: this page only; the key is gone on reload.
-   * Plaintext keys an earlier release left in localStorage are moved when the
-   * provider mounts. See the README, "Session and authority keys".
+   * (`createSession`, `addAuthority`). `'auto'` (default): IndexedDB, which
+   * survives a reload. There the key is a non-extractable WebCrypto key: no
+   * script can read it, though one on the page can make it sign. In browsers
+   * without WebCrypto Ed25519 (iOS 16, Chrome 136 and older) it is a sealed
+   * seed that any script on the page can decrypt. Either way it is at rest in
+   * the browser profile. `'memory'`: this page only, nothing at rest; the key
+   * is gone on reload. Plaintext keys an earlier release left in localStorage
+   * are moved when the provider mounts; `forgetStoredKeys()` deletes them all.
+   * See the README, "Session and authority keys".
    */
   keyStorage?: 'auto' | 'memory';
 }

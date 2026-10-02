@@ -465,7 +465,7 @@ async function resolvePasskeyWallet(wallet: WalletInfo, connection: Connection) 
 /**
  * Create session key action — passkey signs to authorize a new ed25519 session key on-chain.
  * The key the SDK generates is kept for `signAndSendWithSession` (see ../keys:
- * a non-extractable key in IndexedDB, never plaintext). A key the caller
+ * a non-extractable key in IndexedDB, not localStorage). A key the caller
  * supplies is never stored.
  */
 export const createSessionAction = async (
@@ -726,7 +726,7 @@ export const signAndSendWithSessionAction = async (
 /**
  * Add ed25519 authority action — passkey signs to authorize a new ed25519 authority on-chain.
  * The key the SDK generates is kept for `signAndSendWithAuthority` (see
- * ../keys: a non-extractable key in IndexedDB, never plaintext).
+ * ../keys: a non-extractable key in IndexedDB, not localStorage).
  */
 export const addAuthorityAction = async (
     get: () => WalletState,

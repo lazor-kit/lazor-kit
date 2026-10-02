@@ -35,7 +35,7 @@ export function subtle(): SubtleCrypto | undefined {
 export interface Ed25519Key {
     /** The raw 32-byte public key: the Solana address. */
     readonly publicKey: Uint8Array;
-    /** Non-extractable: it signs, and its secret never reaches JavaScript. */
+    /** Non-extractable: it signs, and no script can read its secret. */
     readonly privateKey: CryptoKey;
 }
 

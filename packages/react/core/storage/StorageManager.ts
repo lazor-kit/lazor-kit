@@ -68,9 +68,10 @@ export interface WalletConfig {
    * Where the SDK keeps the session key `createSession` generates and the
    * authority key `addAuthority` generates. `'auto'` (default): a
    * non-extractable WebCrypto key in IndexedDB (the seed sealed with AES-GCM
-   * where the browser has no WebCrypto Ed25519), this page's memory where
-   * there is no IndexedDB. `'memory'`: this page only, nothing at rest; the
-   * key is gone on reload. Never plaintext; see the README.
+   * where the browser has no WebCrypto Ed25519, which any script on the page
+   * can decrypt), this page's memory where there is no IndexedDB. `'memory'`:
+   * this page only, nothing at rest; the key is gone on reload. Never in
+   * localStorage. See the README, "Session and authority keys".
    */
   readonly keyStorage?: 'auto' | 'memory';
 }

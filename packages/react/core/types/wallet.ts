@@ -83,7 +83,7 @@ export interface CreateSessionPayload {
      * Optional external session key to register as the authority. When
      * omitted the SDK generates a fresh key client-side and keeps it for
      * `signAndSendWithSession`: a non-extractable WebCrypto key in IndexedDB
-     * (see `keyStorage` on the provider), never plaintext. When provided, the
+     * (see `keyStorage` on the provider), not in localStorage. When provided, the
      * SDK registers this pubkey on-chain and stores nothing — useful for
      * delegating to a backend / agent that already holds the matching
      * private key.

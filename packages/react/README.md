@@ -380,47 +380,89 @@ Where the key is kept is set by `keyStorage` on `LazorkitProvider`. The
 default is `'auto'`, which uses the best of these the browser has:
 
 1. **A non-extractable WebCrypto Ed25519 key in IndexedDB** (database
-   `lazorkit-keys`), which signs with `crypto.subtle`. Its secret never
-   reaches JavaScript. A script running on the page can make it sign while the
-   page is open, but cannot copy it out. Supported in Chrome and Edge 137+,
-   Firefox 129+, Safari and iOS 17+, and Android WebView 137+.
-2. **The seed, sealed with AES-GCM** under a non-extractable key in the same
-   database. This is for browsers without WebCrypto Ed25519 (iOS 16, older
-   Chrome and WebViews). It is weaker, because the seed is decrypted in
-   JavaScript for each signature. Once the browser has Ed25519, the seed is
-   moved to (1).
+   `lazorkit-keys`), which signs with `crypto.subtle`. No script can read its
+   secret: a script running on the page can make it sign while the page is
+   open, but cannot copy it out. Supported in Chrome and Edge 137+, Firefox
+   129+, Safari and iOS 17+, and Android WebView 137+.
+2. **The seed, sealed with AES-GCM** under a non-extractable AES key in the
+   same database. This is for browsers without WebCrypto Ed25519 (iOS 16,
+   older Chrome and WebViews), and for an IndexedDB that cannot hold an
+   Ed25519 key. It only keeps the key out of localStorage. Any script running
+   on the page can read the sealed seed and have the AES key decrypt it, so
+   against XSS this tier is no better than 3.2's plaintext. Once the browser
+   has Ed25519, the seed is moved to (1).
 3. **This page's memory.** This is used without IndexedDB (storage blocked,
-   some private windows) or outside a secure context. The key is gone on
-   reload. Its session stays on chain until it expires, with no one holding
-   the key.
+   some private windows), outside a secure context, or where IndexedDB cannot
+   hold a WebCrypto key at all. The key is gone on reload. Its session stays
+   on chain until it expires, with no one holding the key.
 
 `keyStorage="memory"` uses (3) everywhere and keeps nothing at rest. With it,
 keys that an earlier `'auto'` run stored in IndexedDB are not read.
 
-Nothing is ever written in the clear, and a `sessionKey` you pass in is never
-stored: only you hold its secret.
+Nothing is written to localStorage any more, and a `sessionKey` you pass in is
+never stored: only you hold its secret.
+
+**What this does not protect against.** In (1) and (2) the key is still at
+rest in the browser profile. Chromium writes a non-extractable key's bytes to
+the profile's IndexedDB files unencrypted (checked in Chrome for Testing 147;
+Firefox and Safari were not checked), and in (2) the AES key is stored next to
+the seed it seals. So malware that can read the browser profile can copy the
+key, as it could the localStorage entry in 3.2. A script injected into your
+page can make the key sign anything while the page is open, in every tier. For
+no key at rest at all, use `keyStorage="memory"`.
 
 **Upgrading from 3.2 or earlier.** Those releases kept these keys in
 localStorage as plaintext secret keys (`lazorkit-session`,
 `lazorkit-authority`). Such a key is moved when `LazorkitProvider` mounts, or
 on its first use, and the plaintext is deleted once the move has been written.
-If the write fails, the plaintext stays, the key still signs on this page, and
-the move is tried again on the next use. Where the key can only go to memory
-(3), the plaintext is deleted anyway. An entry in those slots that this SDK did
-not write is left untouched, and no key is read from it. After the move, going
-back to 3.2 or earlier finds no key ("No session key found. Create a session
-first."), and the user creates a new session.
+If the write fails, or IndexedDB does not open (an error, or no answer within
+5 seconds), the plaintext stays, the key still signs on this page, and the
+move is tried again on the next use. A write that keeps failing (a full disk,
+say) leaves the plaintext where it is until one succeeds. Where the key can
+only go to memory (3), the plaintext is deleted anyway. An entry in those
+slots that this SDK did not write is left untouched, and no key is read from
+it. After the move, going back to 3.2 or earlier finds no key ("No session key
+found. Create a session first."), and the user creates a new session.
+
+**If your app removed `lazorkit-session` / `lazorkit-authority` at sign-out**
+(or called `localStorage.clear()`), that no longer removes the keys: they are
+in IndexedDB now. Call `forgetStoredKeys()` instead:
+
+```tsx
+import { forgetStoredKeys, useWallet } from '@lazorkit/wallet';
+
+function SignOutButton() {
+  const { disconnect } = useWallet();
+  return (
+    <button
+      onClick={async () => {
+        await disconnect();
+        await forgetStoredKeys();
+      }}
+    >
+      Sign out
+    </button>
+  );
+}
+```
 
 **When a kept key is deleted.**
 - `revokeSession()` deletes the kept session key once the revoke lands.
   Revoking a different session leaves it alone.
 - `removeAuthority` deletes the kept authority key when it removes that
   authority.
-- `disconnect` keeps both keys.
+- `forgetStoredKeys()` deletes both, wherever they are kept: IndexedDB, this
+  page's memory, and any plaintext an earlier release left. It rejects if
+  IndexedDB holds keys and could not be cleared.
+- `disconnect` keeps both keys. A kept key also signs with no wallet
+  connected: `signAndSendWithSession` and `signAndSendWithAuthority` sign for
+  the wallet the key was registered for, whichever wallet is connected, or
+  none. On a shared computer, call `forgetStoredKeys()` at sign-out.
 
 If a key cannot be stored after its session or authority has landed, the call
 still succeeds: the key signs for the rest of this page, and a warning is
-logged.
+logged. If IndexedDB only failed this time, the key is stored on its next use
+here, unless another tab has stored a newer key meanwhile.
 
 **What bounds a kept key** is what was registered on chain, not where the key
 is kept. A session is bounded by its `spendingLimits` and its expiry.
@@ -458,7 +500,8 @@ Connects the stored wallet, or finds the passkey's own (see
 
 Disconnects the wallet. `options.onSuccess` / `options.onFail` run once it is
 over, as every action's do. An action still running is not abandoned: it keeps
-`isSigning` until it ends.
+`isSigning` until it ends. The session and authority keys the SDK keeps stay
+(see `forgetStoredKeys()` below).
 
 **Returns** 
 `Promise<void>`
@@ -498,3 +541,14 @@ Signs and sends transaction via Paymaster.
 **Returns**
 `Promise<string>` - Transaction signature, once the transaction is confirmed
 (see [Sending transactions](#sending-transactions)).
+
+### `forgetStoredKeys()`
+
+A function the package exports, not a `useWallet()` method. Deletes the
+session key and the authority key the SDK keeps, whatever `keyStorage` is:
+both IndexedDB slots, this page's memory copies, and any plaintext an earlier
+release left in localStorage. A session or authority stays on chain; only the
+key is gone. See [Session and authority keys](#session-and-authority-keys).
+
+**Returns**
+`Promise<void>`. Rejects when IndexedDB holds keys and could not be cleared.

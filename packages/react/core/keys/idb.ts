@@ -20,7 +20,7 @@ const WRAP_KEY = 'wrap-key';
 
 export type KeySlot = 'session' | 'authority';
 
-/** A key as stored. Never holds a secret in the clear. */
+/** A key as stored: a non-extractable key or a sealed seed, never the secret as bytes. */
 export interface KeyRecord {
     readonly slot: KeySlot;
     readonly v: 1;
