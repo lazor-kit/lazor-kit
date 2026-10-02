@@ -4,6 +4,7 @@ export {
     loadKey,
     forgetKey,
     migrateLegacyKeys,
+    forgetStoredKeys,
 } from './vault';
 export type {
     KeyStorage,

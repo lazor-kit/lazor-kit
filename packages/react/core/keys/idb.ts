@@ -220,6 +220,20 @@ export function deleteRecord(db: IDBDatabase, slot: KeySlot, when: (current: unk
     return promise;
 }
 
+/**
+ * Deletes both slots and the AES-GCM key seeds are sealed under, in one
+ * transaction. Resolves once that is committed.
+ */
+export function clearKeys(db: IDBDatabase): Promise<void> {
+    const tx = transaction(db, [KEYS, META], 'readwrite');
+    const { promise, guard } = committed(tx, () => undefined);
+    guard(() => {
+        tx.objectStore(KEYS).clear();
+        tx.objectStore(META).clear();
+    });
+    return promise;
+}
+
 /** The AES-GCM key seeds are sealed under, if one was made. */
 export function getWrapKey(db: IDBDatabase): Promise<CryptoKey | undefined> {
     const tx = transaction(db, [META], 'readonly');

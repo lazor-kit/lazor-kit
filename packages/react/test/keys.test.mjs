@@ -696,6 +696,39 @@ test('IndexedDB that cannot hold any CryptoKey: as with no IndexedDB, the key se
     }
 });
 
+// ─── forgetStoredKeys: sign-out ──────────────────────────────────────────────
+
+test('forgetStoredKeys deletes every key the SDK keeps: IndexedDB, memory and plaintext', async () => {
+    let W = await page();
+    plantSession(W, SEEDS[0]);
+    plantAuthority(W, SEEDS[1]);
+    await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+    await W.useWalletStore.getState().signAndSendWithAuthority({ instructions: transfer() });
+    assert.ok(await storedRecord('session'));
+    assert.ok(await storedRecord('authority'));
+
+    // A key this page holds in memory only, and a plaintext entry not yet moved.
+    W = await page({ keyStorage: 'memory' });
+    plantSession(W, SEEDS[2]);
+    await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+    plantAuthority(W, SEEDS[3]);
+
+    await W.forgetStoredKeys();
+    assert.equal(storage.size, 0, 'no plaintext left');
+    assert.equal(await storedRecord('session'), undefined);
+    assert.equal(await storedRecord('authority'), undefined);
+    assert.equal(await wrapKey(), undefined);
+    await assert.rejects(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /No session key found/);
+
+    const reloaded = await page();
+    await assert.rejects(reloaded.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /No session key found/);
+    await assert.rejects(reloaded.useWalletStore.getState().signAndSendWithAuthority({ instructions: transfer() }), /No authority key found/);
+    // With nothing stored, and with no IndexedDB, it resolves all the same.
+    await reloaded.forgetStoredKeys();
+    globalThis.indexedDB = undefined;
+    await (await page()).forgetStoredKeys();
+});
+
 afterEach(() => {
     globalThis.indexedDB = new IDBFactory();
 });

@@ -16,6 +16,9 @@ export type { SpendingLimits, ActionCallbacks, DisconnectOptions, RemoveAuthorit
 // Core exports (for advanced usage)
 export { DialogManager, PortalCancelledError } from './core/portal';
 export { StorageManager } from '././core/storage';
+// Deletes the session and authority keys the SDK keeps (createSession,
+// addAuthority), e.g. at sign-out: `disconnect` keeps them.
+export { forgetStoredKeys } from './core/keys';
 
 // Configuration exports
 export * from './config';

@@ -5,9 +5,9 @@
 // the page reloads, and the key the SDK kept signs a send with no passkey.
 // A scripted chain and paymaster, no network. Also: what LazorkitProvider
 // moves when it mounts, a key that cannot be stored after its transaction
-// landed (stored on a later use), a caller's own session key, and deleting
-// the key once its session is revoked or its authority removed. Run with
-// `pnpm test`.
+// landed (stored on a later use), a caller's own session key, deleting the
+// key once its session is revoked or its authority removed, and
+// forgetStoredKeys at sign-out. Run with `pnpm test`.
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import { test, beforeEach, after } from 'node:test';
@@ -485,6 +485,35 @@ test('an IndexedDB that cannot hold the key (DataCloneError): createSession succ
     }
     W = await load();
     await assert.rejects(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /No session key found/);
+});
+
+// ─── Sign-out ───────────────────────────────────────────────────────────────
+
+test('forgetStoredKeys at sign-out: no session or authority key is left, here or after a reload', async () => {
+    let W = await load();
+    connect(W);
+    const session = await W.useWalletStore.getState().createSession({ unrestricted: true });
+    landed(session.sessionPda);
+    const authority = await W.useWalletStore.getState().addAuthority();
+    landed(authority.authorityPda);
+    assert.ok(await storedRecord('session'));
+    assert.ok(await storedRecord('authority'));
+
+    // What an app did with 3.2: remove the localStorage entries, and disconnect. The keys are in IndexedDB now.
+    localStorage.removeItem('lazorkit-session');
+    localStorage.removeItem('lazorkit-authority');
+    await W.useWalletStore.getState().disconnect();
+    assert.ok(await storedRecord('session'), 'disconnect keeps the keys');
+
+    await W.forgetStoredKeys();
+    assert.equal(await storedRecord('session'), undefined);
+    assert.equal(await storedRecord('authority'), undefined);
+    await assert.rejects(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /No session key found/);
+
+    W = await load();
+    await assert.rejects(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /No session key found/);
+    await assert.rejects(W.useWalletStore.getState().signAndSendWithAuthority({ instructions: transfer() }), /No authority key found/);
+    assertNoPlaintext();
 });
 
 // ─── A caller's own session key ─────────────────────────────────────────────

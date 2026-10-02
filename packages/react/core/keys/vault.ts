@@ -32,6 +32,7 @@ import { Keypair, PublicKey } from '@solana/web3.js';
 import {
     type KeyRecord,
     type KeySlot,
+    clearKeys,
     deleteRecord,
     getRecord,
     getWrapKey,
@@ -239,6 +240,24 @@ export async function forgetKey<S extends KeySlot>(
  */
 export async function migrateLegacyKeys(storage: KeyStorage): Promise<void> {
     await Promise.all([migrateSlot(storage, 'session'), migrateSlot(storage, 'authority')]);
+}
+
+/**
+ * Deletes every session and authority key the SDK keeps, whatever
+ * `keyStorage` is: both IndexedDB slots (and the AES-GCM key seeds are sealed
+ * under), this page's memory copies, and the plaintext entries an earlier
+ * release left in localStorage. For sign-out: `disconnect` keeps the keys.
+ * Waits for a migration in flight first. Rejects when IndexedDB holds keys and
+ * could not be cleared (memory and localStorage are cleared all the same);
+ * resolves where there is no IndexedDB.
+ */
+export async function forgetStoredKeys(): Promise<void> {
+    await Promise.all([...migrations.values()]);
+    inMemory.clear();
+    removeLegacy('session');
+    removeLegacy('authority');
+    const db = await openKeysDb();
+    if (db) await clearKeys(db);
 }
 
 // ─── Moving a plaintext key out of localStorage ─────────────────────────────
