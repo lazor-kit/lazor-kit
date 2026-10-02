@@ -368,6 +368,71 @@ transaction is sent with (`transactionOptions.addressLookupTableAccounts`, or
 those of a dApp's v0 transaction), and a preview still over the limit no longer
 fails the call before the prompt.
 
+## Session and authority keys
+
+`createSession()` without `sessionKey`, and `addAuthority()`, generate an
+Ed25519 key in the browser and register its public key on chain with one
+passkey approval. The SDK keeps the key, so `signAndSendWithSession` and
+`signAndSendWithAuthority` sign with no passkey prompt. It keeps one key of
+each kind: a new session or authority replaces the last one.
+
+Where the key is kept is set by `keyStorage` on `LazorkitProvider`. The
+default is `'auto'`, which uses the best of these the browser has:
+
+1. **A non-extractable WebCrypto Ed25519 key in IndexedDB** (database
+   `lazorkit-keys`), which signs with `crypto.subtle`. Its secret never
+   reaches JavaScript. A script running on the page can make it sign while the
+   page is open, but cannot copy it out. Supported in Chrome and Edge 137+,
+   Firefox 129+, Safari and iOS 17+, and Android WebView 137+.
+2. **The seed, sealed with AES-GCM** under a non-extractable key in the same
+   database. This is for browsers without WebCrypto Ed25519 (iOS 16, older
+   Chrome and WebViews). It is weaker, because the seed is decrypted in
+   JavaScript for each signature. Once the browser has Ed25519, the seed is
+   moved to (1).
+3. **This page's memory.** This is used without IndexedDB (storage blocked,
+   some private windows) or outside a secure context. The key is gone on
+   reload. Its session stays on chain until it expires, with no one holding
+   the key.
+
+`keyStorage="memory"` uses (3) everywhere and keeps nothing at rest. With it,
+keys that an earlier `'auto'` run stored in IndexedDB are not read.
+
+Nothing is ever written in the clear, and a `sessionKey` you pass in is never
+stored: only you hold its secret.
+
+**Upgrading from 3.2 or earlier.** Those releases kept these keys in
+localStorage as plaintext secret keys (`lazorkit-session`,
+`lazorkit-authority`). Such a key is moved when `LazorkitProvider` mounts, or
+on its first use, and the plaintext is deleted once the move has been written.
+If the write fails, the plaintext stays, the key still signs on this page, and
+the move is tried again on the next use. Where the key can only go to memory
+(3), the plaintext is deleted anyway. An entry in those slots that this SDK did
+not write is left untouched, and no key is read from it. After the move, going
+back to 3.2 or earlier finds no key ("No session key found. Create a session
+first."), and the user creates a new session.
+
+**When a kept key is deleted.**
+- `revokeSession()` deletes the kept session key once the revoke lands.
+  Revoking a different session leaves it alone.
+- `removeAuthority` deletes the kept authority key when it removes that
+  authority.
+- `disconnect` keeps both keys.
+
+If a key cannot be stored after its session or authority has landed, the call
+still succeeds: the key signs for the rest of this page, and a warning is
+logged.
+
+**What bounds a kept key** is what was registered on chain, not where the key
+is kept. A session is bounded by its `spendingLimits` and its expiry.
+`addAuthority` defaults to `ROLE_ADMIN`, which has no spending policy and no
+expiry. For a key that only spends, prefer `ROLE_SPENDER` with a `policy`.
+
+**Signatures.** Ed25519 as RFC 8032 defines it is deterministic: Chromium and
+Node sign exactly as web3.js's `Keypair` does with the same seed (the package's
+tests check this byte for byte). Safari signs with a random nonce instead, so
+the same message gets a different signature each time. Each one is valid, and
+nothing in the SDK depends on the signature bytes.
+
 ## API Reference
 
 ### `useWallet()`

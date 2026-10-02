@@ -55,9 +55,11 @@ export interface WalletHookInterface {
     spendingLimits?: SpendingLimits;
     /**
      * Optional pubkey to register as the session authority. When set, the
-     * SDK skips local keypair generation + localStorage persistence — the
-     * caller owns the matching secretKey (typical for backend / agent
-     * delegation). Accepts base58 string or `PublicKey`.
+     * SDK generates and stores no key — the caller owns the matching secret
+     * key (typical for backend / agent delegation). When omitted, the SDK
+     * generates one and keeps it as a non-extractable WebCrypto key in
+     * IndexedDB (see the provider's `keyStorage`). Accepts base58 string or
+     * `PublicKey`.
      */
     sessionKey?: PublicKey | string;
     /**

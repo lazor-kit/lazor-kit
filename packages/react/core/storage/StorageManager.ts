@@ -64,6 +64,15 @@ export interface WalletConfig {
    * USDC, USDT and devnet USDC are always checked.
    */
   readonly watchMints?: string[];
+  /**
+   * Where the SDK keeps the session key `createSession` generates and the
+   * authority key `addAuthority` generates. `'auto'` (default): a
+   * non-extractable WebCrypto key in IndexedDB (the seed sealed with AES-GCM
+   * where the browser has no WebCrypto Ed25519), this page's memory where
+   * there is no IndexedDB. `'memory'`: this page only, nothing at rest; the
+   * key is gone on reload. Never plaintext; see the README.
+   */
+  readonly keyStorage?: 'auto' | 'memory';
 }
 
 /**

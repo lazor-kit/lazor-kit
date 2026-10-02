@@ -81,11 +81,12 @@ export interface CreateSessionPayload {
     readonly unrestricted?: boolean;
     /**
      * Optional external session key to register as the authority. When
-     * omitted the SDK generates a fresh keypair client-side and persists
-     * its secretKey to localStorage for later signing. When provided, the
-     * SDK registers this pubkey on-chain without touching localStorage —
-     * useful for delegating to a backend / agent that already holds the
-     * matching private key.
+     * omitted the SDK generates a fresh key client-side and keeps it for
+     * `signAndSendWithSession`: a non-extractable WebCrypto key in IndexedDB
+     * (see `keyStorage` on the provider), never plaintext. When provided, the
+     * SDK registers this pubkey on-chain and stores nothing — useful for
+     * delegating to a backend / agent that already holds the matching
+     * private key.
      *
      * Accepts a base58 string or a `PublicKey` instance.
      */
@@ -97,11 +98,12 @@ export interface CreateSessionPayload {
 export interface RevokeSessionPayload {
     /**
      * Optional — revoke a *specific* session by its PDA. Accepts base58
-     * or PublicKey. When omitted, the SDK revokes the session it previously
-     * created via `createSession` (tracked in localStorage).
+     * or PublicKey. When omitted, the SDK revokes the session whose key it
+     * keeps (the last `createSession` without `sessionKey`).
      *
      * Use this when you registered an external session key (e.g. a backend /
-     * agent session) and want to revoke it without touching localStorage.
+     * agent session). The key the SDK keeps is deleted once the session it
+     * belongs to is revoked, and left alone when another session is.
      */
     readonly sessionPda?: import('@solana/web3.js').PublicKey | string;
     readonly onSuccess?: () => void;
@@ -109,6 +111,12 @@ export interface RevokeSessionPayload {
 }
 
 export interface AddAuthorityPayload {
+    /**
+     * Default `ROLE_ADMIN`: the key can do what an admin can, with no spending
+     * policy and no expiry, until `removeAuthority`. The SDK keeps it for
+     * `signAndSendWithAuthority` like a session key (see `keyStorage`). Prefer
+     * `ROLE_SPENDER` with a `policy` for a key that only spends.
+     */
     readonly role?: number;
     /**
      * Spending policy, required when the role is ROLE_SPENDER (Delegate) on a

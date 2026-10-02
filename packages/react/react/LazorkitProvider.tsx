@@ -12,6 +12,7 @@ import { StorageManager } from '../core/storage';
 import type { ReactNode } from 'react';
 import { useWalletStore } from './store';
 import { DEFAULTS } from '../config';
+import { migrateLegacyKeys } from '../core/keys';
 
 import { PaymasterConfig } from '../core/paymaster/paymaster';
 import type { OnConfirmWallet } from '../core/wallet/confirmation';
@@ -47,6 +48,15 @@ export interface LazorkitProviderProps {
    * handed to someone else is not adopted. Default none.
    */
   watchMints?: string[];
+  /**
+   * Where the SDK keeps the session and authority keys it generates
+   * (`createSession`, `addAuthority`). `'auto'` (default): a non-extractable
+   * WebCrypto key in IndexedDB, which survives a reload and cannot be copied
+   * out by a script. `'memory'`: this page only; the key is gone on reload.
+   * Plaintext keys an earlier release left in localStorage are moved when the
+   * provider mounts. See the README, "Session and authority keys".
+   */
+  keyStorage?: 'auto' | 'memory';
 }
 
 export const LazorkitProvider = (props: LazorkitProviderProps) => {
@@ -60,6 +70,7 @@ export const LazorkitProvider = (props: LazorkitProviderProps) => {
     onConfirmWallet,
     trustedAuthorities,
     watchMints,
+    keyStorage = 'auto',
   } = props;
 
   const { setConfig } = useWalletStore();
@@ -85,6 +96,12 @@ export const LazorkitProvider = (props: LazorkitProviderProps) => {
     };
   }, [wallet, connection]);
 
+  // Session and authority keys an earlier release kept in localStorage as
+  // plaintext: moved now, not only when the app next uses one.
+  useEffect(() => {
+    void migrateLegacyKeys(keyStorage);
+  }, [keyStorage]);
+
   useEffect(() => {
     // Initialize configuration in store
     setConfig({
@@ -96,6 +113,7 @@ export const LazorkitProvider = (props: LazorkitProviderProps) => {
       onConfirmWallet,
       trustedAuthorities,
       watchMints,
+      keyStorage,
     });
   }, [
     rpcUrl,
@@ -106,6 +124,7 @@ export const LazorkitProvider = (props: LazorkitProviderProps) => {
     onConfirmWallet,
     trustedAuthorities,
     watchMints,
+    keyStorage,
     setConfig,
   ]);
 
