@@ -58,6 +58,7 @@ import {
   ConfirmWalletRequest,
   ConnectOptions,
   CreateSessionPayload,
+  DisconnectOptions,
   ExecuteDeferredPayload,
   ListAuthoritiesResult,
   PendingWalletConfirmation,
@@ -131,6 +132,31 @@ function notify<A>(callback: ((arg: A) => void) | undefined, arg: A): void {
   } catch (error) {
     logger.error('A wallet action callback threw:', error);
   }
+}
+
+/**
+ * Runs a call that keeps no `isSigning` (connect, disconnect) and reports its
+ * outcome as `withSigningState` does: to `callbacks`, once the call is over
+ * (`isConnecting` cleared), right before the returned promise settles the
+ * same way. Refusals included; what a callback throws is logged and changes
+ * nothing.
+ */
+async function reportOutcome<T>(
+  callbacks:
+    | { readonly onSuccess?: (result: T) => void; readonly onFail?: (error: Error) => void }
+    | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  let result: T;
+  try {
+    result = await fn();
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    notify(callbacks?.onFail, err);
+    throw err;
+  }
+  notify(callbacks?.onSuccess, result);
+  return result;
 }
 
 /**
@@ -233,12 +259,21 @@ let connectInFlight: AbortController | null = null;
  * Returns the connected wallet when there is one; otherwise opens the portal,
  * proves which wallet is the passkey's (asking the user when the SDK cannot
  * tell) and persists it — creating one on-chain when it has none.
+ *
+ * `options.onSuccess` / `onFail` run once `isConnecting` is false again,
+ * right before the promise settles (see `reportOutcome`).
  */
-export const connectAction = async (
+export const connectAction = (
   get: () => WalletStateClient,
   set: (state: Partial<WalletStateClient>) => void,
   options: ConnectOptions,
-) => {
+): Promise<WalletInfo> => reportOutcome(options, () => connectWallet(get, set, options));
+
+const connectWallet = async (
+  get: () => WalletStateClient,
+  set: (state: Partial<WalletStateClient>) => void,
+  options: ConnectOptions,
+): Promise<WalletInfo> => {
   const { isConnecting, config } = get();
   if (isConnecting) {
     logger.error('Connect attempt while already connecting');
@@ -387,7 +422,14 @@ function openWalletChooser(
   });
 }
 
-export const disconnectAction = async (
+/** `options.onSuccess` / `onFail` run once the disconnect is over (see `reportOutcome`). */
+export const disconnectAction = (
+  get: () => WalletStateClient,
+  set: (state: Partial<WalletStateClient>) => void,
+  options?: DisconnectOptions,
+): Promise<void> => reportOutcome(options, () => disconnectWallet(get, set));
+
+const disconnectWallet = async (
   get: () => WalletStateClient,
   set: (state: Partial<WalletStateClient>) => void,
 ) => {
@@ -1180,34 +1222,47 @@ export const listAuthoritiesAction = async (
 
 // ─── Convenience: transferSol ──────────────────────────────────────
 
-/** Convenience helper — wraps `signAndExecuteTransaction` with a vault→recipient transfer. */
+/**
+ * Convenience helper — `signAndExecuteTransaction` with a vault→recipient
+ * transfer. Built inside the signing state, so a refusal (no wallet) reaches
+ * `onFail` and `error` as any other action's does.
+ */
 export const transferSolAction = async (
   get: () => WalletStateClient,
   set: (state: Partial<WalletStateClient>) => void,
   payload: TransferSolPayload,
   options: SignOptions,
 ): Promise<string> => {
-  const { wallet } = requireWalletAndConnection(get);
-  // smartWallet now IS the vault address — funds live there.
-  const vaultPda = new PublicKey(wallet!.smartWallet);
-  const lamports =
-    typeof payload.lamports === 'bigint'
-      ? Number(payload.lamports)
-      : payload.lamports;
-  const ix = SystemProgram.transfer({
-    fromPubkey: vaultPda,
-    toPubkey: payload.recipient,
-    lamports,
+  return withSigningState(get, set, options, async () => {
+    try {
+      const { wallet } = requireWalletAndConnection(get);
+      // smartWallet now IS the vault address — funds live there.
+      const vaultPda = new PublicKey(wallet!.smartWallet);
+      const lamports =
+        typeof payload.lamports === 'bigint'
+          ? Number(payload.lamports)
+          : payload.lamports;
+      const ix = SystemProgram.transfer({
+        fromPubkey: vaultPda,
+        toPubkey: payload.recipient,
+        lamports,
+      });
+      return await performPasskeyExecute(
+        get,
+        {
+          instructions: [ix],
+          transactionOptions: payload.transactionOptions,
+        },
+        options,
+      );
+    } catch (err) {
+      logger.error('transferSol failed:', err, {
+        smartWallet: get().wallet?.smartWallet,
+        redirectUrl: options.redirectUrl,
+      });
+      throw toActionError(err, get);
+    }
   });
-  return signAndExecuteTransaction(
-    get,
-    set,
-    {
-      instructions: [ix],
-      transactionOptions: payload.transactionOptions,
-    },
-    options,
-  );
 };
 
 // Re-export toBase64Url for callers that want to build custom challenges.

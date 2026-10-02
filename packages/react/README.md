@@ -277,6 +277,23 @@ counter at `confirmed` from an RPC node that has executed it
 the store, the adapter or both, run one after another. The store still
 refuses a second call while one of its own is signing ("Already signing").
 
+**Callbacks.** Every action of `useWallet()` and the store takes `onSuccess`
+and `onFail` (`connect` and `disconnect` in their options, `removeAuthority`
+as its second argument). Exactly one of them runs per call, and it agrees with
+the promise: `onSuccess` with what the promise resolves with, `onFail` with
+the error it rejects with, a refusal ("Already signing", "No wallet
+connected") included. It runs once the action is over, with `isSigning` (or
+`isConnecting`) already `false`, right before the promise settles. So a send
+made from `onSuccess` runs, as one made on the line after `await` does. What a
+callback throws is logged and changes nothing: a transaction that landed is
+never reported as failed, `onFail` is not called for it and `error` stays
+clear, and a throwing `onFail` does not replace the error. A refusal because
+another call is signing leaves `error` alone (it is that call's); one for want
+of a wallet sets it. `@lazorkit/wallet-mobile-adapter` keeps the same contract.
+`LazorkitWalletAdapter` and the Wallet Standard wallet log what an app's
+`connect`, `disconnect` or `change` listener throws, rather than failing a
+connect that has happened.
+
 | Error | When |
 |---|---|
 | `TransactionFailedError` | The transaction landed and failed: fees were paid, nothing else changed. `signature`, `transactionError`, `slot`, and `logs` when they were read. |
@@ -359,13 +376,16 @@ Connects the stored wallet, or finds the passkey's own (see
 |---|---|---|
 | `options.confirmWallet` | `string` | Vault (or wallet) address the user recognised after `WalletNeedsConfirmationError`. |
 | `options.onConfirmWallet` | `'builtin' \| 'throw' \| (req) => …` | Overrides the provider's for this call. |
+| `options.onSuccess` | `(wallet: WalletInfo) => void` | Runs once `isConnecting` is `false`, right before the promise resolves (see [Callbacks](#sending-transactions)). |
+| `options.onFail` | `(error: Error) => void` | Runs with the error the promise rejects with. |
 
 **Returns**
 `Promise<WalletInfo>`
 
-#### `disconnect()`
+#### `disconnect(options?)`
 
-Disconnects the wallet.
+Disconnects the wallet. `options.onSuccess` / `options.onFail` run once it is
+over, as every action's do.
 
 **Returns** 
 `Promise<void>`
@@ -397,6 +417,8 @@ Signs and sends transaction via Paymaster.
 | `transactionOptions.computeUnitLimit` | `number` | Max compute units. |
 | `transactionOptions.addressLookupTableAccounts` | `AddressLookupTableAccount[]` | Lookup tables for v0 txs (the portal preview uses them too). |
 | `transactionOptions.clusterSimulation` | `'devnet' \| 'mainnet'` | Network for simulation. |
+| `payload.onSuccess` | `(signature: string) => void` | Runs once `isSigning` is `false`, right before the promise resolves (see [Callbacks](#sending-transactions)). |
+| `payload.onFail` | `(error: Error) => void` | Runs with the error the promise rejects with. |
 
 **Returns**
 `Promise<string>` - Transaction signature, once the transaction is confirmed

@@ -249,10 +249,17 @@ export interface ConnectOptions {
   readonly confirmWallet?: string;
   /** Overrides the provider's `onConfirmWallet` for this call. */
   readonly onConfirmWallet?: OnConfirmWallet;
+  /**
+   * Called with the connected wallet once `isConnecting` is false again,
+   * right before the promise resolves. What it throws is logged and does not
+   * fail the connect.
+   */
   readonly onSuccess?: (wallet: WalletInfo) => void;
+  /** Called with the error the promise rejects with (refusals included), once `isConnecting` is false again. */
   readonly onFail?: (error: Error) => void;
 }
 
+/** As with every action: called once the call is over, right before its promise settles; what they throw changes nothing. */
 export interface DisconnectOptions {
   readonly onSuccess?: () => void;
   readonly onFail?: (error: Error) => void;
@@ -449,7 +456,7 @@ export interface WalletStateClient {
 
   // Actions
   connect: (options: ConnectOptions) => Promise<WalletInfo>;
-  disconnect: () => Promise<void>;
+  disconnect: (options?: DisconnectOptions) => Promise<void>;
   signAndExecuteTransaction: (payload: SignAndSendTransactionPayload, options: SignOptions) => Promise<string>;
   signMessage: (message: string, options: SignOptions) => Promise<{ signature: string; signedPayload: string }>;
   createSession: (

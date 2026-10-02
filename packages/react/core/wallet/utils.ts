@@ -13,7 +13,7 @@ import { isNamedError } from '../program/errorShape';
 import { StorageManager } from '../storage';
 import { DialogManager } from '../portal';
 import { WalletConfig } from '../storage';
-import { WalletState } from '../types';
+import type { ActionCallbacks, WalletState } from '../types';
 
 /**
  * Creates a configured DialogManager instance
@@ -60,12 +60,13 @@ export const toActionError = (error: unknown, version?: ProtocolVersion): Error 
 };
 
 /**
- * Standardized error handling for wallet actions
+ * Standardized error handling for wallet actions: records the error in the
+ * store and throws it. The action's `onFail` is called by the store, once the
+ * action is over (see `reportOutcome`).
  */
 export const handleActionError = (
     error: unknown,
     set: (state: Partial<WalletState>) => void,
-    onFail?: (error: Error) => void,
     /** The protocol of the wallet the action ran for, when there was one. */
     version?: ProtocolVersion,
 ): never => {
@@ -76,9 +77,46 @@ export const handleActionError = (
         set({ wallet: null });
     }
     set({ error: err });
-    onFail?.(err);
     throw err;
 };
+
+/**
+ * Runs a store action and reports its outcome to `callbacks`: `onSuccess`
+ * with what the promise resolves with, or `onFail` with the error it rejects
+ * with, refusals included ("Already signing", no wallet). The callback runs
+ * once the action is over, with `isSigning` / `isConnecting` already cleared,
+ * and right before the returned promise settles. So a send started from
+ * `onSuccess` runs, as one started on the line after `await` does.
+ *
+ * What a callback throws is the app's own bug: it is logged, and it changes
+ * nothing. A transaction that landed is never reported as failed, `onFail` is
+ * not called for it, and a throwing `onFail` does not replace the error.
+ */
+export async function reportOutcome<T>(
+    callbacks: ActionCallbacks<T> | undefined,
+    action: () => Promise<T>,
+): Promise<T> {
+    let result: T;
+    try {
+        result = await action();
+    } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        notify(callbacks?.onFail, err);
+        throw err;
+    }
+    notify(callbacks?.onSuccess, result);
+    return result;
+}
+
+/** Calls an app's callback. What it throws is logged, and does not change the action's outcome. */
+function notify<A>(callback: ((arg: A) => void) | undefined, arg: A): void {
+    if (!callback) return;
+    try {
+        callback(arg);
+    } catch (error) {
+        console.error('[LazorKit] A wallet action callback threw:', error);
+    }
+}
 
 /**
  * Cleans up legacy local storage data

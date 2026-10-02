@@ -8,7 +8,7 @@ import { Buffer } from 'buffer';
 import { PublicKey, TransactionInstruction, AddressLookupTableAccount } from '@solana/web3.js';
 import { useWalletStore } from './store';
 import { WalletInfo } from '../core/storage';
-import type { SpendingLimits } from '../core/types';
+import type { ActionCallbacks, DisconnectOptions, RemoveAuthorityOptions, SpendingLimits } from '../core/types';
 import type { OnConfirmWallet } from '../core/wallet/confirmation';
 
 export interface WalletHookInterface {
@@ -30,7 +30,11 @@ export interface WalletHookInterface {
    */
   protocolVersion: 1 | 2 | null;
 
-  // Actions
+  // Actions. Every action's `onSuccess` / `onFail` runs once the action is
+  // over (`isSigning` / `isConnecting` already false), right before its
+  // promise settles the same way, refusals included. A send started from
+  // `onSuccess` runs. What a callback throws is logged and changes nothing:
+  // a transaction that landed is never reported as failed.
   /**
    * Connect the stored wallet, or find the passkey's own. `confirmWallet`: the
    * vault (or wallet) address the user recognised after a
@@ -38,8 +42,8 @@ export interface WalletHookInterface {
    * provider's for this call.
    */
   connect: (options?: ConnectHookOptions) => Promise<WalletInfo>;
-  disconnect: () => Promise<void>;
-  signAndSendTransaction: (payload: SendTxPayload) => Promise<string>;
+  disconnect: (options?: DisconnectOptions) => Promise<void>;
+  signAndSendTransaction: (payload: SendTxPayload & ActionCallbacks<string>) => Promise<string>;
   signMessage: (message: string) => Promise<{ signature: string, signedPayload: string }>;
   verifyMessage: (args: { signedPayload: Uint8Array, signature: Uint8Array, publicKey: Uint8Array }) => Promise<boolean>;
 
@@ -60,27 +64,39 @@ export interface WalletHookInterface {
      * omitted; without either, `createSession` throws.
      */
     unrestricted?: boolean;
+    onSuccess?: (sessionPda: string, sessionPublicKey: string) => void;
+    onFail?: (error: Error) => void;
   }) => Promise<{ sessionPda: string; sessionPublicKey: string }>;
-  revokeSession: (payload?: { sessionPda?: PublicKey | string }) => Promise<void>;
-  signAndSendWithSession: (payload: SendTxPayload) => Promise<string>;
+  revokeSession: (payload?: { sessionPda?: PublicKey | string; onSuccess?: () => void; onFail?: (error: Error) => void }) => Promise<void>;
+  signAndSendWithSession: (payload: SendTxPayload & ActionCallbacks<string>) => Promise<string>;
 
   // Ed25519 authority actions
-  addAuthority: (payload?: { role?: number; policy?: Uint8Array; unrestricted?: boolean }) => Promise<{ authorityPda: string; authorityPublicKey: string }>;
-  removeAuthority: (targetAuthorityPda: string) => Promise<void>;
-  signAndSendWithAuthority: (payload: SendTxPayload) => Promise<string>;
+  addAuthority: (payload?: {
+    role?: number;
+    policy?: Uint8Array;
+    unrestricted?: boolean;
+    onSuccess?: (authorityPda: string, authorityPublicKey: string) => void;
+    onFail?: (error: Error) => void;
+  }) => Promise<{ authorityPda: string; authorityPublicKey: string }>;
+  removeAuthority: (targetAuthorityPda: string, options?: RemoveAuthorityOptions) => Promise<void>;
+  signAndSendWithAuthority: (payload: SendTxPayload & ActionCallbacks<string>) => Promise<string>;
 
   // Deferred execution
-  authorizeAndExecute: (payload: DeferredTxPayload) => Promise<string>;
-  /** TX1 only — passkey ký và trả về serialized deferredPayload cho TX2. */
-  authorizeDeferred: (payload: DeferredTxPayload) => Promise<{ signature: string; deferredPayload: string }>;
-  /** TX2 only — submit từ serialized deferredPayload. Không cần passkey. */
-  executeDeferred: (payload: ExecuteDeferredHookPayload) => Promise<string>;
+  authorizeAndExecute: (payload: DeferredTxPayload & ActionCallbacks<string>) => Promise<string>;
+  /** TX1 only: the passkey signs, and the serialized deferredPayload for TX2 comes back. */
+  authorizeDeferred: (
+    payload: DeferredTxPayload & ActionCallbacks<{ signature: string; deferredPayload: string }>,
+  ) => Promise<{ signature: string; deferredPayload: string }>;
+  /** TX2 only: sent from a serialized deferredPayload. No passkey needed. */
+  executeDeferred: (payload: ExecuteDeferredHookPayload & ActionCallbacks<string>) => Promise<string>;
 }
 
 export interface ConnectHookOptions {
   feeMode?: 'paymaster' | 'user';
   confirmWallet?: string;
   onConfirmWallet?: OnConfirmWallet;
+  onSuccess?: (wallet: WalletInfo) => void;
+  onFail?: (error: Error) => void;
 }
 
 /** Shared payload for every send-tx action on the hook. */
@@ -144,10 +160,13 @@ export const useWallet = (): WalletHookInterface => {
     [connect]
   );
 
-  const handleDisconnect = useCallback(() => disconnect(), [disconnect]);
+  const handleDisconnect = useCallback(
+    (options?: DisconnectOptions) => disconnect(options),
+    [disconnect]
+  );
 
   const handleSignAndSendTransaction = useCallback(
-    (payload: SendTxPayload) => signAndSendTransaction(payload),
+    (payload: SendTxPayload & ActionCallbacks<string>) => signAndSendTransaction(payload),
     [signAndSendTransaction]
   );
 
@@ -202,48 +221,44 @@ export const useWallet = (): WalletHookInterface => {
 
     // Session key actions
     createSession: useCallback(
-      (payload?: {
-        expiresInSlots?: bigint;
-        spendingLimits?: SpendingLimits;
-        sessionKey?: PublicKey | string;
-        unrestricted?: boolean;
-      }) => createSession(payload),
+      (payload?: Parameters<WalletHookInterface['createSession']>[0]) => createSession(payload),
       [createSession]
     ),
     revokeSession: useCallback(
-      (payload?: { sessionPda?: PublicKey | string }) => revokeSession(payload),
+      (payload?: Parameters<WalletHookInterface['revokeSession']>[0]) => revokeSession(payload),
       [revokeSession]
     ),
     signAndSendWithSession: useCallback(
-      (payload: SendTxPayload) => signAndSendWithSession(payload),
+      (payload: SendTxPayload & ActionCallbacks<string>) => signAndSendWithSession(payload),
       [signAndSendWithSession]
     ),
 
     // Ed25519 authority actions
     addAuthority: useCallback(
-      (payload?: { role?: number; policy?: Uint8Array; unrestricted?: boolean }) => addAuthority(payload),
+      (payload?: Parameters<WalletHookInterface['addAuthority']>[0]) => addAuthority(payload),
       [addAuthority]
     ),
     removeAuthority: useCallback(
-      (targetAuthorityPda: string) => removeAuthority(targetAuthorityPda),
+      (targetAuthorityPda: string, options?: RemoveAuthorityOptions) => removeAuthority(targetAuthorityPda, options),
       [removeAuthority]
     ),
     signAndSendWithAuthority: useCallback(
-      (payload: SendTxPayload) => signAndSendWithAuthority(payload),
+      (payload: SendTxPayload & ActionCallbacks<string>) => signAndSendWithAuthority(payload),
       [signAndSendWithAuthority]
     ),
 
     // Deferred execution
     authorizeAndExecute: useCallback(
-      (payload: DeferredTxPayload) => authorizeAndExecute(payload),
+      (payload: DeferredTxPayload & ActionCallbacks<string>) => authorizeAndExecute(payload),
       [authorizeAndExecute]
     ),
     authorizeDeferred: useCallback(
-      (payload: DeferredTxPayload) => authorizeDeferred(payload),
+      (payload: DeferredTxPayload & ActionCallbacks<{ signature: string; deferredPayload: string }>) =>
+        authorizeDeferred(payload),
       [authorizeDeferred]
     ),
     executeDeferred: useCallback(
-      (payload: ExecuteDeferredHookPayload) => executeDeferred(payload),
+      (payload: ExecuteDeferredHookPayload & ActionCallbacks<string>) => executeDeferred(payload),
       [executeDeferred]
     ),
   };

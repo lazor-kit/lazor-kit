@@ -233,6 +233,16 @@ calls its `onFail`). Each action's promise settles, and its `onSuccess` or
 `onFail` runs, only once `isSigning` is `false` again, so the next call can be
 made on the line after `await`, or from `onSuccess`.
 
+The same holds for every action, from the store as from the hook: `connect`
+and `disconnect` call back once `isConnecting` is `false` (the store's
+`connect` honours them too, and its `disconnect` takes them). Exactly one
+callback runs per call, and it agrees with the promise: `onSuccess` with what
+it resolves with, `onFail` with the error it rejects with, a refusal included
+(another call signing, "No wallet connected", `transferSol` too). What a
+callback throws is logged and changes nothing: a transaction that landed is
+never reported as failed, and a throwing `onFail` does not replace the error.
+The web SDK, `@lazorkit/wallet`, keeps the same contract.
+
 ## Sending transactions
 
 Every send resolves once its transaction is **confirmed**, and rejects if it
@@ -325,11 +335,14 @@ Connects to the wallet.
 | `options.redirectUrl` | `string` | Deep link URL |
 | `options.confirmWallet` | `string` | The wallet the user chose (vault or wallet PDA). See [Which wallet is the user's](#which-wallet-is-the-users). |
 | `options.onConfirmWallet` | `'builtin' \| 'throw' \| (request) => …` | Overrides the provider's setting for this call. |
+| `options.onSuccess` | `(wallet: WalletInfo) => void` | Runs once `isConnecting` is `false`, right before the promise resolves. |
+| `options.onFail` | `(error: Error) => void` | Runs with the error the promise rejects with. |
 
-#### `disconnect()`
+#### `disconnect(options?)`
 
 Disconnects the wallet. A `connect` still running is abandoned: it rejects
-with `PortalCancelledError` and connects nothing.
+with `PortalCancelledError` and connects nothing. `options.onSuccess` /
+`options.onFail` run once the disconnect is over.
 
 #### `signMessage(message, options)`
 

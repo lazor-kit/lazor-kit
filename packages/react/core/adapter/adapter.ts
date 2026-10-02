@@ -296,7 +296,23 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
     private _updateWalletState(wallet: WalletInfo) {
         this._wallet = wallet;
         this._publicKey = new PublicKey(wallet.vaultPda ?? wallet.smartWallet);
-        this.emit('connect', this._publicKey);
+        const publicKey = this._publicKey;
+        this._emitToApp('connect', () => this.emit('connect', publicKey));
+    }
+
+    /**
+     * Tells the app's listeners that the wallet connected or disconnected.
+     * What a listener throws is the app's own bug: it is logged, and it does
+     * not turn a connect or disconnect that has happened into a failure (or
+     * into an 'error' event). As with any EventEmitter, the listeners after
+     * the one that threw are not called for this event.
+     */
+    private _emitToApp(event: 'connect' | 'disconnect', emit: () => void): void {
+        try {
+            emit();
+        } catch (error) {
+            console.error(`[LazorKit] A '${event}' listener threw:`, error);
+        }
     }
 
     private _createDialogManager(): DialogManager {
@@ -343,7 +359,7 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
         await StorageManager.clearWallet();
         this._wallet = null;
         this._publicKey = null;
-        this.emit('disconnect');
+        this._emitToApp('disconnect', () => this.emit('disconnect'));
     }
 
     /**

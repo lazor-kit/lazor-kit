@@ -22,6 +22,7 @@ import {
   authorizeDeferredAction,
   executeDeferredAction,
 } from '../core/wallet/actions';
+import { reportOutcome } from '../core/wallet/utils';
 
 import { WalletInfo, WalletConfig, storage } from '../core/storage';
 import { DEFAULTS, DEFAULT_COMMITMENT } from '../config';
@@ -71,26 +72,47 @@ export const useWalletStore = create<WalletState>()(
         set({ error: null });
       },
 
-      // Wallet actions
-      connect: (options) => connectAction(get, set, options),
-      disconnect: () => disconnectAction(set),
-      signAndSendTransaction: (payload) => signAndSendTransactionAction(get, set, payload),
+      // Wallet actions. Each call's onSuccess / onFail runs once the action
+      // is over (`isSigning` / `isConnecting` cleared), right before its
+      // promise settles; what a callback throws changes nothing (see
+      // `reportOutcome`).
+      connect: (options) => reportOutcome(options, () => connectAction(get, set, options)),
+      disconnect: (options) => reportOutcome(options, () => disconnectAction(set)),
+      signAndSendTransaction: (payload) =>
+        reportOutcome(payload, () => signAndSendTransactionAction(get, set, payload)),
       signMessage: (message) => signMessageAction(get, set, message),
 
       // Session key actions
-      createSession: (payload) => createSessionAction(get, set, payload ?? {}),
-      revokeSession: (payload) => revokeSessionAction(get, set, payload ?? {}),
-      signAndSendWithSession: (payload) => signAndSendWithSessionAction(get, set, payload),
+      createSession: (payload) =>
+        reportOutcome(
+          {
+            onSuccess: payload?.onSuccess && ((r) => payload.onSuccess!(r.sessionPda, r.sessionPublicKey)),
+            onFail: payload?.onFail,
+          },
+          () => createSessionAction(get, set, payload ?? {}),
+        ),
+      revokeSession: (payload) => reportOutcome(payload, () => revokeSessionAction(get, set, payload ?? {})),
+      signAndSendWithSession: (payload) =>
+        reportOutcome(payload, () => signAndSendWithSessionAction(get, set, payload)),
 
       // Ed25519 authority actions
-      addAuthority: (payload) => addAuthorityAction(get, set, payload ?? {}),
-      removeAuthority: (targetAuthorityPda) => removeAuthorityAction(get, set, { targetAuthorityPda }),
-      signAndSendWithAuthority: (payload) => signAndSendWithAuthorityAction(get, set, payload),
+      addAuthority: (payload) =>
+        reportOutcome(
+          {
+            onSuccess: payload?.onSuccess && ((r) => payload.onSuccess!(r.authorityPda, r.authorityPublicKey)),
+            onFail: payload?.onFail,
+          },
+          () => addAuthorityAction(get, set, payload ?? {}),
+        ),
+      removeAuthority: (targetAuthorityPda, options) =>
+        reportOutcome(options, () => removeAuthorityAction(get, set, { targetAuthorityPda })),
+      signAndSendWithAuthority: (payload) =>
+        reportOutcome(payload, () => signAndSendWithAuthorityAction(get, set, payload)),
 
       // Deferred execution
-      authorizeAndExecute: (payload) => authorizeAndExecuteAction(get, set, payload),
-      authorizeDeferred: (payload) => authorizeDeferredAction(get, set, payload),
-      executeDeferred: (payload) => executeDeferredAction(get, set, payload),
+      authorizeAndExecute: (payload) => reportOutcome(payload, () => authorizeAndExecuteAction(get, set, payload)),
+      authorizeDeferred: (payload) => reportOutcome(payload, () => authorizeDeferredAction(get, set, payload)),
+      executeDeferred: (payload) => reportOutcome(payload, () => executeDeferredAction(get, set, payload)),
     }),
     {
       name: 'lazorkit-wallet-store',
