@@ -1,5 +1,5 @@
 ---
-"@lazorkit/wallet": patch
+"@lazorkit/wallet": minor
 ---
 
 A session or authority send still running when the wallet is disconnected neither signs nor sends after the disconnect, whichever way it came, and `LazorkitWalletAdapter.disconnect()` disconnects the store too.
