@@ -823,12 +823,13 @@ A read that fails is a `NetworkError`. Nothing is created after a failed read.
 with `UserRejectedError` (reason `'abandoned'`) and saves nothing.
 
 What each flow costs the user (passkey prompts / sheets the user acts on /
-portal dialogs), by design; the playground's end-to-end run measures them on
-devnet:
+portal dialogs), as the devnet playground's end-to-end run measured them
+(Chromium with a virtual authenticator, 2026-10-03; immediate mode not
+available there):
 
 | Flow | Count |
 |---|---|
-| New user (immediate mode: 1 / 1 / 0) | 2 / 1 / 0 |
+| New user (with immediate mode, by design: 1 / 1 / 0) | 2 / 1 / 0 |
 | Returning user, any device with the passkey | 1 / 0 / 0 |
 | Returning user, wallet never used | 1 / 0 / 0 (1 / 1 / 0 for a passkey made elsewhere) |
 | Passkey with no wallet | 2 / 0 / 0 |
