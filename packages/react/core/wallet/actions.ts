@@ -75,23 +75,19 @@ function refuse(set: (state: Partial<WalletState>) => void, message: string): ne
 }
 
 /**
- * Writes the key of a session or authority that is already on chain, in place
- * of the one the slot held. Never throws: a failure here (storage full, or
- * blocked) must not report a transaction that landed as failed. The new key is
- * then not kept, with a warning, and the slot is emptied rather than left
- * holding the previous key, which later calls would sign with instead.
+ * The key of a session or authority already on chain could not be written
+ * (storage full, or blocked). That must not report a transaction that landed
+ * as failed: the new key is not kept, with a warning, and its slot is emptied
+ * rather than left holding the previous key, which later calls would sign
+ * with instead. Never throws.
  */
-function keepAfterLanding(kind: 'session' | 'authority', key: string, value: () => string): void {
+function keyNotWritten(kind: 'session' | 'authority', slot: string, error: unknown): void {
     try {
-        localStorage.setItem(key, value());
-    } catch (error) {
-        try {
-            localStorage.removeItem(key);
-        } catch {
-            // Storage is blocked altogether: there is nothing in it to sign with.
-        }
-        console.warn(`[LazorKit] The new ${kind} is on chain, but its key could not be stored:`, error);
+        localStorage.removeItem(slot);
+    } catch {
+        // Storage is blocked altogether: there is nothing in it to sign with.
     }
+    console.warn(`[LazorKit] The new ${kind} is on chain, but its key could not be stored:`, error);
 }
 
 /** The connected wallet's protocol, for error reporting. */
@@ -567,23 +563,27 @@ export const createSessionAction = async (
         // The session is on chain now: a key that cannot be written (quota,
         // storage blocked) is warned about, and the call still succeeds.
         if (sessionKeypair) {
-            keepAfterLanding('session', 'lazorkit-session', () => JSON.stringify({
-                secretKey: Array.from(sessionKeypair.secretKey),
-                publicKey: sessionKeypair.publicKey.toBase58(),
-                sessionPda: sessionPda.toBase58(),
-                walletPda: walletPda.toBase58(),
-                expiresAt: expiresAt.toString(),
-                spendingLimits: payload.spendingLimits ? {
-                    solLifetimeCap: payload.spendingLimits.solLifetimeCap?.toString(),
-                    solPerTxMax: payload.spendingLimits.solPerTxMax?.toString(),
-                    solRecurring: payload.spendingLimits.solRecurring
-                        ? {
-                            limit: payload.spendingLimits.solRecurring.limit.toString(),
-                            windowSlots: payload.spendingLimits.solRecurring.windowSlots.toString(),
-                        }
-                        : undefined,
-                } : undefined,
-            }));
+            try {
+                localStorage.setItem('lazorkit-session', JSON.stringify({
+                    secretKey: Array.from(sessionKeypair.secretKey),
+                    publicKey: sessionKeypair.publicKey.toBase58(),
+                    sessionPda: sessionPda.toBase58(),
+                    walletPda: walletPda.toBase58(),
+                    expiresAt: expiresAt.toString(),
+                    spendingLimits: payload.spendingLimits ? {
+                        solLifetimeCap: payload.spendingLimits.solLifetimeCap?.toString(),
+                        solPerTxMax: payload.spendingLimits.solPerTxMax?.toString(),
+                        solRecurring: payload.spendingLimits.solRecurring
+                            ? {
+                                limit: payload.spendingLimits.solRecurring.limit.toString(),
+                                windowSlots: payload.spendingLimits.solRecurring.windowSlots.toString(),
+                            }
+                            : undefined,
+                    } : undefined,
+                }));
+            } catch (error) {
+                keyNotWritten('session', 'lazorkit-session', error);
+            }
         }
 
         return { sessionPda: sessionPda.toBase58(), sessionPublicKey: sessionPublicKey.toBase58() };
@@ -805,13 +805,17 @@ export const addAuthorityAction = async (
 
         // The authority is on chain now: a key that cannot be written is
         // warned about, and the call still succeeds.
-        keepAfterLanding('authority', 'lazorkit-authority', () => JSON.stringify({
-            secretKey: Array.from(authorityKeypair.secretKey),
-            publicKey: authorityKeypair.publicKey.toBase58(),
-            authorityPda: newAuthorityPda.toBase58(),
-            walletPda: walletPda.toBase58(),
-            role,
-        }));
+        try {
+            localStorage.setItem('lazorkit-authority', JSON.stringify({
+                secretKey: Array.from(authorityKeypair.secretKey),
+                publicKey: authorityKeypair.publicKey.toBase58(),
+                authorityPda: newAuthorityPda.toBase58(),
+                walletPda: walletPda.toBase58(),
+                role,
+            }));
+        } catch (error) {
+            keyNotWritten('authority', 'lazorkit-authority', error);
+        }
 
         return { authorityPda: newAuthorityPda.toBase58(), authorityPublicKey: authorityKeypair.publicKey.toBase58() };
     } catch (error) {
