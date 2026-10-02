@@ -43,8 +43,12 @@ export class CredentialManager extends EventEmitter {
    * @param force Whether to force sync even if credentials appear empty
    */
   syncCredentials(force = false): void {
+    // Destroyed: the dialog is gone, and there is nothing to sync to. (A
+    // dialog answered or closed within the first half second used to leave
+    // this polling every 500 ms for the life of the page.)
+    if (!this.iframeRef) return;
     // Schedule the sync to run after a short delay to ensure iframe is ready
-    if (!this.iframeRef || !this.iframeRef.contentWindow) {
+    if (!this.iframeRef.contentWindow) {
       setTimeout(() => this.syncCredentials(force), 500);
       return;
     }
