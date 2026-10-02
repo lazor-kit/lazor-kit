@@ -8,10 +8,11 @@
 // activation, and never again on the page once it failed. "Another device":
 // hints ['hybrid'] over a fresh challenge. "Not now", a closed create sheet,
 // an authenticator that already holds one. B: a 32-byte userHandle names the
-// wallet, with no scan for the credential. R32: a wallet this passkey created
-// alone is adopted unused; a plant is not. The 3.3 lookup for other passkeys
-// (v1 and v2), the chooser, key recovery pinned to the passkey, a network
-// failure that creates nothing, R29 and D10. Run with `pnpm test`.
+// wallet, with no scan for the credential; a confirmWallet naming another is
+// refused, never swapped for it. R32: a wallet this passkey created alone is
+// adopted unused; a plant is not. The 3.3 lookup for other passkeys (v1 and
+// v2), the chooser, key recovery pinned to the passkey, a network failure
+// that creates nothing, R29 and D10. Run with `pnpm test`.
 import { test, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
@@ -329,6 +330,52 @@ test("onConfirmWallet 'throw' on the fast path: WalletNeedsConfirmationError, th
     const connected = await W.getLazorkitClient().connect({ confirmWallet: vault.toBase58() });
     assert.equal(connected.vaultPda, vault.toBase58());
     assert.equal(gets().length, before, 'no second prompt');
+});
+
+test('confirmWallet on the fast path: a wallet it does not name is never connected, used, unused or not yet created', async () => {
+    const elsewhere = '11111111111111111111111111111112';
+    for (const setUp of [
+        (cred) => chain.walletFor(cred, { rpId: RP_ID, seed: cred.userHandle, counter: 3 }),
+        (cred) => chain.walletFor(cred, { rpId: RP_ID, seed: cred.userHandle, counter: 0, created: 'alone' }),
+    ]) {
+        chain.reset();
+        authenticator.state.credentials.length = 0;
+        const cred = credential({ rpId: RP_ID, userHandle: randomBytes(32) });
+        authenticator.add(cred);
+        const { vault } = setUp(cred);
+        configure();
+        const error = await rejection(W.getLazorkitClient().connect({ confirmWallet: elsewhere }));
+        assert.match(String(error?.message), /is not a wallet this passkey is proven to hold/);
+        assert.ok(error.message.includes(vault.toBase58()), 'the error names the wallet it holds');
+        assert.equal(W.useWalletStore.getState().wallet, null);
+        assert.equal(chain.state.sent.length, 0);
+    }
+
+    // A passkey whose wallet did not land (R29): not created for a confirmWallet either.
+    chain.reset();
+    authenticator.state.credentials.length = 0;
+    configure({}, [(ctx) => ({ action: 'create', name: ctx.suggestedName }), { action: 'not-now' }]);
+    chain.state.mode = 'fail';
+    await rejection(W.getLazorkitClient().connect());
+    chain.state.mode = null;
+    const sentBefore = chain.state.sent.length;
+    configure();
+    const error = await rejection(W.getLazorkitClient().connect({ confirmWallet: elsewhere }));
+    assert.match(String(error?.message), /This passkey holds no wallet that could be confirmed/);
+    assert.equal(chain.state.sent.length, sentBefore, 'nothing created');
+    assert.equal(W.useWalletStore.getState().wallet, null);
+});
+
+test('confirmWallet on the fast path naming its wallet (vault or PDA) connects it, confirmed, with one prompt', async () => {
+    const cred = credential({ rpId: RP_ID, userHandle: randomBytes(32) });
+    authenticator.add(cred);
+    const { wallet, vault } = chain.walletFor(cred, { rpId: RP_ID, seed: cred.userHandle, counter: 3 });
+    configure();
+    const connected = await W.getLazorkitClient().connect({ confirmWallet: wallet.toBase58() });
+    assert.equal(connected.vaultPda, vault.toBase58());
+    assert.equal(connected.how, 'confirmed');
+    assert.deepEqual(ceremonies(), ['get']);
+    assert.equal(credentialScans().length, 0);
 });
 
 test('a function onConfirmWallet is asked on the fast path, not the SDK sheet', async () => {

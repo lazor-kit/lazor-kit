@@ -26,7 +26,7 @@
  */
 import type { Connection, PublicKey } from '@solana/web3.js';
 import { createOwnershipChallenge } from '../message/ownershipProof';
-import { type OwnershipProof, type WalletFacts, v2Client, verifyOwnershipProof } from '../program';
+import { type OwnershipProof, type WalletFacts, selectWalletByAddress, v2Client, verifyOwnershipProof } from '../program';
 import type { WalletConfig, WalletInfo } from '../storage';
 import { shortAddress } from '../portal/WalletChoiceView';
 import type { OnConfirmWallet } from '../wallet/confirmation';
@@ -425,10 +425,17 @@ export async function connectEmbedded(p: ConnectEmbeddedParams): Promise<Embedde
                 describe: (candidates) => describeCandidates(client, candidates, params),
             });
             check();
-            if (found.kind === 'adopt') {
+            if (p.confirmWallet) {
+                // The wallet the app named: this one, else one the lookup
+                // below proves this passkey holds (`settleCandidates` refuses
+                // any other). Never a different one, and nothing created.
+                const here = found.kind === 'adopt' ? found.candidate : found.kind === 'choose' ? found.facts : null;
+                if (here && selectWalletByAddress([here], p.confirmWallet)) {
+                    return { wallet: walletInfo(here, credentialId, 'confirmed', rpId, pending?.name), how: 'confirmed', signatures: [] };
+                }
+            } else if (found.kind === 'adopt') {
                 return { wallet: walletInfo(found.candidate, credentialId, 'adopted', rpId, pending?.name), how: 'adopted', signatures: [] };
-            }
-            if (found.kind === 'choose') {
+            } else if (found.kind === 'choose') {
                 const settled = await settleCandidates([found.facts], params);
                 check();
                 if (settled && 'adopt' in settled) {
@@ -441,7 +448,7 @@ export async function connectEmbedded(p: ConnectEmbeddedParams): Promise<Embedde
                 // This device created the passkey and its wallet did not land:
                 // its key is known, and the assertion proves it. No scan, no
                 // second prompt.
-                if (pending && verifyOwnershipProof([{ publicKey: pending.publicKey }], proof, rpId).length) {
+                if (!p.confirmWallet && pending && verifyOwnershipProof([{ publicKey: pending.publicKey }], proof, rpId).length) {
                     return createFor(seed, rawId, pending.publicKey, 'created', pending.name);
                 }
             }
