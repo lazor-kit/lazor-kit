@@ -556,7 +556,7 @@ async function performPasskeyExecute(
  * bytes, so the signature cannot pass for a transaction approval (see
  * core/message/signedMessage.ts). The portal gets that challenge as `message`
  * and the text as `displayMessage`; a reply over any other challenge is
- * refused. Check the result with `verifySignedMessage`.
+ * refused. Check the result with `verifyWalletMessage`.
  */
 export const signMessageAction = async (
   get: () => WalletStateClient,

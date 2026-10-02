@@ -31,11 +31,12 @@ import {
   type ProtocolVersion,
   type WalletFacts,
   type WebAuthnResponse,
-  createOwnershipChallenge,
   v2Client,
   verifyOwnershipProof,
   versionOf,
 } from '../../program';
+// Domain-separated (`tag || 32 random bytes`), never sdk-legacy's bare 32.
+import { createOwnershipChallenge } from '../message/ownershipProof';
 import { connectAbandoned, rememberCandidates, takeRememberedCandidate } from './confirmation';
 import { keyToCreate, resolveWallet, type PortalProof } from './resolveWallet';
 import { API_ENDPOINTS, DEFAULTS } from '../../config';
@@ -284,19 +285,14 @@ function walletInfoOf(data: WalletInfo, own: WalletFacts): WalletInfo {
 }
 
 /**
- * A fresh challenge for an ownership proof. `createOwnershipChallenge` draws
- * from the `crypto` @noble/hashes found when it loaded; in React Native that
- * exists only if react-native-get-random-values ran first, which is up to the
- * app's import order. The polyfilled global is there by now either way.
+ * A fresh challenge for an ownership proof: domain-separated, `tag || 32
+ * random bytes` (see core/message/ownershipProof.ts), never bare random bytes
+ * a transaction challenge could equal. It reads the polyfilled
+ * `crypto.getRandomValues` when called, so the app's import order does not
+ * matter.
  */
 export function newOwnershipChallenge(): Uint8Array {
-  try {
-    return createOwnershipChallenge();
-  } catch {
-    const challenge = new Uint8Array(32);
-    crypto.getRandomValues(challenge);
-    return challenge;
-  }
+  return createOwnershipChallenge();
 }
 
 /**

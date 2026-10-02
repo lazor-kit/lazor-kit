@@ -16,7 +16,8 @@ export { useWalletStore } from './react/store';
 export * from './types';
 export { logger } from './core/logger';
 // Signed messages: the challenge every signMessage signs (never the app's
-// bytes), and the offline check for a message signature.
+// bytes); the offline check for a message signature by a key; and the check
+// that a wallet signed one, with the key read from the chain.
 export {
   SIGNED_MESSAGE_DOMAIN,
   signedMessageChallenge,
@@ -27,6 +28,8 @@ export type {
   SignedMessageInput,
   VerifySignedMessageParams,
 } from './core/message/signedMessage';
+export { verifyWalletMessage } from './core/message/verifyWalletMessage';
+export type { VerifyWalletMessageParams } from './core/message/verifyWalletMessage';
 // How a sent transaction ended: every send resolves once it is confirmed.
 export {
   TransactionFailedError,

@@ -1224,7 +1224,7 @@ export const signAndSendWithAuthorityAction = async (
 /**
  * Sign message action. The passkey signs `signedMessageChallenge(message)`,
  * not the message's bytes (see core/message/signedMessage.ts); check the
- * result with `verifySignedMessage`.
+ * result with `verifyWalletMessage`.
  */
 export const signMessageAction = async (
     get: () => WalletState,

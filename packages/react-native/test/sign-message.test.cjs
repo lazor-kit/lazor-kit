@@ -1,7 +1,7 @@
 // signMessage signs a domain-separated challenge, never the app's bytes,
 // through the built package (`pnpm build` first): the store and the hook open
 // the portal in the system browser (stubbed), and a scripted stand-in
-// redirects back as the live portal does — it signs, with a real P-256
+// redirects back with no checks of its own — it signs, with a real P-256
 // passkey key, whatever its `message` parameter decodes to. Checked: the
 // challenge in the portal URL is `tag || SHA-256(tag || message)` for every
 // message, a 32-byte one included, and never the message itself; a reply over
@@ -19,7 +19,7 @@ const redirectUrl = 'app://callback';
 
 /** Each portal URL the adapter opened. */
 const opened = [];
-/** What the portal signs, from its `message` parameter; the live portal signs what it decodes to. */
+/** What the portal signs, from its `message` parameter: by default, what it decodes to. */
 let portalSigns = (message) => Buffer.from(message, 'base64');
 
 const storage = new Map();

@@ -49,13 +49,17 @@ export interface WalletHookInterface {
   signAndSendTransaction: (payload: SendTxPayload & ActionCallbacks<string>) => Promise<string>;
   /**
    * The passkey signs `signedMessageChallenge(message)`, not the message's
-   * bytes. Check the result with `verifySignedMessage`.
+   * bytes. Check the result with `verifyWalletMessage`, which reads the
+   * passkey's key from chain.
    */
   signMessage: (message: string, options?: SignMessageOptions) => Promise<SignMessageResult>;
   /**
    * @deprecated Checks only that `signature` is over `signedPayload`, not which
-   * message was signed: any passkey signature passes. Use
-   * `verifySignedMessage({ message, publicKey, ...result })`.
+   * message was signed: any assertion the passkey ever made passes. Never
+   * use it to authenticate. Use
+   * `verifyWalletMessage({ connection, wallet, credentialId, rpId, message, ...result })`,
+   * or `verifySignedMessage({ message, publicKey, ...result })` with a key read
+   * from the chain.
    */
   verifyMessage: (args: { signedPayload: Uint8Array, signature: Uint8Array, publicKey: Uint8Array }) => Promise<boolean>;
 

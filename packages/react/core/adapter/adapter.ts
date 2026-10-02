@@ -580,7 +580,8 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
      * (`signature`, `signedPayload`, `clientDataJsonBase64`,
      * `authenticatorDataBase64`). It is not a 64-byte Ed25519 signature: the
      * wallet's address is a program account, not a key. Check it with
-     * `verifySignedMessage({ message, publicKey, ...JSON.parse(text) })`.
+     * `verifyWalletMessage({ connection, wallet, credentialId, rpId, message,
+     * ...JSON.parse(text) })`, which reads the passkey's key from chain.
      */
     async signMessage(message: Uint8Array): Promise<Uint8Array> {
         const dialogManager = this._createDialogManager();

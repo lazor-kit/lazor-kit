@@ -2,19 +2,21 @@
 '@lazorkit/wallet': patch
 ---
 
-**Security:** `signMessage` signs a domain-separated challenge, never the app's bytes
+**Security:** domain-separated passkey challenges for messages and ownership proofs
 
-`signMessage` on the hook and the store, `LazorkitWalletAdapter.signMessage` and the Wallet Standard `solana:signMessage` passed the message, or bytes derived from it, to the passkey as its WebAuthn challenge. The LazorKit programs approve a transaction by the challenge a passkey signed, so a message signature must never be usable as anything else the passkey approves. Every path now signs a fixed-format challenge instead:
+Message signatures are now domain-separated from every other passkey challenge. `signMessage` on the hook and the store, `LazorkitWalletAdapter.signMessage` and the Wallet Standard `solana:signMessage` sign a fixed-format challenge, never the app's bytes:
 
 ```
-challenge = tag || SHA-256(tag || message),  tag = UTF-8 "LazorKit signed message v1"
+challenge = tag || SHA-256(tag || message),  tag = UTF-8 "LazorKit signed message v1"   (58 bytes)
 ```
 
-It is 58 bytes and starts with the tag; every transaction challenge the programs accept, and every other challenge the SDK asks for, is 32 bytes.
+Connect's ownership proofs get their own tag too: `createOwnershipChallenge()` now returns `UTF-8 "LazorKit ownership proof v1" || 32 random bytes` (59 bytes). `verifyOwnershipProof` accepts it unchanged. A transaction challenge is a 32-byte hash, so no challenge of one kind can be another.
 
-- The portal gets the challenge as `message` and the text to show as `displayMessage`. The SDK refuses a portal reply over any other challenge.
+- The portal gets the message challenge as `message` and the text to show as `displayMessage`. The SDK refuses a portal reply over any other challenge.
 - `signMessage` resolves with `SignMessageResult`: `signature` and `signedPayload` as before, plus `clientDataJsonBase64` and `authenticatorDataBase64`, which a verifier needs. The adapter's and the Wallet Standard `signature` stay JSON bytes, now with the same four fields.
-- New exports: `verifySignedMessage` (checks a message signature offline, in a browser or on a server), `signedMessageChallenge` and `SIGNED_MESSAGE_DOMAIN`. `useWallet().verifyMessage` is deprecated: it checks only the signature over `signedPayload`, not which message was signed.
+- New: `verifyWalletMessage` checks that a wallet signed a message, with the passkey's key read from the chain (the wallet's Owner authority for the credential), never taken from the client. `verifySignedMessage` is its offline part, for a key you read from chain yourself. Also `signedMessageChallenge`, `SIGNED_MESSAGE_DOMAIN` and `OWNERSHIP_PROOF_DOMAIN`.
+- Deprecated: `useWallet().verifyMessage` and `verifySignatureBrowser`. They check only that `signature` is over `signedPayload`, not which message was signed; do not use them for authentication.
+- `DialogManager.openSign` and the `challenge` option of `openConnect` are documented as internal: pass them only challenges the SDK computed.
 - Fixes the hook's `signMessage`, which signed the base64 decoding of the text instead of the text.
 
 A message signature made by an earlier release does not verify with `verifySignedMessage`; sign it again. New dependency: `@noble/curves` (already a dependency of `@solana/web3.js`).

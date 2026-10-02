@@ -564,7 +564,8 @@ export interface LazorWalletHook {
   signAndSendTransaction: (payload: SignAndSendTransactionPayload, options: SignOptions) => Promise<string>;
   /**
    * The passkey signs `signedMessageChallenge(message)`, not the message's
-   * bytes. Check the result with `verifySignedMessage`.
+   * bytes. Check the result with `verifyWalletMessage`, which reads the
+   * passkey's key from chain.
    */
   signMessage: (message: string, options: SignOptions) => Promise<SignMessageResult>;
 

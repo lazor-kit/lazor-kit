@@ -13,7 +13,8 @@ export type { WalletInfo, WalletConfig } from '././core/storage';
 export type { WalletHookInterface, ConnectHookOptions, DeferredTxPayload } from './react/useWallet';
 export type { SpendingLimits, ActionCallbacks, DisconnectOptions, RemoveAuthorityOptions, SignMessageOptions } from './core/types';
 // Signed messages: the challenge every signMessage signs (never the app's
-// bytes), and the offline check for a message signature.
+// bytes); the offline check for a message signature by a key; and the check
+// that a wallet signed one, with the key read from the chain.
 export {
   SIGNED_MESSAGE_DOMAIN,
   signedMessageChallenge,
@@ -24,6 +25,8 @@ export type {
   SignedMessageInput,
   VerifySignedMessageParams,
 } from './core/message/signedMessage';
+export { verifyWalletMessage } from './core/message/verifyWalletMessage';
+export type { VerifyWalletMessageParams } from './core/message/verifyWalletMessage';
 
 // Core exports (for advanced usage)
 export { DialogManager, PortalCancelledError } from './core/portal';
@@ -135,6 +138,7 @@ export type {
 // their own.
 export {
   createOwnershipChallenge,
+  OWNERSHIP_PROOF_DOMAIN,
   verifyOwnershipProof,
   pickOwnWallet,
   selectWalletByAddress,

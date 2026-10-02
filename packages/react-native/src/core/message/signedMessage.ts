@@ -13,9 +13,9 @@
  *
  * `message` is the UTF-8 bytes of a string, or the bytes given. Every
  * transaction challenge the LazorKit programs accept is a 32-byte hash, and
- * every other challenge the SDK asks the passkey for is 32 bytes too; a
- * message challenge is 58 bytes and starts with the tag, so it can never be
- * one of them.
+ * an ownership-proof challenge is 59 bytes with its own tag (see
+ * ./ownershipProof.ts); a message challenge is 58 bytes and starts with this
+ * tag, so it can never be one of them.
  *
  * Keep this file the same in @lazorkit/wallet and
  * @lazorkit/wallet-mobile-adapter.
@@ -58,9 +58,10 @@ export interface VerifySignedMessageParams {
     /** If given, must equal authenticatorData || SHA-256(clientDataJSON) (base64). */
     readonly signedPayload?: string;
     /**
-     * The passkey's P-256 public key: 33 bytes (compressed, as
-     * `wallet.passkeyPubkey`), 65 (uncompressed) or 64 (x || y), as bytes, a
-     * number array or base64.
+     * The passkey's P-256 public key: 33 bytes (compressed), 65 (uncompressed)
+     * or 64 (x || y), as bytes, a number array or base64. To authenticate a
+     * wallet, read it from that wallet's authority on chain, never from the
+     * client (see `verifyWalletMessage`).
      */
     readonly publicKey: string | Uint8Array | ArrayLike<number>;
     /** If given, the authenticatorData's rpIdHash must be SHA-256 of this rpId (e.g. `portal.lazor.sh`). */
@@ -171,10 +172,14 @@ function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
  * A signature over any other challenge — the raw message bytes included — is
  * `false`. Never throws: malformed input is `false`.
  *
- * `publicKey` is the passkey's key, not the wallet's address: on chain it is
- * the wallet's passkey authority (`wallet.passkeyPubkey` once connected). Pass
- * `rpId` and `origin` to pin the passkey's relying party and the page that
- * asked for it.
+ * This proves that the key `publicKey` signed `message`, and nothing about
+ * which wallet that key belongs to. To authenticate a wallet, take the key
+ * from the chain, never from the client: the claimed wallet's Secp256r1
+ * authority for the passkey's credential, which must still exist — or use
+ * `verifyWalletMessage`, which reads it. A server that takes `publicKey` from
+ * the request accepts anyone's passkey for any wallet they name. Pass `rpId`
+ * and `origin` to pin the passkey's relying party and the page that asked for
+ * it.
  */
 export function verifySignedMessage(params: VerifySignedMessageParams): boolean {
     try {

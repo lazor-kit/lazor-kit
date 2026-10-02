@@ -2,7 +2,7 @@
 // through the built package (`pnpm build` first) in a browser page (jsdom):
 // the store (and so the hook), LazorkitWalletAdapter and the Wallet Standard
 // `solana:signMessage` each open the portal's iframe, and a scripted
-// stand-in answers as the live portal does — it signs, with a real P-256
+// stand-in answers with no checks of its own — it signs, with a real P-256
 // passkey key, whatever its `message` parameter decodes to. Checked: the
 // challenge the SDK hands the portal is `tag || SHA-256(tag || message)` for
 // every message, a 32-byte one included, and never the message itself; a
@@ -97,7 +97,7 @@ const CREDENTIAL_ID = Buffer.from('a passkey credential').toString('base64');
 
 /** Each sign request the portal got: its URL parameters. */
 const requests = [];
-/** What the portal signs, from its `message` parameter; the live portal signs what it decodes to. */
+/** What the portal signs, from its `message` parameter: by default, what it decodes to. */
 let portalSigns = (message) => Buffer.from(message, 'base64');
 const answered = new WeakSet();
 const portal = setInterval(() => {

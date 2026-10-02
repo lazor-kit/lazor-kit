@@ -91,9 +91,10 @@ touched — and anyone can create a wallet that lists it, add it to a wallet of
 their own, or hand it a wallet they have used first. So `connect` never takes
 "the wallet this credential is on" at face value:
 
-1. The passkey signs a challenge the SDK chose (in the connect reply when the
-   portal supports it, otherwise in one more portal prompt). Only wallets whose
-   stored key verifies that signature count.
+1. The passkey signs a challenge the SDK chose, a domain-separated ownership
+   proof (see [Signing messages](#signing-messages)), in the connect reply
+   when the portal supports it, otherwise in one more portal prompt. Only
+   wallets whose stored key verifies that signature count.
 2. Of those, one is used without asking only when it is the one wallet this
    passkey has signed for, and nothing else can spend from it: no other
    authority, live session, pending transaction or token approval, and a vault
@@ -121,8 +122,8 @@ against: the reported key, once the proof from step 1 verifies against it
 signatures** over fresh challenges (`resolvePasskeyPublicKey`,
 `@lazorkit/sdk-legacy` 1.3.0): the step 1 proof and the connect reply's
 signature, or one more portal sign when the reply has none. That is **one
-extra passkey prompt** over the case before it (a portal sign over a random
-challenge, no transaction). So an existing passkey with no wallet now gets
+extra passkey prompt** over the case before it (a portal sign over a fresh
+ownership-proof challenge, no transaction). So an existing passkey with no wallet now gets
 one, for its real key. Closing that prompt rejects with
 `PortalCancelledError`. If the signatures still do not settle on one key,
 `connect` throws an error that says so. In both cases nothing is created.
@@ -401,9 +402,8 @@ async function forgetSession() {
 ## Signing messages
 
 `signMessage` never signs the app's bytes as the passkey's WebAuthn
-challenge. The LazorKit programs approve a transaction by the challenge a
-passkey signed, so a message signature must not be usable as anything else
-the passkey approves. It signs this challenge instead (format v1, the same as
+challenge. Message signatures are domain-separated from every other passkey
+challenge: they sign this challenge instead (format v1, the same as
 `@lazorkit/wallet`'s):
 
 ```
@@ -411,16 +411,21 @@ tag       = UTF-8 "LazorKit signed message v1"     (26 bytes)
 challenge = tag || SHA-256(tag || message)        (58 bytes)
 ```
 
-`message` is the UTF-8 bytes of the string. Every transaction challenge the
-programs accept, and every other challenge the adapter asks the passkey for,
-is 32 bytes; a message challenge is 58 bytes and starts with the tag, so it is
-never one of them. `signedMessageChallenge(message)` computes it, and
-`SIGNED_MESSAGE_DOMAIN` is the tag.
+`message` is the UTF-8 bytes of the string. `signedMessageChallenge(message)`
+computes it, and `SIGNED_MESSAGE_DOMAIN` is the tag. The other challenges the
+adapter asks a passkey for have shapes of their own, so no challenge of one
+kind can be another:
 
-The portal gets the challenge as `message` and the text as `displayMessage`.
-Until the hosted portal shows `displayMessage`, its review screen shows the
-encoded challenge. The adapter checks the portal's redirect: a reply over any
-other challenge is refused.
+| Challenge | Shape |
+|---|---|
+| Transaction (what the programs verify) | a 32-byte hash |
+| Message | 58 bytes, starting with `LazorKit signed message v1` |
+| Ownership proof (connect) | 59 bytes: `LazorKit ownership proof v1` then 32 random bytes (`createOwnershipChallenge()`, `OWNERSHIP_PROOF_DOMAIN`) |
+
+The portal gets the challenge as `message` and the text as `displayMessage`;
+a portal that shows `displayMessage` checks that `message` is its challenge.
+The adapter checks the portal's redirect: a reply over any other challenge is
+refused.
 
 `signMessage` resolves with a `SignMessageResult`, all base64:
 
@@ -431,27 +436,41 @@ other challenge is refused.
 | `clientDataJsonBase64` | The WebAuthn clientDataJSON. Its `challenge` is base64url(challenge). |
 | `authenticatorDataBase64` | The WebAuthn authenticatorData. |
 
-`verifySignedMessage` checks one offline, in the app or on a server (Node
-18+), with no RPC:
+**Checking one: which wallet signed.** A message signature proves that a
+passkey key signed the message, not which wallet that key belongs to. To
+authenticate a wallet, read the key from the chain, never from the client: a
+server that takes the key from the request accepts anyone's passkey for any
+wallet they name. `verifyWalletMessage` does the lookup:
 
 ```ts
-import { verifySignedMessage } from '@lazorkit/wallet-mobile-adapter';
+import { Connection } from '@solana/web3.js';
+import { verifyWalletMessage } from '@lazorkit/wallet-mobile-adapter';
 // or, on a server without React Native: from '@lazorkit/wallet'
 
-const ok = verifySignedMessage({
+const ok = await verifyWalletMessage({
+  connection: new Connection(RPC_URL),
+  cluster: 'mainnet',              // when RPC_URL does not say which cluster
+  wallet,                          // the wallet the client claims (its address)
+  credentialId,                    // the passkey's credential id, base64
+  rpId: 'portal.lazor.sh',         // the passkey's relying party (config.rpId)
   message: 'Sign in to example.com\nNonce: 8f2c…',
-  publicKey: passkeyPubkey,        // wallet.passkeyPubkey: 33 bytes, compressed
   ...result,                       // what signMessage resolved with
-  rpId: 'portal.lazor.sh',         // optional: the passkey's relying party
-  origin: 'https://portal.lazor.sh', // optional: the page that ran the passkey
 });
 ```
 
-It is `true` only when that passkey signed a `webauthn.get` over
-`signedMessageChallenge(message)` with the user present; a signature over any
-other challenge, the raw message bytes included, is `false`. It never throws.
-Put your domain and a fresh nonce in the message, and check them, as with any
-sign-in message.
+It is `true` only when the signature is over `signedMessageChallenge(message)`
+(a `webauthn.get` with the user present, under `rpId`) and verifies against
+the key stored on chain in an Owner authority of `wallet` for `credentialId`
+(v2 or v1), and the wallet account still exists. It reads the chain with one
+`getProgramAccounts` per program, as connect does, and rejects when the chain
+cannot be read (treat that as not verified). Put your domain and a fresh
+nonce in the message, and check them, as with any sign-in message.
+
+`verifySignedMessage({ message, publicKey, ...result })` is the offline part
+of that check, with no RPC: `true` only when `publicKey`'s passkey signed
+`signedMessageChallenge(message)`, and `false` for any other challenge, the
+raw message bytes included. It never throws. Use it alone only with a key you
+read from the claimed wallet's authority on chain yourself.
 
 ## API Reference
 
@@ -494,7 +513,7 @@ Signs a message with the passkey. The passkey signs
 
 **Returns**
 `Promise<SignMessageResult>`: `{ signature, signedPayload, clientDataJsonBase64, authenticatorDataBase64 }`,
-all base64. Check it with `verifySignedMessage`.
+all base64. Check it with `verifyWalletMessage`.
 
 #### `addAuthorityEd25519(payload, options)`
 

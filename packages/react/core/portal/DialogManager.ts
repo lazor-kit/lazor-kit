@@ -113,8 +113,12 @@ export class DialogManager extends EventEmitter {
 
   /**
    * Open portal connection dialog
-   * @param options.challenge - base64url bytes for the portal to sign with the
-   *   passkey (a portal that does not know the parameter ignores it)
+   * @param options.challenge - base64url of an ownership-proof challenge from
+   *   `createOwnershipChallenge()`, for the portal to sign with the passkey (a
+   *   portal that does not know the parameter ignores it). @internal: not a
+   *   stable API. Pass nothing else: the passkey signs whatever challenge it
+   *   is given, and this option will be narrowed to take only an
+   *   SDK-generated proof.
    * @returns Promise that resolves with connection result
    */
   async openConnect(options: { challenge?: string } = {}): Promise<DialogResult> {
@@ -129,11 +133,17 @@ export class DialogManager extends EventEmitter {
   }
 
   /**
-   * Open portal signing dialog
-   * @param message - The challenge to sign, base64 or base64url: one the SDK
-   *   computed for a transaction or a proof. Never bytes an app chose — a
-   *   message goes through `openSignMessage`, which signs its domain-separated
-   *   challenge instead.
+   * Open the portal to sign a challenge the SDK computed.
+   *
+   * @internal Not a stable API: it will be narrowed to take what a challenge
+   * is computed from (a program's preimage, or an SDK-generated proof)
+   * instead of the challenge itself. The passkey signs `message` as given,
+   * and nothing here can tell where it came from, so pass only the
+   * challenge a LazorKit client computed for the instruction being approved,
+   * or one from `createOwnershipChallenge()`.
+   * Never bytes an app or a user chose: a message goes through
+   * `openSignMessage`, which signs its domain-separated challenge instead.
+   * @param message - The challenge to sign, base64 or base64url.
    * @returns Promise that resolves with signature result
    */
   async openSign(message: string, transaction: string, credentialId: string, clusterSimulation?: 'devnet' | 'mainnet'): Promise<SignResult> {
