@@ -249,7 +249,7 @@ test("createOwnershipChallenge is tag || 32 random bytes: 59 bytes, the web SDK'
 test("connect asks the portal to sign only tagged proof challenges, and the proof over one settles the passkey's key", async () => {
   await rejection(store.getState().connect({ redirectUrl }));
   // It got as far as creating the wallet for the reported key: the proof verified.
-  assert.ok(fetched.includes(PAYMASTER), `reached the paymaster (${fetched})`);
+  assert.ok(fetched.some((url) => url === PAYMASTER), `reached the paymaster (${fetched})`);
 
   assert.deepEqual(opened.map((p) => p.get('action')), ['connect', 'sign']);
   const [connectRequest, signRequest] = opened;
@@ -265,7 +265,7 @@ test("connect asks the portal to sign only tagged proof challenges, and the proo
 test("connect takes the portal's assertion over the tagged connect challenge as the proof, with no second prompt", async () => {
   connectReply = (params) => assertion(KEY, Buffer.from(params.get('challenge'), 'base64'));
   await rejection(store.getState().connect({ redirectUrl }));
-  assert.ok(fetched.includes(PAYMASTER), `reached the paymaster (${fetched})`);
+  assert.ok(fetched.some((url) => url === PAYMASTER), `reached the paymaster (${fetched})`);
   assert.deepEqual(opened.map((p) => p.get('action')), ['connect']);
   assert.ok(isProofChallenge(Buffer.from(opened[0].get('challenge'), 'base64')));
 });
