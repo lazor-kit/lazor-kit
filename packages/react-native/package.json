@@ -1,6 +1,6 @@
 {
   "name": "@lazorkit/wallet-mobile-adapter",
-  "version": "2.2.1",
+  "version": "2.3.0",
   "main": "dist/index.js",
   "module": "dist/index.esm.js",
   "types": "dist/index.d.ts",
@@ -11,7 +11,7 @@
     "access": "public"
   },
   "scripts": {
-    "test": "node --test test/deferred.test.cjs test/txv1.test.mjs",
+    "test": "node --test test/deferred.test.cjs test/errors.test.cjs test/callbacks.test.cjs test/keys.test.cjs test/types.test.cjs test/txv1.test.mjs",
     "build": "rollup --bundleConfigAsCjs -c rollup.config.js",
     "prepublishOnly": "node scripts/prepublish-check.js && npm run build",
     "prepack": "npm run build",

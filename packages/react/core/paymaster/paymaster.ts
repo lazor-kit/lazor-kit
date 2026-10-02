@@ -8,7 +8,14 @@ import {
 } from '@solana/web3.js';
 import { Logger } from '../../utils/logger';
 import { Buffer } from 'buffer';
-import { SignatureReusedError, isSignatureReusedError } from '../program/protocol';
+import {
+    SignatureReusedError,
+    V1WalletRetiredError,
+    hasRetiredDeploymentCode,
+    isRetiredDeploymentError,
+    isSignatureReusedError,
+    type ProtocolVersion,
+} from '../program/protocol';
 import { hasDeferredExpiredCode } from '../wallet/deferred';
 export interface PaymasterConfig {
     paymasterUrl: string;
@@ -69,15 +76,30 @@ function isAlreadyProcessed(error: PaymasterError): boolean {
 export class Paymaster {
     private endpoint: string;
     private apiKey?: string;
+    private protocolVersion?: ProtocolVersion;
     private logger = new Logger('Paymaster');
 
     /**
      * Create a new Paymaster instance
      * @param config Configuration for the paymaster service
+     * @param options.protocolVersion The protocol of the wallet whose
+     *   transactions this paymaster signs. With `1`, a 4018 that names no
+     *   program (Kora's `Custom(4018)`) is the retired v1 program's, and is
+     *   thrown as `V1WalletRetiredError` (see `isRetiredDeploymentError`).
      */
-    constructor(config: PaymasterConfig) {
+    constructor(config: PaymasterConfig, options: { protocolVersion?: ProtocolVersion } = {}) {
         this.endpoint = config.paymasterUrl;
         this.apiKey = config.apiKey;
+        this.protocolVersion = options.protocolVersion;
+    }
+
+    /**
+     * A 4018 answer, as the error to throw: `V1WalletRetiredError` when it is
+     * the retired v1 program's, the paymaster's own error when whose 4018 it
+     * is cannot be told here (the caller, which knows the wallet, can).
+     */
+    private retiredDeploymentFailure(error: unknown): unknown {
+        return isRetiredDeploymentError(error, this.protocolVersion) ? new V1WalletRetiredError(error) : error;
     }
 
     private getHeaders(): HeadersInit {
@@ -210,7 +232,9 @@ export class Paymaster {
     }
 
     /**
-     * Sign a transaction using the paymaster service with retries
+     * Sign a transaction using the paymaster service with retries. A 4018
+     * (`RetiredDeployment`) is not retried: it throws `V1WalletRetiredError`
+     * when it is the retired v1 program's, the `PaymasterError` otherwise.
      * @param transaction Transaction to sign
      * @param maxRetries Maximum number of retry attempts (default: 3)
      * @param baseDelay Base delay between retries in ms (default: 1000)
@@ -221,6 +245,8 @@ export class Paymaster {
             try {
                 return await this.attemptSign(transaction, attempt);
             } catch (error) {
+                // The same bytes get the same 4018 every time.
+                if (hasRetiredDeploymentCode(error)) throw this.retiredDeploymentFailure(error);
                 if (attempt === maxRetries) {
                     this.logger.error('All sign retry attempts failed', error);
                     throw error;
@@ -254,6 +280,14 @@ export class Paymaster {
      *   authorization expired, or an inner program's error with that code)
      *   and no earlier attempt may have been sent: the `PaymasterError`.
      *   Whose 3014 it was is told by the caller (`executeBeforeExpiry`).
+     * - the paymaster answered with a 4018 (`RetiredDeployment`: a retired
+     *   v1 program answers every attempt with it, or an inner program's error
+     *   with that code), on its first answer: `V1WalletRetiredError` when it
+     *   is the retired v1 program's (the logs name v1, or `protocolVersion` is
+     *   1), the `PaymasterError` otherwise, which the caller maps by the
+     *   wallet's protocol. After an earlier attempt whose answer was lost it
+     *   is the `PaymasterError` with `maybeSent`: that attempt's outcome is
+     *   still unknown.
      */
     private async sendWithRetries(
         attemptSend: () => Promise<string>,
@@ -280,6 +314,12 @@ export class Paymaster {
                 // DeferredAuthorizationExpired (3014): the slot only moves on,
                 // so the same bytes can never pass again.
                 if (!maybeSent && hasDeferredExpiredCode(error)) throw error;
+                // RetiredDeployment (4018): the next attempt gets the same answer.
+                if (hasRetiredDeploymentCode(error)) {
+                    if (!maybeSent) throw this.retiredDeploymentFailure(error);
+                    error.maybeSent = true;
+                    throw error;
+                }
                 if (attempt === maxRetries) {
                     this.logger.error('All retry attempts failed', error);
                     // A later refusal does not undo an earlier attempt whose

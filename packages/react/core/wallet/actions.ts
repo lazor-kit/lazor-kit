@@ -1,5 +1,10 @@
 /**
  * SDK Actions - Core wallet operations
+ *
+ * An action settles its promise only: the store reports the outcome to the
+ * call's `onSuccess` / `onFail` once the action is over, with `isSigning` /
+ * `isConnecting` already cleared, or at once for a call refused because
+ * another holds the flag (see `reportOutcome` in ./utils).
  */
 import { sha256 } from 'js-sha256';
 import { Buffer } from 'buffer';
@@ -7,7 +12,6 @@ import {
     Transaction,
     TransactionMessage,
     VersionedTransaction,
-    Keypair,
     PublicKey,
     AddressLookupTableAccount,
     TransactionInstruction,
@@ -25,7 +29,9 @@ import {
 } from './utils';
 import { clearPendingConfirmation, connectAbandoned, connectFreshWallet } from './resolveWallet';
 import {
+    ROLE_OWNER,
     ROLE_ADMIN,
+    ROLE_SPENDER,
     Actions,
     SessionAction,
     type ProtocolVersion,
@@ -43,6 +49,8 @@ import { DEFAULTS } from '../../config';
 import { type AuthorityTurn, sendAndConfirm, withAuthority } from './sequence';
 import { buildPreviewTransactionBase64 } from './preview';
 import { deferredExpiryOffset, executeBeforeExpiry } from './deferred';
+import { type KeySigner, type KeyStorage, forgetKey, generateKey, saveKey, wipeKey, wipeMark } from '../keys';
+import { keyForConnectedWallet } from './keyBinding';
 
 export function randomBytes(size: number): Uint8Array {
     return globalThis.crypto.getRandomValues(new Uint8Array(size));
@@ -55,6 +63,23 @@ function toBase64Url(bytes: Uint8Array): string {
         .replace(/\+/g, '-')
         .replace(/\//g, '_')
         .replace(/=+$/, '');
+}
+
+/**
+ * A call refused before it started because something it needs is missing (a
+ * connected wallet, a connection): reported like any failure, in `error` too.
+ * A refusal because another call is running ('Already signing') leaves
+ * `error` alone: it belongs to that call.
+ */
+function refuse(set: (state: Partial<WalletState>) => void, message: string): never {
+    const error = new Error(message);
+    set({ error });
+    throw error;
+}
+
+/** Where the SDK keeps the session and authority keys it generates (see ../keys). */
+function keyStorageOf(config: WalletConfig): KeyStorage {
+    return config.keyStorage === 'memory' ? 'memory' : 'auto';
 }
 
 /** The connected wallet's protocol, for error reporting. */
@@ -70,6 +95,7 @@ function walletVersion(get: () => WalletState): ProtocolVersion | undefined {
 function paymasterFor(config: WalletConfig, version: ProtocolVersion): Paymaster {
     return new Paymaster(
         version === 1 ? (config.v1PaymasterConfig ?? config.paymasterConfig) : config.paymasterConfig,
+        { protocolVersion: version },
     );
 }
 
@@ -86,15 +112,16 @@ function paymasterFor(config: WalletConfig, version: ProtocolVersion): Paymaster
  * includes it.
  *
  * For session/authority flows that need a client-side signer in addition to
- * the paymaster's feePayer, pass it in `extraSigners` — both v0 (`tx.sign`)
- * and legacy (`tx.partialSign`) populate the right slot.
+ * the paymaster's feePayer, pass it in `signers`: each adds its signature to
+ * its own slot, in v0 and legacy alike, before the paymaster adds the fee
+ * payer's. A transaction is signed once: `sendAndConfirm` never re-signs it.
  */
 async function buildAndSendTx(params: {
     paymaster: Paymaster;
     connection: Connection;
     feePayer: PublicKey;
     instructions: TransactionInstruction[];
-    extraSigners?: Keypair[];
+    signers?: KeySigner[];
     addressLookupTables?: AddressLookupTableAccount[];
     txVersion?: 'legacy' | 'v0';
     turn?: AuthorityTurn;
@@ -102,7 +129,7 @@ async function buildAndSendTx(params: {
     createsAuthority?: PublicKey;
 }): Promise<string> {
     const { paymaster, connection, feePayer, instructions } = params;
-    const extraSigners = params.extraSigners ?? [];
+    const signers = params.signers ?? [];
     const txVersion = params.txVersion ?? 'v0';
     const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
 
@@ -116,7 +143,7 @@ async function buildAndSendTx(params: {
         tx.add(...instructions);
         tx.recentBlockhash = blockhash;
         tx.feePayer = feePayer;
-        if (extraSigners.length > 0) tx.partialSign(...extraSigners);
+        for (const signer of signers) await signer.signTransaction(tx);
         send = () => paymaster.signAndSend(tx);
         simulateLogs = async () => (await connection.simulateTransaction(tx)).value.logs;
     } else {
@@ -126,7 +153,7 @@ async function buildAndSendTx(params: {
             instructions,
         }).compileToV0Message(params.addressLookupTables ?? []);
         const tx = new VersionedTransaction(v0Message);
-        if (extraSigners.length > 0) tx.sign(extraSigners);
+        for (const signer of signers) await signer.signTransaction(tx);
         send = () => paymaster.signAndSendVersionedTransaction(tx);
         simulateLogs = async () =>
             (await connection.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true })).value.logs;
@@ -203,7 +230,6 @@ export const connectAction = async (
             }
             if (attempt.signal.aborted) throw connectAbandoned();
             set({ wallet: existingWallet });
-            options?.onSuccess?.(existingWallet);
             return existingWallet;
         }
 
@@ -239,18 +265,15 @@ export const connectAction = async (
         if (attempt.signal.aborted) throw connectAbandoned();
         await StorageManager.saveWallet(walletInfo);
         set({ wallet: walletInfo });
-        options?.onSuccess?.(walletInfo);
         return walletInfo;
 
     } catch (error: unknown) {
         if (attempt.signal.aborted) {
             // Abandoned by disconnect, which already reset the store: leave
             // its `error` alone, but still fail this call.
-            const err = connectAbandoned();
-            options?.onFail?.(err);
-            throw err;
+            throw connectAbandoned();
         }
-        return handleActionError(error, set, options?.onFail, walletVersion(get));
+        return handleActionError(error, set, walletVersion(get));
     } finally {
         // An abandoned connect no longer owns `isConnecting`: disconnect reset
         // it, and a connect started since may have set it again.
@@ -267,11 +290,25 @@ function namesWallet(wallet: WalletInfo, address: string): boolean {
 }
 
 /**
- * Disconnect wallet action
+ * Disconnect wallet action. `isSigning` is left to the action that set it, as
+ * on mobile: an action already running is not abandoned (its passkey prompt
+ * may still be open), and clearing its flag here would let a second one start
+ * beside it, whose flag the first would then clear when it ends. (A session
+ * or authority send still running does not sign once the wallet is gone: see
+ * ./keyBinding.)
+ *
+ * The session key the SDK keeps is deleted, unless `keepSessionKeys`: the
+ * one in the slot, whichever wallet it is for, and one a `createSession`
+ * still running registers after this (it is not kept: see `saveKey`). The
+ * authority key is kept, and signs only once its wallet is connected again.
+ * A key that cannot be deleted is logged, not thrown: it stays bound to its
+ * wallet. This tab only: another tab of the app stays connected (see the
+ * README).
  */
 export const disconnectAction = async (
+    get: () => WalletState,
     set: (state: Partial<WalletState>) => void,
-    options?: DisconnectOptions
+    options?: DisconnectOptions,
 ): Promise<void> => {
 
     try {
@@ -281,10 +318,12 @@ export const disconnectAction = async (
         connectInFlight = null;
         clearPendingConfirmation();
         await StorageManager.clearWallet();
-        set({ wallet: null, error: null, isConnecting: false, isSigning: false, isLoading: false });
-        options?.onSuccess?.();
+        set({ wallet: null, error: null, isConnecting: false, isLoading: false });
     } catch (error: unknown) {
-        return handleActionError(error, set, options?.onFail);
+        return handleActionError(error, set);
+    } finally {
+        // Whatever else failed: the session key goes with the wallet.
+        if (!options?.keepSessionKeys) await wipeKey(keyStorageOf(get().config), 'session');
     }
 };
 
@@ -308,11 +347,11 @@ export const signAndSendTransactionAction = async (
     }
 
     if (!wallet) {
-        throw new Error('No wallet connected');
+        refuse(set, 'No wallet connected');
     }
 
     if (!connection) {
-        throw new Error('No connection available');
+        refuse(set, 'No connection available');
     }
 
     set({ isSigning: true, error: null });
@@ -366,11 +405,10 @@ export const signAndSendTransactionAction = async (
             }
         });
 
-        payload.onSuccess?.(txSignature);
         return txSignature;
 
     } catch (error: unknown) {
-        return handleActionError(error, set, payload.onFail, walletVersion(get));
+        return handleActionError(error, set, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -444,7 +482,9 @@ async function resolvePasskeyWallet(wallet: WalletInfo, connection: Connection) 
 
 /**
  * Create session key action — passkey signs to authorize a new ed25519 session key on-chain.
- * The generated keypair is stored in localStorage for reuse.
+ * The key the SDK generates is kept for `signAndSendWithSession` (see ../keys:
+ * a non-extractable key in IndexedDB, not localStorage). A key the caller
+ * supplies is never stored.
  */
 export const createSessionAction = async (
     get: () => WalletState,
@@ -453,8 +493,10 @@ export const createSessionAction = async (
 ): Promise<{ sessionPda: string; sessionPublicKey: string }> => {
     const { isSigning, connection, wallet, config } = get();
     if (isSigning) throw new Error('Already signing');
-    if (!wallet) throw new Error('No wallet connected');
-    if (!connection) throw new Error('No connection available');
+    if (!wallet) refuse(set, 'No wallet connected');
+    if (!connection) refuse(set, 'No connection available');
+    // A disconnect (or forgetStoredKeys) from here on means the key is not kept.
+    const sessionWipes = wipeMark('session');
 
     set({ isSigning: true, error: null });
     try {
@@ -465,12 +507,12 @@ export const createSessionAction = async (
 
         // Resolve the session key: if the caller passed one in (delegating to
         // a backend/agent that owns the private key), we register its pubkey
-        // on-chain and skip the localStorage write — the caller is responsible
-        // for keeping the matching secretKey. Otherwise generate a fresh
-        // keypair here and persist it as before.
+        // on-chain and store nothing — the caller is responsible for keeping
+        // the matching secret key. Otherwise generate a fresh key here and
+        // keep it once the session is on chain.
         const externalSessionKey = resolveExternalSessionKey(payload.sessionKey);
-        const sessionKeypair = externalSessionKey ? null : Keypair.generate();
-        const sessionPublicKey = externalSessionKey ?? sessionKeypair!.publicKey;
+        const generatedKey = externalSessionKey ? null : await generateKey();
+        const sessionPublicKey = externalSessionKey ?? generatedKey!.signer.publicKey;
 
         // If a Session PDA already exists for this wallet + session pubkey,
         // the LazorKit program will reject `create` with "instruction requires
@@ -480,7 +522,6 @@ export const createSessionAction = async (
         const [preExistingSessionPda] = client.findSession(walletPda, sessionPublicKey.toBytes());
         const preExistingAccount = await connection.getAccountInfo(preExistingSessionPda);
         if (preExistingAccount) {
-            payload.onSuccess?.(preExistingSessionPda.toBase58(), sessionPublicKey.toBase58());
             return {
                 sessionPda: preExistingSessionPda.toBase58(),
                 sessionPublicKey: sessionPublicKey.toBase58(),
@@ -529,15 +570,19 @@ export const createSessionAction = async (
             }
         });
 
-        // Only persist the locally-generated keypair. External keys belong
-        // to the caller; writing them to the user's localStorage would be
-        // a security footgun (e.g. the backend's key ending up in browser).
-        if (sessionKeypair) {
-            localStorage.setItem('lazorkit-session', JSON.stringify({
-                secretKey: Array.from(sessionKeypair.secretKey),
-                publicKey: sessionKeypair.publicKey.toBase58(),
+        // Only the key generated here is kept. External keys belong to the
+        // caller; storing them in the user's browser would be a security
+        // footgun (e.g. the backend's key ending up in browser). The session
+        // is on chain now: a key that cannot be stored is kept for this page,
+        // and the call still succeeds.
+        if (generatedKey) {
+            // Bound to the wallet it was made for: it signs only while that
+            // wallet is connected (./keyBinding). Not kept at all when the
+            // user disconnected (or forgetStoredKeys ran) since this started.
+            const kept = await saveKey(keyStorageOf(config), 'session', generatedKey, {
                 sessionPda: sessionPda.toBase58(),
                 walletPda: walletPda.toBase58(),
+                bound: true,
                 expiresAt: expiresAt.toString(),
                 spendingLimits: payload.spendingLimits ? {
                     solLifetimeCap: payload.spendingLimits.solLifetimeCap?.toString(),
@@ -549,13 +594,19 @@ export const createSessionAction = async (
                         }
                         : undefined,
                 } : undefined,
-            }));
+            }, { unlessWipedSince: sessionWipes });
+            if (kept === 'discarded') {
+                console.warn(
+                    `[LazorKit] Session ${sessionPda.toBase58()} landed after disconnect() or forgetStoredKeys() ` +
+                        `deleted the kept keys, so its key was not kept. The session stays on chain until it ` +
+                        `expires; revokeSession({ sessionPda }) closes it sooner.`,
+                );
+            }
         }
 
-        payload.onSuccess?.(sessionPda.toBase58(), sessionPublicKey.toBase58());
         return { sessionPda: sessionPda.toBase58(), sessionPublicKey: sessionPublicKey.toBase58() };
     } catch (error) {
-        return handleActionError(error, set, payload.onFail, walletVersion(get));
+        return handleActionError(error, set, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -578,8 +629,8 @@ export const revokeSessionAction = async (
 ): Promise<void> => {
     const { isSigning, connection, wallet, config } = get();
     if (isSigning) throw new Error('Already signing');
-    if (!wallet) throw new Error('No wallet connected');
-    if (!connection) throw new Error('No connection available');
+    if (!wallet) refuse(set, 'No wallet connected');
+    if (!connection) refuse(set, 'No connection available');
 
     set({ isSigning: true, error: null });
     try {
@@ -587,28 +638,25 @@ export const revokeSessionAction = async (
         //   (a) External sessionPda passed in → revoke that specific session.
         //       walletPda comes from the wallet record on-chain (resolved
         //       below via credential-hash lookup).
-        //   (b) No arg → revoke the SDK-managed session in localStorage.
+        //   (b) No arg → revoke the session whose key the SDK keeps, which
+        //       must be the connected wallet's (an expired one is deleted).
         const external = payload.sessionPda
             ? typeof payload.sessionPda === 'string'
                 ? new PublicKey(payload.sessionPda)
                 : payload.sessionPda
             : null;
 
+        // The kept session first: one of another wallet is refused before
+        // anything is read for the passkey, let alone prompted.
+        const stored = external
+            ? null
+            : await keyForConnectedWallet({ get, slot: 'session', storage: keyStorageOf(config), connection });
+        if (!external && !stored) throw new Error('No session key found');
+
         const resolved = await resolvePasskeyWallet(wallet, connection);
         const { client, version, authorityPda, publicKeyBytes, credentialIdHash } = resolved;
-
-        let sessionPda: PublicKey;
-        let walletPda: PublicKey;
-        if (external) {
-            sessionPda = external;
-            walletPda = resolved.walletPda;
-        } else {
-            const sessionRaw = localStorage.getItem('lazorkit-session');
-            if (!sessionRaw) throw new Error('No session key found');
-            const sessionInfo = JSON.parse(sessionRaw);
-            sessionPda = new PublicKey(sessionInfo.sessionPda);
-            walletPda = new PublicKey(sessionInfo.walletPda);
-        }
+        const sessionPda = external ?? new PublicKey(stored!.info.sessionPda);
+        const walletPda = external ? resolved.walletPda : new PublicKey(stored!.info.walletPda);
 
         const paymaster = paymasterFor(config, version);
         const feePayer = await paymaster.getPayer();
@@ -639,11 +687,12 @@ export const revokeSessionAction = async (
             }
         });
 
-        // Only clear localStorage when we revoked an SDK-managed session.
-        if (!external) localStorage.removeItem('lazorkit-session');
-        payload.onSuccess?.();
+        // The session is closed: its key, if it is the one the SDK keeps, is
+        // of no use any more. Another session's key is left alone.
+        const revoked = sessionPda.toBase58();
+        await forgetKey(keyStorageOf(config), 'session', (info) => info.sessionPda === revoked);
     } catch (error) {
-        return handleActionError(error, set, payload.onFail, walletVersion(get));
+        return handleActionError(error, set, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -651,6 +700,10 @@ export const revokeSessionAction = async (
 
 /**
  * Sign and send transaction using the stored session key (no passkey required).
+ * A plaintext key an earlier release left in localStorage is moved first. The
+ * key signs only while the wallet it was made for is connected
+ * (`KeyWalletMismatchError` otherwise, nothing signed or sent), and an expired
+ * session's key is deleted.
  */
 export const signAndSendWithSessionAction = async (
     get: () => WalletState,
@@ -659,18 +712,17 @@ export const signAndSendWithSessionAction = async (
 ): Promise<string> => {
     const { isSigning, connection, config } = get();
     if (isSigning) throw new Error('Already signing');
-    if (!connection) throw new Error('No connection available');
+    if (!connection) refuse(set, 'No connection available');
 
     set({ isSigning: true, error: null });
     // The protocol this flow runs on, from its own account — for error reporting.
     let flowVersion: ProtocolVersion | undefined;
     try {
-        const sessionRaw = localStorage.getItem('lazorkit-session');
-        if (!sessionRaw) throw new Error('No session key found. Create a session first.');
-        const sessionInfo = JSON.parse(sessionRaw);
-        const sessionKeypair = Keypair.fromSecretKey(new Uint8Array(sessionInfo.secretKey));
-        const sessionPda = new PublicKey(sessionInfo.sessionPda);
-        const walletPda = new PublicKey(sessionInfo.walletPda);
+        const stored = await keyForConnectedWallet({ get, slot: 'session', storage: keyStorageOf(config), connection });
+        if (!stored) throw new Error('No session key found. Create a session first.');
+        const sessionKey = stored.signer;
+        const sessionPda = new PublicKey(stored.info.sessionPda);
+        const walletPda = new PublicKey(stored.info.walletPda);
 
         // A stored session may predate v2; its owner says which program it is.
         const version = await versionOfAccount(connection, sessionPda);
@@ -682,7 +734,7 @@ export const signAndSendWithSessionAction = async (
         const { instructions } = await client.execute({
             payer: feePayer,
             walletPda,
-            signer: { type: 'session', sessionPda, sessionKeyPubkey: sessionKeypair.publicKey },
+            signer: { type: 'session', sessionPda, sessionKeyPubkey: sessionKey.publicKey },
             instructions: payload.instructions,
         });
 
@@ -691,32 +743,69 @@ export const signAndSendWithSessionAction = async (
             connection,
             feePayer,
             instructions,
-            extraSigners: [sessionKeypair],
+            signers: [sessionKey],
             addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
             txVersion: payload.transactionOptions?.txVersion,
         });
-        payload.onSuccess?.(txSignature);
         return txSignature;
     } catch (error) {
-        return handleActionError(error, set, payload.onFail, flowVersion ?? walletVersion(get));
+        return handleActionError(error, set, flowVersion ?? walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
 };
 
 /**
+ * Why `role` is not one `method` can give a new authority on a wallet of
+ * `version`, or null when it is: one of the three ranks the program knows,
+ * except an Owner on v2, which the protocol SDK adds only on an explicit
+ * opt-in this method does not pass. There is no default: the rank decides
+ * what the key may do to the wallet, so the caller names it. Checked before
+ * anything is read or prompted.
+ */
+export function authorityRoleProblem(role: unknown, method: string, version: ProtocolVersion): string | null {
+    const ranks: unknown[] = version === 2 ? [ROLE_ADMIN, ROLE_SPENDER] : [ROLE_OWNER, ROLE_ADMIN, ROLE_SPENDER];
+    if (ranks.includes(role)) return null;
+    const what =
+        role === undefined
+            ? `${method} needs a role: the rank the new key gets on the wallet. There is no default.`
+            : role === ROLE_OWNER
+                ? `${method} does not add an Owner to a LazorKit v2 wallet: an Owner could remove every other authority, this passkey included.`
+                : `${method}: ${typeof role === 'number' ? role : JSON.stringify(role)} is not a role.`;
+    const owner =
+        'ROLE_OWNER (0), which adds and removes any authority, other owners included (never the last owner), and spends without limit';
+    const admin = 'ROLE_ADMIN (1), which adds and removes delegates only, and spends without limit';
+    const spender =
+        'ROLE_SPENDER (2), the delegate rank, which manages no authority and spends only within its policy ' +
+        '(required for this rank on v2: build it with serializeActions([...]))';
+    const choices =
+        version === 2
+            ? `Pass one of: ${admin}; ${spender}. On a v2 wallet ${method} never adds ${owner}.`
+            : `Pass one of: ${owner}; ${admin}; ${spender}.`;
+    return `${what} ${choices} For a key your app holds, use ROLE_SPENDER with a policy.`;
+}
+
+/**
  * Add ed25519 authority action — passkey signs to authorize a new ed25519 authority on-chain.
- * The generated keypair is stored in localStorage for reuse.
+ * The key the SDK generates is kept for `signAndSendWithAuthority` (see
+ * ../keys: a non-extractable key in IndexedDB, not localStorage), bound to
+ * the connected wallet. `payload.role` is required: a missing or unknown one
+ * is refused before anything is read or prompted.
  */
 export const addAuthorityAction = async (
     get: () => WalletState,
     set: (state: Partial<WalletState>) => void,
-    payload: AddAuthorityPayload = {}
+    payload: AddAuthorityPayload
 ): Promise<{ authorityPda: string; authorityPublicKey: string }> => {
     const { isSigning, connection, wallet, config } = get();
     if (isSigning) throw new Error('Already signing');
-    if (!wallet) throw new Error('No wallet connected');
-    if (!connection) throw new Error('No connection available');
+    if (!wallet) refuse(set, 'No wallet connected');
+    if (!connection) refuse(set, 'No connection available');
+    const roleProblem = authorityRoleProblem(payload?.role, 'addAuthority', versionOf(wallet));
+    if (roleProblem) refuse(set, roleProblem);
+    const role = payload.role;
+    // forgetStoredKeys from here on means the key is not kept.
+    const authorityWipes = wipeMark('authority');
 
     set({ isSigning: true, error: null });
     try {
@@ -724,8 +813,6 @@ export const addAuthorityAction = async (
             await resolvePasskeyWallet(wallet, connection);
         const paymaster = paymasterFor(config, version);
         const feePayer = await paymaster.getPayer();
-        const authorityKeypair = Keypair.generate();
-        const role = payload.role ?? ROLE_ADMIN;
 
         // v1 has no spending policies, and its Execute never checked rank: any
         // key added to a v1 wallet can move the whole vault. Refuse to pretend
@@ -742,13 +829,14 @@ export const addAuthorityAction = async (
                     'unrestricted: true to add one anyway, or move the wallet to v2 for bounded keys.',
             );
         }
+        const authorityKey = await generateKey();
 
         const newAuthorityPda = await withAuthority(authorityPda, async (turn) => {
             const prepared = await client.prepareAddAuthority({
                 payer: feePayer,
                 walletPda,
                 secp256r1: { credentialIdHash, publicKeyBytes, authorityPda, ...(await turn.challengeReads(connection)) },
-                newAuthority: { type: 'ed25519', publicKey: authorityKeypair.publicKey },
+                newAuthority: { type: 'ed25519', publicKey: authorityKey.signer.publicKey },
                 role,
                 policy: payload.policy,
             });
@@ -772,18 +860,26 @@ export const addAuthorityAction = async (
             }
         });
 
-        localStorage.setItem('lazorkit-authority', JSON.stringify({
-            secretKey: Array.from(authorityKeypair.secretKey),
-            publicKey: authorityKeypair.publicKey.toBase58(),
+        // On chain now: a key that cannot be stored is kept for this page, and
+        // the call still succeeds. Not kept at all when forgetStoredKeys ran
+        // since this started.
+        const kept = await saveKey(keyStorageOf(config), 'authority', authorityKey, {
             authorityPda: newAuthorityPda.toBase58(),
             walletPda: walletPda.toBase58(),
+            bound: true,
             role,
-        }));
+        }, { unlessWipedSince: authorityWipes });
+        if (kept === 'discarded') {
+            console.warn(
+                `[LazorKit] Authority ${newAuthorityPda.toBase58()} landed after forgetStoredKeys() deleted the ` +
+                    `kept keys, so its key was not kept. The authority stays on the wallet with no one holding ` +
+                    `its key; removeAuthority({ targetAuthorityPda }) removes it.`,
+            );
+        }
 
-        payload.onSuccess?.(newAuthorityPda.toBase58(), authorityKeypair.publicKey.toBase58());
-        return { authorityPda: newAuthorityPda.toBase58(), authorityPublicKey: authorityKeypair.publicKey.toBase58() };
+        return { authorityPda: newAuthorityPda.toBase58(), authorityPublicKey: authorityKey.signer.publicKey.toBase58() };
     } catch (error) {
-        return handleActionError(error, set, payload.onFail, walletVersion(get));
+        return handleActionError(error, set, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -795,16 +891,12 @@ export const addAuthorityAction = async (
 export const removeAuthorityAction = async (
     get: () => WalletState,
     set: (state: Partial<WalletState>) => void,
-    payload: {
-        targetAuthorityPda: string;
-        onSuccess?: () => void;
-        onFail?: (error: Error) => void;
-    }
+    payload: { targetAuthorityPda: string }
 ): Promise<void> => {
     const { isSigning, connection, wallet, config } = get();
     if (isSigning) throw new Error('Already signing');
-    if (!wallet) throw new Error('No wallet connected');
-    if (!connection) throw new Error('No connection available');
+    if (!wallet) refuse(set, 'No wallet connected');
+    if (!connection) refuse(set, 'No connection available');
 
     set({ isSigning: true, error: null });
     try {
@@ -840,9 +932,12 @@ export const removeAuthorityAction = async (
             }
         });
 
-        payload.onSuccess?.();
+        // A removed authority's key can never sign again: if it is the one the
+        // SDK keeps, it goes too.
+        const removed = targetAuthorityPda.toBase58();
+        await forgetKey(keyStorageOf(config), 'authority', (info) => info.authorityPda === removed);
     } catch (error) {
-        return handleActionError(error, set, payload.onFail, walletVersion(get));
+        return handleActionError(error, set, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -865,8 +960,8 @@ export const authorizeAndExecuteAction = async (
 ): Promise<string> => {
     const { isSigning, connection, wallet, config } = get();
     if (isSigning) throw new Error('Already signing');
-    if (!wallet) throw new Error('No wallet connected');
-    if (!connection) throw new Error('No connection available');
+    if (!wallet) refuse(set, 'No wallet connected');
+    if (!connection) refuse(set, 'No connection available');
 
     set({ isSigning: true, error: null });
     try {
@@ -939,10 +1034,9 @@ export const authorizeAndExecuteAction = async (
             }
         });
 
-        payload.onSuccess?.(txSignature);
         return txSignature;
     } catch (error) {
-        return handleActionError(error, set, payload.onFail, walletVersion(get));
+        return handleActionError(error, set, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -961,8 +1055,8 @@ export const authorizeDeferredAction = async (
 ): Promise<{ signature: string; deferredPayload: string }> => {
     const { isSigning, connection, wallet, config } = get();
     if (isSigning) throw new Error('Already signing');
-    if (!wallet) throw new Error('No wallet connected');
-    if (!connection) throw new Error('No connection available');
+    if (!wallet) refuse(set, 'No wallet connected');
+    if (!connection) refuse(set, 'No connection available');
 
     set({ isSigning: true, error: null });
     try {
@@ -1010,10 +1104,9 @@ export const authorizeDeferredAction = async (
         });
 
         const serialized = serializeDeferred(version, deferredPayload);
-        payload.onSuccess?.({ signature, deferredPayload: serialized });
         return { signature, deferredPayload: serialized };
     } catch (error) {
-        return handleActionError(error, set, payload.onFail, walletVersion(get));
+        return handleActionError(error, set, walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -1031,7 +1124,7 @@ export const executeDeferredAction = async (
 ): Promise<string> => {
     const { isSigning, connection, config } = get();
     if (isSigning) throw new Error('Already signing');
-    if (!connection) throw new Error('No connection available');
+    if (!connection) refuse(set, 'No connection available');
 
     set({ isSigning: true, error: null });
     // The protocol this flow runs on, from its own account — for error reporting.
@@ -1064,17 +1157,19 @@ export const executeDeferredAction = async (
                 }),
         });
 
-        payload.onSuccess?.(signature);
         return signature;
     } catch (error) {
-        return handleActionError(error, set, payload.onFail, flowVersion ?? walletVersion(get));
+        return handleActionError(error, set, flowVersion ?? walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
 };
 
 /**
- * Sign and send transaction using the stored ed25519 authority keypair (no passkey required).
+ * Sign and send transaction using the stored ed25519 authority key (no passkey required).
+ * A plaintext key an earlier release left in localStorage is moved first. The
+ * key signs only while the wallet it was added to is connected
+ * (`KeyWalletMismatchError` otherwise, nothing signed or sent).
  */
 export const signAndSendWithAuthorityAction = async (
     get: () => WalletState,
@@ -1083,18 +1178,17 @@ export const signAndSendWithAuthorityAction = async (
 ): Promise<string> => {
     const { isSigning, connection, config } = get();
     if (isSigning) throw new Error('Already signing');
-    if (!connection) throw new Error('No connection available');
+    if (!connection) refuse(set, 'No connection available');
 
     set({ isSigning: true, error: null });
     // The protocol this flow runs on, from its own account — for error reporting.
     let flowVersion: ProtocolVersion | undefined;
     try {
-        const authRaw = localStorage.getItem('lazorkit-authority');
-        if (!authRaw) throw new Error('No authority key found. Add an authority first.');
-        const authInfo = JSON.parse(authRaw);
-        const authorityKeypair = Keypair.fromSecretKey(new Uint8Array(authInfo.secretKey));
-        const authorityPda = new PublicKey(authInfo.authorityPda);
-        const walletPda = new PublicKey(authInfo.walletPda);
+        const stored = await keyForConnectedWallet({ get, slot: 'authority', storage: keyStorageOf(config), connection });
+        if (!stored) throw new Error('No authority key found. Add an authority first.');
+        const authorityKey = stored.signer;
+        const authorityPda = new PublicKey(stored.info.authorityPda);
+        const walletPda = new PublicKey(stored.info.walletPda);
 
         const version = await versionOfAccount(connection, authorityPda);
         flowVersion = version;
@@ -1105,7 +1199,7 @@ export const signAndSendWithAuthorityAction = async (
         const { instructions } = await client.execute({
             payer: feePayer,
             walletPda,
-            signer: { type: 'ed25519', publicKey: authorityKeypair.publicKey, authorityPda },
+            signer: { type: 'ed25519', publicKey: authorityKey.publicKey, authorityPda },
             instructions: payload.instructions,
         });
 
@@ -1114,14 +1208,13 @@ export const signAndSendWithAuthorityAction = async (
             connection,
             feePayer,
             instructions,
-            extraSigners: [authorityKeypair],
+            signers: [authorityKey],
             addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
             txVersion: payload.transactionOptions?.txVersion,
         });
-        payload.onSuccess?.(txSignature);
         return txSignature;
     } catch (error) {
-        return handleActionError(error, set, payload.onFail, flowVersion ?? walletVersion(get));
+        return handleActionError(error, set, flowVersion ?? walletVersion(get));
     } finally {
         set({ isSigning: false });
     }
@@ -1142,7 +1235,7 @@ export const signMessageAction = async (
     }
 
     if (!wallet) {
-        throw new Error('No wallet connected');
+        refuse(set, 'No wallet connected');
     }
 
     set({ isSigning: true, error: null });

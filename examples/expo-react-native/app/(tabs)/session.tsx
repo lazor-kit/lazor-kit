@@ -33,8 +33,11 @@ const DEFAULT_RECIPIENT = '3dsU4iyJWnoPqDQsbXT2KFfc1ZzzgtUyRGJRbRvSJ3r7';
  *   2. Send     — subsequent transactions sign locally with the session keypair (no portal).
  *   3. Revoke   — passkey-signs once more to close the session (refunds rent).
  *
- * The session keypair lives only in this component's state for the demo.
- * In production, store it in a secure keystore (Keychain / Keystore) so reloads don't lose it.
+ * The session keypair lives only in this component's state for the demo, so a
+ * restart loses it. In production, keep it in the OS keystore with
+ * expo-secure-store (`WHEN_UNLOCKED_THIS_DEVICE_ONLY`), never in AsyncStorage,
+ * which is not encrypted: the adapter README's "Session keys" section shows how.
+ * The adapter itself stores no session key.
  */
 export default function SessionScreen() {
   const {

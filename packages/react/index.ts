@@ -11,11 +11,18 @@ export { useWalletStore } from './react/store';
 // Type exports
 export type { WalletInfo, WalletConfig } from '././core/storage';
 export type { WalletHookInterface, ConnectHookOptions, DeferredTxPayload } from './react/useWallet';
-export type { SpendingLimits } from './core/types';
+export type { SpendingLimits, ActionCallbacks, DisconnectOptions, RemoveAuthorityOptions, SignMessageOptions } from './core/types';
 
 // Core exports (for advanced usage)
 export { DialogManager, PortalCancelledError } from './core/portal';
 export { StorageManager } from '././core/storage';
+// Deletes the session and authority keys the SDK keeps (createSession,
+// addAuthority), e.g. at sign-out.
+export { forgetStoredKeys } from './core/keys';
+// A kept key signs only for the wallet it was made for: the refusal when
+// another wallet, or none, is connected.
+export { KeyWalletMismatchError, isKeyWalletMismatchError } from './core/wallet/keyBinding';
+export type { KeyWalletMismatchReason } from './core/wallet/keyBinding';
 
 // Configuration exports
 export * from './config';

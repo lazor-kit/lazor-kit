@@ -1,6 +1,6 @@
 {
   "name": "@lazorkit/wallet",
-  "version": "3.2.1",
+  "version": "3.3.0",
   "description": "Lazorkit Wallet SDK for Solana — passkey-native wallets with seedless onboarding and gasless transactions.",
   "license": "MIT",
   "homepage": "https://github.com/lazor-kit/lazor-kit/tree/main/packages/react#readme",
@@ -47,7 +47,7 @@
     "dev": "rollup -c -w",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/deferred.test.mjs test/txv1.test.mjs",
+    "test": "node --test test/deferred.test.mjs test/errors.test.mjs test/callbacks.test.mjs test/landed-key.test.mjs test/keys.test.mjs test/keys-e2e.test.mjs test/types.test.mjs test/txv1.test.mjs",
     "prepublishOnly": "npm run clean && npm run build"
   },
   "publishConfig": {
@@ -86,6 +86,8 @@
     "@wallet-standard/base": "^1.1.0",
     "@wallet-standard/features": "^1.1.0",
     "@wallet-standard/wallet": "^1.1.0",
+    "fake-indexeddb": "^6.2.5",
+    "jsdom": "^26.1.0",
     "typescript": "^5.9.3"
   }
 }

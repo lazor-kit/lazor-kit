@@ -27,6 +27,7 @@ import {
   PROGRAM_ID_MAINNET,
   PROGRAM_ID_MAINNET_V1,
 } from '../../program/utils';
+import { chainHasError, errorChainText } from '../../program/errorShape';
 
 /** The program's DeferredAuthorizationExpired, seen as `custom program error: 0xbc6`. */
 export const DEFERRED_EXPIRED_CODE = 3014;
@@ -82,28 +83,15 @@ export class DeferredExpiredError extends Error {
   }
 }
 
-function errorText(error: unknown): string {
-  if (error instanceof Error) {
-    const e = error as { logs?: unknown; data?: unknown; cause?: unknown; transactionError?: unknown };
-    return [
-      error.message,
-      JSON.stringify(e.logs ?? ''),
-      JSON.stringify(e.data ?? ''),
-      JSON.stringify(e.transactionError ?? ''),
-      e.cause instanceof Error ? e.cause.message : String(e.cause ?? ''),
-    ].join(' ');
-  }
-  return typeof error === 'string' ? error : (JSON.stringify(error) ?? String(error));
-}
-
 /**
  * The error has the shape of a 3014, from whichever program: web3.js text
  * (`0xbc6`), a TransactionError in JSON (`"Custom":3014`) or as Kora prints it
- * (`Custom(3014)`). The same bytes can never pass again once the slot is past
- * `expires_at`, so the paymaster does not resend one.
+ * (`Custom(3014)`), in the error or in what it wraps. The same bytes can never
+ * pass again once the slot is past `expires_at`, so the paymaster does not
+ * resend one.
  */
 export function hasDeferredExpiredCode(error: unknown): boolean {
-  const text = errorText(error);
+  const text = errorChainText(error);
   return (
     /custom program error: 0xbc6\b/i.test(text) ||
     /"Custom":\s*3014\b/.test(text) ||
@@ -130,24 +118,24 @@ function isLazorKitProgramId(id: string): boolean {
  */
 function deferredExpiredVerdict(error: unknown): 'lazorkit' | 'other' | 'unknown' {
   if (!hasDeferredExpiredCode(error)) return 'other';
-  const firstFailure = /Program (\w{32,44}) failed: custom program error: 0xbc6\b/i.exec(errorText(error));
+  const firstFailure = /Program (\w{32,44}) failed: custom program error: 0xbc6\b/i.exec(errorChainText(error));
   if (!firstFailure) return 'unknown';
   return isLazorKitProgramId(firstFailure[1]) ? 'lazorkit' : 'other';
 }
 
 /**
  * True when the error says a deferred authorization expired: a
- * `DeferredExpiredError` (also one from another copy of this package), or a
- * 3014 whose logs name LazorKit as the first program to fail with it.
+ * `DeferredExpiredError` (also one from another copy of this package, by
+ * `name` and `code`), or a 3014 whose logs name LazorKit as the first program
+ * to fail with it. The error is read through what wraps it: `cause`, and
+ * `error` (a wallet-adapter `WalletError`).
  *
  * A 3014 that names no program is not claimed: an inner program may return
  * the same code. `authorizeAndExecute` and `executeDeferred` tell the two
  * apart themselves, and report an expiry as `DeferredExpiredError`.
  */
 export function isDeferredExpiredError(error: unknown): boolean {
-  if (error instanceof DeferredExpiredError) return true;
-  const e = error as { name?: unknown; code?: unknown } | null | undefined;
-  if (e && e.name === 'DeferredExpiredError' && e.code === DEFERRED_EXPIRED_CODE) return true;
+  if (chainHasError(error, DeferredExpiredError, 'DeferredExpiredError', DEFERRED_EXPIRED_CODE)) return true;
   return deferredExpiredVerdict(error) === 'lazorkit';
 }
 

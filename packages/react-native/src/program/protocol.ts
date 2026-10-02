@@ -31,6 +31,7 @@ import {
   serializeDeferredPayload,
   type DeferredPayload,
 } from './utils';
+import { chainHasError, errorChainText } from './errorShape';
 
 /** 1 = a wallet made before LazorKit v2; 2 = everything since. */
 export type ProtocolVersion = 1 | 2;
@@ -61,16 +62,27 @@ const V1_PROGRAM_IDS = [
 ];
 
 /**
- * True for the error a retired v1 program returns. 4018 is only that when it
- * came from a v1 program: when the logs name one, or when the transaction was
- * a v1 wallet's (`version === 1`). Any other program is free to use the code.
+ * True for a `V1WalletRetiredError` (also one from another copy of this
+ * package, by `name` and `code`), and for the error a retired v1 program
+ * returns (`RetiredDeployment`, 4018): web3.js text (`0xfb2`), a
+ * TransactionError (`"Custom":4018`) or Kora's text (`Custom(4018)`), with the
+ * logs in `logs` or in a paymaster's `data`. 4018 is only that when it came
+ * from a v1 program: when the logs name one, or when the transaction was a v1
+ * wallet's (`version === 1`). Any other program is free to use the code.
+ *
+ * The error is read through what wraps it: `cause`, and `error` (a
+ * wallet-adapter `WalletError`, as a dApp on the Wallet Standard gets it).
  */
 export function isRetiredDeploymentError(error: unknown, version?: ProtocolVersion): boolean {
-  const text =
-    error instanceof Error
-      ? `${error.message} ${JSON.stringify((error as { logs?: unknown }).logs ?? '')}`
-      : String(error);
-  if (!/custom program error: 0xfb2\b/i.test(text) && !/"Custom":\s*4018\b/.test(text)) return false;
+  if (chainHasError(error, V1WalletRetiredError, 'V1WalletRetiredError', RETIRED_DEPLOYMENT_CODE)) return true;
+  const text = errorChainText(error);
+  if (
+    !/custom program error: 0xfb2\b/i.test(text) &&
+    !/"Custom":\s*4018\b/.test(text) &&
+    !/Custom\(\s*4018\s*\)/.test(text)
+  ) {
+    return false;
+  }
   if (V1_PROGRAM_IDS.some((id) => new RegExp(`Program ${id} failed: custom program error: 0xfb2`).test(text))) {
     return true;
   }
@@ -125,14 +137,12 @@ function isLazorKitProgramId(id: string): boolean {
  * - `'other'`: not a 3006, or the logs name another program.
  * - `'unknown'`: a 3006 with no logs that name who failed with it (a
  *   TransactionError read from chain, Kora's text): fetch the logs.
+ *
+ * Reads the error and everything it wraps (`cause`, `error`): message, logs,
+ * a paymaster's `data`, a TransactionError.
  */
 export function signatureReusedVerdict(error: unknown): 'lazorkit' | 'other' | 'unknown' {
-  const text =
-    error instanceof Error
-      ? `${error.message} ${JSON.stringify((error as { logs?: unknown }).logs ?? '')} ${JSON.stringify((error as { data?: unknown }).data ?? '')} ${String((error as { cause?: unknown }).cause ?? '')}`
-      : typeof error === 'string'
-        ? error
-        : JSON.stringify(error) ?? String(error);
+  const text = errorChainText(error);
   if (!/custom program error: 0xbbe\b/i.test(text) && !/"Custom":\s*3006\b/.test(text) && !/Custom\(\s*3006\s*\)/.test(text)) {
     return 'other';
   }
@@ -142,13 +152,17 @@ export function signatureReusedVerdict(error: unknown): 'lazorkit' | 'other' | '
 }
 
 /**
- * True for LazorKit's `SignatureReused` (3006), in any of the shapes it
- * reaches the wallet in (see `signatureReusedVerdict`). A 3006 whose logs
- * name another program as the first to fail is not LazorKit's; one with no
- * logs at all counts as LazorKit's here. The wallet fetches the logs of such
- * a failure before it reports `SignatureReusedError`.
+ * True for a `SignatureReusedError` (also one from another copy of this
+ * package, by `name` and `code`, and one wrapped in `cause` or in a
+ * wallet-adapter `WalletError`'s `error`), and for LazorKit's raw
+ * `SignatureReused` (3006) in any of the shapes it reaches the wallet in (see
+ * `signatureReusedVerdict`). A raw 3006 whose logs name another program as
+ * the first to fail is not LazorKit's; one with no logs at all counts as
+ * LazorKit's here. The wallet fetches the logs of such a failure before it
+ * reports `SignatureReusedError`.
  */
 export function isSignatureReusedError(error: unknown): boolean {
+  if (chainHasError(error, SignatureReusedError, 'SignatureReusedError', SIGNATURE_REUSED_CODE)) return true;
   return signatureReusedVerdict(error) !== 'other';
 }
 

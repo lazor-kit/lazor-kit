@@ -86,9 +86,10 @@ v2 addresses and are wrong for a v1 wallet. How `connect` finds a returning
 user's wallet on either protocol is below.
 
 Once LazorKit retires v1, a v1 wallet's transactions fail with
-`V1WalletRetiredError`. Its funds are safe; move it with
-`LazorKitClient.migrateV1Wallet` from `@lazorkit/sdk-legacy`, or send the user
-to the LazorKit migration page.
+`V1WalletRetiredError`, on the paymaster's first answer: the retired program
+answers every attempt with the same 4018, so it is not retried. Its funds are
+safe; move it with `LazorKitClient.migrateV1Wallet` from `@lazorkit/sdk-legacy`,
+or send the user to the LazorKit migration page.
 
 ## Which wallet is the user's
 
@@ -277,6 +278,29 @@ counter at `confirmed` from an RPC node that has executed it
 the store, the adapter or both, run one after another. The store still
 refuses a second call while one of its own is signing ("Already signing").
 
+**Callbacks.** Every action of `useWallet()` and the store takes `onSuccess`
+and `onFail` (`connect` and `disconnect` in their options, `removeAuthority`
+and `signMessage` as their second argument). Exactly one of them runs per
+call, and it agrees with the promise: `onSuccess` with what the promise
+resolves with, `onFail` with the error it rejects with, a refusal ("Already
+signing", "No wallet connected") included. It runs once the action is over,
+with `isSigning` (or `isConnecting`) already `false`, right before the promise
+settles. So a send made from `onSuccess` runs, as one made on the line after
+`await` does. The one exception is a call refused because another is running
+("Already signing", "Already connecting"): its `onFail` runs at once, and the
+flag stays `true`, since it belongs to the call that is running. What a
+callback throws is logged and changes nothing: a transaction that landed is
+never reported as failed, `onFail` is not called for it and `error` stays
+clear, and a throwing `onFail` does not replace the error. A refusal because
+another call is signing leaves `error` alone (it is that call's); one for want
+of a wallet sets it. `disconnect` leaves `isSigning` to an action still
+running, which goes on to its end and its callbacks; until then a new action
+is refused with "Already signing". `@lazorkit/wallet-mobile-adapter` keeps the
+same contract. `LazorkitWalletAdapter` and the Wallet Standard wallet call
+each `connect`, `disconnect` or `change` listener on its own, and log what one
+throws: it neither stops the listeners after it nor fails a connect that has
+happened.
+
 | Error | When |
 |---|---|
 | `TransactionFailedError` | The transaction landed and failed: fees were paid, nothing else changed. `signature`, `transactionError`, `slot`, and `logs` when they were read. |
@@ -318,12 +342,235 @@ program cannot be told, is thrown as it came. An error from sending TX2 carries
 whose logs name LazorKit as the first program to fail; not for a 3014 that
 names no program.
 
+**Recognising errors.** `isSignatureReusedError`, `isDeferredExpiredError` and
+`isRetiredDeploymentError(error, version?)` are true for the SDK's own error
+(`SignatureReusedError`, `DeferredExpiredError`, `V1WalletRetiredError`):
+- from whichever copy of the package made it. An app whose dependencies load
+  both the ESM and the CJS build has two copies of every class, and
+  `instanceof` fails between them; the predicates match by `name` and `code`.
+- wrapped, in `cause` or in a wallet-adapter `WalletError`'s `error`. A dApp
+  that reaches the wallet through the Wallet Standard gets every error as
+  `WalletSendTransactionError(message, error)`.
+
+They also recognise the raw program error, as web3.js text (`0xbbe`, `0xbc6`,
+`0xfb2`), a TransactionError (`"Custom":3006`), Kora's text (`Custom(3006)`)
+or with the logs in a paymaster's `data`. For a raw error the logs decide
+whose it is: a 3006 with no logs counts as LazorKit's, a 3014 with no logs
+does not, and a 4018 counts when the logs name the v1 program or `version` is
+1. `isKeyWalletMismatchError` is true for a `KeyWalletMismatchError` (a
+kept session or authority key that was not used because its wallet is not the
+connected one, see [Session and authority keys](#session-and-authority-keys)),
+from either copy and wrapped the same way. The other error classes have no
+predicate: compare `error.name` (`'TransactionFailedError'`,
+`'PaymasterError'`, `'V1WalletMigratedError'`,
+`'WalletNeedsConfirmationError'`, …), which holds across copies too.
+
 The portal's transaction preview is compiled without lookup tables whenever it
 fits in a packet, so the portal sees every account the transaction touches.
 Only a payload over the 1232-byte limit is compiled with the lookup tables the
 transaction is sent with (`transactionOptions.addressLookupTableAccounts`, or
 those of a dApp's v0 transaction), and a preview still over the limit no longer
 fails the call before the prompt.
+
+## Session and authority keys
+
+`createSession()` without `sessionKey`, and `addAuthority({ role })`, generate an
+Ed25519 key in the browser and register its public key on chain with one
+passkey approval. The SDK keeps the key, so `signAndSendWithSession` and
+`signAndSendWithAuthority` sign with no passkey prompt. It keeps one key of
+each kind: a new session or authority replaces the last one.
+
+Where the key is kept is set by `keyStorage` on `LazorkitProvider`. The
+default is `'auto'`, which uses the best of these the browser has:
+
+1. **A non-extractable WebCrypto Ed25519 key in IndexedDB** (database
+   `lazorkit-keys`), which signs with `crypto.subtle`. No script can read its
+   secret: a script running on the page can make it sign while the page is
+   open, but cannot copy it out. Supported in Chrome and Edge 137+, Firefox
+   129+, Safari and iOS 17+, and Android WebView 137+.
+2. **The seed, sealed with AES-GCM** under a non-extractable AES key in the
+   same database. This is for browsers without WebCrypto Ed25519 (iOS 16,
+   older Chrome and WebViews), and for an IndexedDB that cannot hold an
+   Ed25519 key. It only keeps the key out of localStorage. Any script running
+   on the page can read the sealed seed and have the AES key decrypt it, so
+   against XSS this tier is no better than 3.2's plaintext. Once the browser
+   has Ed25519, the seed is moved to (1).
+3. **This page's memory.** This is used without IndexedDB (storage blocked,
+   some private windows), outside a secure context, or where IndexedDB cannot
+   hold a WebCrypto key at all. The key is gone on reload. Its session stays
+   on chain until it expires, with no one holding the key.
+
+`keyStorage="memory"` uses (3) everywhere and keeps nothing at rest. With it,
+keys that an earlier `'auto'` run stored in IndexedDB are not read.
+
+Nothing is written to localStorage any more, and a `sessionKey` you pass in is
+never stored: only you hold its secret.
+
+**A kept key signs only for its own wallet.** Each key is stored with the
+wallet it was registered for (its wallet PDA), its session or authority PDA,
+and a session's expiry. `signAndSendWithSession`, `signAndSendWithAuthority`
+and `revokeSession()` (without `sessionPda`) use the key only while that same
+wallet is connected. With no wallet connected, or another one, they reject
+with `KeyWalletMismatchError` before anything is signed or sent: `reason` is
+`'no-wallet'` or `'other-wallet'`, `keyWallet` the wallet PDA the key signs
+for, `connectedWallet` the connected one. The key itself checks again when it
+signs, so a wallet that disconnects or switches while a send is being built
+stops it too. Connect `keyWallet` again and the key signs, or create a session
+(add an authority) for the connected wallet, which replaces it.
+
+The stored wallet is checked on every use, not taken on trust: the session
+or authority PDA in the record must derive from that wallet and the key (no
+network needed). A record that does not (one altered in IndexedDB, or made
+on another cluster) is checked as an earlier release's entry is (see
+**Upgrading** below): bound to the wallet its account on chain names, or
+refused as `'unbound'`.
+
+```ts
+import { isKeyWalletMismatchError } from '@lazorkit/wallet';
+
+try {
+  await signAndSendWithSession({ instructions });
+} catch (error) {
+  if (isKeyWalletMismatchError(error)) {
+    // Not this wallet's session: ask for the passkey and create one for it.
+    await createSession({ spendingLimits });
+  } else throw error;
+}
+```
+
+A stored session key whose session has expired is deleted the next time it is
+read (a send, or `revokeSession()`), which then rejects with "No session key
+found: the stored session … expired after slot …". It is deleted once the
+chain, read at the connection's commitment, is past the session's
+`expiresAt`: never while the session can still sign. Revoke an expired
+session by its PDA (`revokeSession({ sessionPda })`) if you want its account
+closed.
+
+**What this does not protect against.** In (1) and (2) the key is still at
+rest in the browser profile. Chromium writes a non-extractable key's bytes to
+the profile's IndexedDB files unencrypted (checked in Chrome for Testing 147;
+Firefox and Safari were not checked), and in (2) the AES key is stored next to
+the seed it seals. So malware that can read the browser profile can copy the
+key, as it could the localStorage entry in 3.2. A script injected into your
+page can make the key sign anything while the page is open, in every tier. For
+no key at rest at all, use `keyStorage="memory"`.
+
+**Upgrading from 3.2 or earlier.** Those releases kept these keys in
+localStorage as plaintext secret keys (`lazorkit-session`,
+`lazorkit-authority`). Such a key is moved when `LazorkitProvider` mounts, or
+on its first use, and the plaintext is deleted once the move has been written.
+If the write fails, or IndexedDB does not open (an error, or no answer within
+5 seconds), the plaintext stays, the key still signs on this page, and the
+move is tried again on the next use. A write that keeps failing (a full disk,
+say) leaves the plaintext where it is until one succeeds. Where the key can
+only go to memory (3), the plaintext is deleted anyway. An entry in those
+slots that this SDK did not write is left untouched, and no key is read from
+it. After the move, going back to 3.2 or earlier finds no key ("No session key
+found. Create a session first."), and the user creates a new session.
+
+Such an entry names its wallet, but 3.2 never checked it. On its first use
+the key is bound to that wallet if the program derives the entry's session or
+authority PDA from that wallet and the key (v2 or v1, on the cluster the app
+is on). Otherwise it is bound to the wallet the PDA's account on chain names,
+if that account is LazorKit's and names this key. The binding is stored, and
+the key then signs only for that wallet, as above. **An entry whose wallet
+cannot be confirmed either way stays unbound and is never used**: every send
+rejects with `KeyWalletMismatchError` and `reason: 'unbound'`, whichever
+wallet is connected. Create the session (add the authority) again, which
+replaces it. (`forgetStoredKeys()` deletes it as well, but it also deletes
+the other kept key.)
+
+**If your app removed `lazorkit-session` / `lazorkit-authority` at sign-out**
+(or called `localStorage.clear()`), that no longer removes the keys: they are
+in IndexedDB now. `disconnect` deletes the session key; call
+`forgetStoredKeys()` as well to delete the authority key too:
+
+```tsx
+import { forgetStoredKeys, useWallet } from '@lazorkit/wallet';
+
+function SignOutButton() {
+  const { disconnect } = useWallet();
+  return (
+    <button
+      onClick={async () => {
+        await disconnect();
+        await forgetStoredKeys();
+      }}
+    >
+      Sign out
+    </button>
+  );
+}
+```
+
+**When a kept key is deleted.**
+- `revokeSession()` deletes the kept session key once the revoke lands.
+  Revoking a different session leaves it alone.
+- `removeAuthority` deletes the kept authority key when it removes that
+  authority.
+- `forgetStoredKeys()` deletes both, wherever they are kept: IndexedDB, this
+  page's memory, and any plaintext an earlier release left. It rejects if
+  IndexedDB holds keys and could not be cleared. A `createSession` or
+  `addAuthority` still waiting for its transaction when it runs does not keep
+  its key once it lands (a warning is logged; the session or authority stays
+  on chain).
+- A stored session key is deleted when it is read after its session expired.
+- `disconnect()` deletes the session key: from IndexedDB, this page's memory
+  and any plaintext an earlier release left (with `keyStorage="memory"`, from
+  memory and plaintext; IndexedDB is not used then). It deletes the key
+  whichever wallet it belongs to, so a key kept for another wallet with
+  `keepSessionKeys` goes too. A `createSession` still waiting for its
+  transaction when you disconnect does not keep its key once it lands: the
+  call still succeeds, a warning is logged, and the session stays on chain
+  until it expires. `disconnect({ keepSessionKeys: true })` keeps the key (that
+  session's too). If IndexedDB fails to delete it, `disconnect` still succeeds
+  and logs a warning; the key stays bound to its wallet. `forgetStoredKeys()`
+  rejects instead, for a sign-out that must know.
+- `disconnect` keeps the authority key. Like a kept session key, it signs only
+  once the wallet it was registered for is connected again (see above). On a
+  shared computer, call `forgetStoredKeys()` at sign-out.
+
+**Several tabs.** `disconnect()` ends the connection in its own tab only: the
+connected wallet is not shared between tabs, so another tab of the app stays
+connected, and there the authority key keeps signing for that wallet (and so
+does a session key that tab holds in memory). The keys in IndexedDB are shared
+by every tab, so a `disconnect()` in one tab deletes the session key another
+tab is using. To end signing in every tab, call `forgetStoredKeys()` at
+sign-out: a tab still open then finds no key in IndexedDB.
+
+If a key cannot be stored after its session or authority has landed, the call
+still succeeds: the key signs for the rest of this page, and a warning is
+logged. If IndexedDB only failed this time, the key is stored on its next use
+here, unless another tab has stored a newer key meanwhile.
+
+**What bounds a kept key** is what was registered on chain, not where the key
+is kept. A session is bounded by its `spendingLimits` and its expiry. An
+authority is bounded by the role you give it, which `addAuthority` requires
+(there is no default, and a missing or unknown role throws before the passkey
+prompt):
+
+| Role | What the key may do |
+|---|---|
+| `ROLE_OWNER` (0) | Add and remove any authority, other owners included (never the last owner), and spend without limit. On a v2 wallet the protocol SDK adds an owner only with `allowOwner`, which `addAuthority` does not pass, so it refuses `ROLE_OWNER` there before anything is read or prompted. On a v1 wallet it adds one. |
+| `ROLE_ADMIN` (1) | Add and remove delegates only, and spend without limit: no policy, no expiry, until `removeAuthority`. |
+| `ROLE_SPENDER` (2), the delegate rank | Manage no authority; spend only within its `policy` (required for this rank on v2; build it with `serializeActions([...])`). |
+
+For a key your app holds, use `ROLE_SPENDER` with a `policy`:
+
+```ts
+import { ROLE_SPENDER, serializeActions, Actions } from '@lazorkit/wallet';
+
+await addAuthority({
+  role: ROLE_SPENDER,
+  policy: serializeActions([Actions.solMaxPerTx(100_000_000n)]),
+});
+```
+
+**Signatures.** Ed25519 as RFC 8032 defines it is deterministic: Chromium and
+Node sign exactly as web3.js's `Keypair` does with the same seed (the package's
+tests check this byte for byte). Safari signs with a random nonce instead, so
+the same message gets a different signature each time. Each one is valid, and
+nothing in the SDK depends on the signature bytes.
 
 ## API Reference
 
@@ -340,18 +587,37 @@ Connects the stored wallet, or finds the passkey's own (see
 |---|---|---|
 | `options.confirmWallet` | `string` | Vault (or wallet) address the user recognised after `WalletNeedsConfirmationError`. |
 | `options.onConfirmWallet` | `'builtin' \| 'throw' \| (req) => …` | Overrides the provider's for this call. |
+| `options.onSuccess` | `(wallet: WalletInfo) => void` | Runs once `isConnecting` is `false`, right before the promise resolves (see [Callbacks](#sending-transactions)). |
+| `options.onFail` | `(error: Error) => void` | Runs with the error the promise rejects with. |
 
 **Returns**
 `Promise<WalletInfo>`
 
-#### `disconnect()`
+#### `disconnect(options?)`
 
-Disconnects the wallet.
+Disconnects the wallet. `options.onSuccess` / `options.onFail` run once it is
+over, as every action's do. An action still running is not abandoned: it keeps
+`isSigning` until it ends, but a session or authority send among them no
+longer signs. The session key the SDK keeps is deleted, unless
+`options.keepSessionKeys` is `true`, and so is the key of a `createSession`
+that lands after the disconnect; the authority key is kept. A kept key signs
+only once its wallet is connected again. This tab only: another tab of the
+app stays connected (see
+[Session and authority keys](#session-and-authority-keys) and
+`forgetStoredKeys()` below).
+
+**Parameters**
+
+| Param | Type | Description |
+|---|---|---|
+| `options.keepSessionKeys` | `boolean` | Keep the session key (default `false`: it is deleted). |
+| `options.onSuccess` | `() => void` | Runs once the disconnect is over, right before the promise resolves. |
+| `options.onFail` | `(error: Error) => void` | Runs with the error the promise rejects with. |
 
 **Returns** 
 `Promise<void>`
 
-#### `signMessage(message)`
+#### `signMessage(message, options?)`
 
 Signs a message string key.
 
@@ -360,6 +626,8 @@ Signs a message string key.
 | Param | Type | Description |
 |---|---|---|
 | `message` | `string` | Message content |
+| `options.onSuccess` | `(result: { signature: string, signedPayload: string }) => void` | Runs once `isSigning` is `false`, right before the promise resolves (see [Callbacks](#sending-transactions)). |
+| `options.onFail` | `(error: Error) => void` | Runs with the error the promise rejects with. |
 
 **Returns**
 `Promise<{ signature: string, signedPayload: string }>`
@@ -378,7 +646,22 @@ Signs and sends transaction via Paymaster.
 | `transactionOptions.computeUnitLimit` | `number` | Max compute units. |
 | `transactionOptions.addressLookupTableAccounts` | `AddressLookupTableAccount[]` | Lookup tables for v0 txs (the portal preview uses them too). |
 | `transactionOptions.clusterSimulation` | `'devnet' \| 'mainnet'` | Network for simulation. |
+| `payload.onSuccess` | `(signature: string) => void` | Runs once `isSigning` is `false`, right before the promise resolves (see [Callbacks](#sending-transactions)). |
+| `payload.onFail` | `(error: Error) => void` | Runs with the error the promise rejects with. |
 
 **Returns**
 `Promise<string>` - Transaction signature, once the transaction is confirmed
 (see [Sending transactions](#sending-transactions)).
+
+### `forgetStoredKeys()`
+
+A function the package exports, not a `useWallet()` method. Deletes the
+session key and the authority key the SDK keeps, whatever `keyStorage` is:
+both IndexedDB slots, this page's memory copies, and any plaintext an earlier
+release left in localStorage. A session or authority stays on chain; only the
+key is gone, and a `createSession` or `addAuthority` still waiting for its
+transaction does not keep its key once it lands. See
+[Session and authority keys](#session-and-authority-keys).
+
+**Returns**
+`Promise<void>`. Rejects when IndexedDB holds keys and could not be cleared.

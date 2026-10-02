@@ -229,9 +229,24 @@ Errors:
 | `LazorKitError` with `code: 'PORTAL_ERROR'` | The portal redirected with an `error`; its text is the message. |
 
 A second sign action while one is running rejects with `SigningError` (and
-calls its `onFail`). Each action's promise settles, and its `onSuccess` or
+calls its `onFail` at once, while `isSigning` is still `true`: the flag is the
+running action's). Each action's promise settles, and its `onSuccess` or
 `onFail` runs, only once `isSigning` is `false` again, so the next call can be
-made on the line after `await`, or from `onSuccess`.
+made on the line after `await`, or from `onSuccess`. `disconnect` leaves
+`isSigning` to an action still running, which goes on to its end and its
+callbacks.
+
+The same holds for every action, from the store as from the hook: `connect`
+and `disconnect` call back once `isConnecting` is `false` (the store's
+`connect` honours them too, and its `disconnect` takes them), except a
+`connect` refused because another is running ("Already connecting"), which
+calls back at once. Exactly one
+callback runs per call, and it agrees with the promise: `onSuccess` with what
+it resolves with, `onFail` with the error it rejects with, a refusal included
+(another call signing, "No wallet connected", `transferSol` too). What a
+callback throws is logged and changes nothing: a transaction that landed is
+never reported as failed, and a throwing `onFail` does not replace the error.
+The web SDK, `@lazorkit/wallet`, keeps the same contract.
 
 ## Sending transactions
 
@@ -288,12 +303,100 @@ TX1) and `expiresAtSlot` (when it was read): `DeferredFailureContext`.
 whose logs name LazorKit as the first program to fail; not for a 3014 that
 names no program.
 
+**Recognising errors.** `isSignatureReusedError`, `isDeferredExpiredError` and
+`isRetiredDeploymentError(error, version?)` are true for the SDK's own error
+(`SignatureReusedError`, `DeferredExpiredError`, `V1WalletRetiredError`) from
+whichever copy of the package made it (matched by `name` and `code`, since
+`instanceof` fails between two copies), and for one wrapped in `cause` or in a
+wallet-adapter `WalletError`'s `error`. They also recognise the raw program
+error, as web3.js text (`0xbbe`, `0xbc6`, `0xfb2`), a TransactionError
+(`"Custom":3006`), Kora's text (`Custom(3006)`) or with the logs in a
+paymaster's `data`. For a raw error the logs decide whose it is: a 3006 with
+no logs counts as LazorKit's, a 3014 with no logs does not, and a 4018 counts
+when the logs name the v1 program or `version` is 1. The other error classes
+have no predicate: compare `error.name` (`'TransactionFailedError'`,
+`'PaymasterError'`, `'V1WalletMigratedError'`, `'SigningError'`, …), which
+holds across copies too.
+
 The portal's transaction preview is compiled without lookup tables whenever it
 fits in a packet, so the portal sees every account the transaction touches.
 Only a payload over the 1232-byte limit is compiled with
 `transactionOptions.addressLookupTableAccounts`, and a preview still over the
 limit no longer fails `signAndSendTransaction`, `authorizeAndExecute` or
 `authorizeDeferred` before the portal opens.
+
+## Session keys
+
+`createSession` registers a session key that your app generates, and
+`signAndSendWithSession` signs with the `Keypair` you pass it. The adapter
+never stores a session key, or the Ed25519 key you pass to
+`addAuthorityEd25519`. What it keeps in AsyncStorage is the connected wallet's
+public record, the configuration, and each passkey's transaction state; none of
+it is secret. (The web SDK, `@lazorkit/wallet`, generates and keeps the key
+itself, as a non-extractable WebCrypto key.)
+
+To keep a session key across restarts, store it in the OS keystore with
+`expo-secure-store` (iOS Keychain, Android Keystore). Never store it in
+AsyncStorage, which is not encrypted on disk and is included in device backups.
+
+```ts
+import * as SecureStore from 'expo-secure-store';
+import { Buffer } from 'buffer';
+import { Keypair, PublicKey } from '@solana/web3.js';
+
+const SLOT = 'myapp.lazorkit-session';
+const OPTIONS = { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY };
+
+// Once createSession has resolved. `walletPda`: the connected wallet's
+// (`wallet.walletPda`), the only one this key may sign for.
+async function keepSession(sessionKeypair: Keypair, sessionPda: PublicKey, expiresAtSlot: bigint, walletPda: string) {
+  const value = JSON.stringify({
+    seed: Buffer.from(sessionKeypair.secretKey.slice(0, 32)).toString('base64'),
+    sessionPda: sessionPda.toBase58(),
+    expiresAtSlot: expiresAtSlot.toString(),
+    walletPda,
+  });
+  await SecureStore.setItemAsync(SLOT, value, OPTIONS);
+}
+
+// The kept session, only for the wallet connected now (`wallet.walletPda`).
+async function keptSession(connectedWalletPda: string | undefined) {
+  const raw = await SecureStore.getItemAsync(SLOT, OPTIONS);
+  if (!raw) return null;
+  const { seed, sessionPda, expiresAtSlot, walletPda } = JSON.parse(raw);
+  if (!connectedWalletPda || walletPda !== connectedWalletPda) return null;
+  return {
+    sessionKeypair: Keypair.fromSeed(Buffer.from(seed, 'base64')),
+    sessionPda: new PublicKey(sessionPda),
+    expiresAtSlot: BigInt(expiresAtSlot),
+  };
+}
+
+// Once revokeSession has resolved, the session has expired, or the user
+// disconnects.
+async function forgetSession() {
+  await SecureStore.deleteItemAsync(SLOT, OPTIONS);
+}
+```
+
+- Keep the wallet the session belongs to with the key, and use the key only
+  while that wallet is connected: the session signs for its own wallet
+  whichever wallet the app shows. The web SDK does this for the keys it keeps
+  (`KeyWalletMismatchError`), and deletes its session key on `disconnect`.
+
+- `WHEN_UNLOCKED_THIS_DEVICE_ONLY` keeps the item on this device: it is not
+  restored to another one from a backup.
+- On iOS, a Keychain item survives uninstalling the app. After a reinstall,
+  the item may name a session that has expired or been revoked: check the
+  session account still exists and `expiresAtSlot` is in the future before you
+  use it, and delete the item if not.
+- On Android, exclude SecureStore's data from Auto Backup (see the
+  expo-secure-store docs). A restored item cannot be decrypted on another
+  install.
+- `requireAuthentication: true` asks for the user's biometrics on every read,
+  and the item is lost when the enrolled biometrics change.
+- What bounds a session key is what was registered on chain: its `actions`
+  (spending limits) and its expiry, not where you keep it.
 
 ## API Reference
 
@@ -310,11 +413,14 @@ Connects to the wallet.
 | `options.redirectUrl` | `string` | Deep link URL |
 | `options.confirmWallet` | `string` | The wallet the user chose (vault or wallet PDA). See [Which wallet is the user's](#which-wallet-is-the-users). |
 | `options.onConfirmWallet` | `'builtin' \| 'throw' \| (request) => …` | Overrides the provider's setting for this call. |
+| `options.onSuccess` | `(wallet: WalletInfo) => void` | Runs once `isConnecting` is `false`, right before the promise resolves. |
+| `options.onFail` | `(error: Error) => void` | Runs with the error the promise rejects with. |
 
-#### `disconnect()`
+#### `disconnect(options?)`
 
 Disconnects the wallet. A `connect` still running is abandoned: it rejects
-with `PortalCancelledError` and connects nothing.
+with `PortalCancelledError` and connects nothing. `options.onSuccess` /
+`options.onFail` run once the disconnect is over.
 
 #### `signMessage(message, options)`
 
@@ -329,6 +435,34 @@ Signs a message string.
 
 **Returns**
 `Promise<string>` - Signature
+
+#### `addAuthorityEd25519(payload, options)`
+
+Adds an Ed25519 public key your app (or backend) holds as an authority of the
+connected wallet, with one passkey approval. `payload.role` is required: there
+is no default, and a missing or unknown role throws before anything is read or
+the portal opens.
+
+| Role | What the key may do |
+|---|---|
+| `ROLE_OWNER` (0) | Add and remove any authority, other owners included (never the last owner), and spend without limit. On a v2 wallet the protocol SDK adds an owner only with `allowOwner`, which this method does not pass, so `ROLE_OWNER` is refused there before anything is read or the portal opens. On a v1 wallet it adds one. |
+| `ROLE_ADMIN` (1) | Add and remove delegates only, and spend without limit. |
+| `ROLE_SPENDER` (2), the delegate rank | Manage no authority; spend only within its `policy` (required for this rank on v2; build it with `serializeActions([...])`). |
+
+For a key your app holds, use `ROLE_SPENDER` with a `policy`.
+
+**Parameters**
+
+| Param | Type | Description |
+|---|---|---|
+| `payload.newEd25519Pubkey` | `PublicKey` | The key to add. |
+| `payload.role` | `number` | Required: `ROLE_OWNER`, `ROLE_ADMIN` or `ROLE_SPENDER`. |
+| `payload.policy` | `Uint8Array` | The spending policy, for `ROLE_SPENDER`. |
+| `payload.unrestricted` | `boolean` | Required on a v1 wallet, where any added key can spend the whole vault. |
+| `options.redirectUrl` | `string` | Deep link URL |
+
+**Returns**
+`Promise<{ signature: string; newAuthorityPda: PublicKey }>`
 
 #### `signAndSendTransaction(payload, options)`
 
