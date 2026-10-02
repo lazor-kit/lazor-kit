@@ -316,7 +316,7 @@ happened.
 | `SignatureReusedError` | LazorKit rejected the passkey signature (3006): its counter was already used. Left for the same passkey signing somewhere else at the same moment, or a paymaster reading older state than the wallet. That signature can never be valid, so it is not resent, and no new prompt opens on its own: ask the user to sign again. An inner program's error with the same code (Anchor's `AccountNotMutable`) is told apart by the logs and reported as the failure it is. |
 | `PaymasterError` | The paymaster refused the transaction: `code` and `data` of its JSON-RPC error, or `httpStatus`. |
 | `DeferredExpiredError` | TX2 of a deferred execution (`authorizeAndExecute`, `executeDeferred`) came after its authorization expired (`DeferredAuthorizationExpired`, 3014), so nothing in it ran. `authorizeSignature` (TX1, when this call sent it), `deferredExecPda` (the account holding the paymaster's rent until the Authorize payer reclaims it) and `expiresAtSlot`. The passkey approval is spent: ask the user to approve again. An inner program's 3014 is not reported as this (see below). |
-| `UnlistedSolOutflowError` | A `signAndSendWithSession` or `signAndSendWithAuthority` transaction would have lowered the wallet's SOL balance (rent for a new account included), and the session's limits or the delegate's policy name no SOL (`ActionUnlistedSolOutflow`, 3037). Nothing in it ran. Its message is "This session is not allowed to spend SOL" ("This key …" for a delegate); `signer` is `'session'` or `'authority'`, and `cause` the failure as it came. See [What a policy bounds](#what-a-policy-bounds). |
+| `UnlistedSolOutflowError` | A `signAndSendWithSession` or `signAndSendWithAuthority` transaction would have lowered the wallet's SOL balance (rent for a new account included), and the session's limits or the delegate's policy name no SOL (`ActionUnlistedSolOutflow`, 3037). Nothing in it ran, and it is not resent. Its message is "This session is not allowed to spend SOL" ("This key …" for a delegate); `signer` is `'session'` or `'authority'`, and `cause` the failure as it came. See [What a policy bounds](#what-a-policy-bounds). |
 | `UnlistedTokenOutflowError` | The same for a token whose mint the limits do not name (`ActionUnlistedTokenOutflow`, 3038): "This session is not allowed to spend this token". |
 
 Every status read and paymaster request is bounded in time, so one that never
@@ -603,7 +603,9 @@ nothing in the SDK depends on the signature bytes.
 ### What a policy bounds
 
 A session's `spendingLimits` and a delegate's `policy` name what may leave the
-wallet, and under LazorKit v2 nothing they do not name may:
+wallet, and under LazorKit v2 nothing they do not name may (from the program
+release that adds errors 3037 and 3038: until then an asset they do not name
+is not bounded at all, see the end of this section):
 
 - **SOL** leaves only with a SOL limit (`solPerTxMax`, `solLifetimeCap` or
   `solRecurring`; an `Actions.sol*` action in a policy). Without one, a
@@ -622,7 +624,13 @@ wallet, and under LazorKit v2 nothing they do not name may:
 - The wallet's token accounts a transaction passes writable may change only
   their balance: owner, delegate, close authority and state stay as they were
   (`SessionTokenAuthorityChanged`, 3032).
-- A policy holds at most 16 actions: SOL's three, and one to three per mint.
+- A policy must fit in the transaction that registers it, beside the
+  passkey's response: at most 244 bytes of actions (and 16 actions). A SOL
+  limit takes 19 bytes (`solRecurring` 43), a token's `lifetimeCap` or
+  `perTxMax` 51 and its `recurring` 75. That is `solPerTxMax` with `perTxMax`
+  and `lifetimeCap` for 2 mints (223 bytes), or `solPerTxMax` with `perTxMax`
+  for 4 (223). The transaction holds 1232 bytes, and the passkey's
+  clientDataJSON, which the browser writes, takes up to about 300 of them.
 
 A session made with `unrestricted: true` has no policy, and none of these
 bounds: it can move anything the wallet holds until it expires.
@@ -645,17 +653,25 @@ Each `tokens` entry takes `mint` (a `PublicKey` or base58) and at least one of
 `lifetimeCap`, `perTxMax` and `recurring: { limit, windowSlots }`, as the SOL
 limits do. `createSession` checks the limits before anything is read or the
 passkey is asked: an entry with no limit, a mint named twice, an amount
-outside a u64, a window of 0 slots, or more than 16 actions throws. Nothing is
+outside a u64, a window of 0 slots, or more than 244 bytes of actions throws.
+`addAuthority` does not check a `policy`'s size: keep it within the same 244
+bytes, or the transaction may not fit once the passkey has signed. Nothing is
 added that you did not ask for: SOL limits alone let the session spend no
 token, and token limits alone no SOL. `spendingLimitsToActions(limits)` gives
 the actions a `SpendingLimits` stands for, so
 `serializeActions(spendingLimitsToActions(limits))` is a delegate `policy`
 with the same limits.
 
-The program enforces this from the release that adds errors 3037 and 3038. A
-session or delegate made with SOL limits only, as every session this SDK made
-before `tokens`, can move no token after that: create it again, naming the
-mints it spends.
+The program enforces this from the release that adds errors 3037 and 3038.
+Until that release an asset the limits do not name is not bounded at all: a
+session with token limits only can spend all the wallet's SOL, and one with
+SOL limits only any token. After it, a session or delegate made with SOL
+limits only, as every session this SDK made before `tokens`, can move no
+token: make a new one that names the mints it spends. A session key the SDK
+generates is new each time. For a `sessionKey` of your own that already has a
+session, `createSession` resolves with that session as it was made, whatever
+limits you pass: revoke it first (`revokeSession({ sessionPda })`), or
+register a new key.
 
 ## Signing messages
 

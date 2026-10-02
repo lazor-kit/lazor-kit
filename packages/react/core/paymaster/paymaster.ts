@@ -17,6 +17,7 @@ import {
     type ProtocolVersion,
 } from '../program/protocol';
 import { hasDeferredExpiredCode } from '../wallet/deferred';
+import { hasUnlistedOutflowCode } from '../wallet/policy';
 export interface PaymasterConfig {
     paymasterUrl: string;
     apiKey?: string;
@@ -280,6 +281,10 @@ export class Paymaster {
      *   authorization expired, or an inner program's error with that code)
      *   and no earlier attempt may have been sent: the `PaymasterError`.
      *   Whose 3014 it was is told by the caller (`executeBeforeExpiry`).
+     * - the simulation failed with 3037 or 3038 (a session or delegate moving
+     *   an asset its policy does not name, or an inner program's error with
+     *   that code) and no earlier attempt may have been sent: the
+     *   `PaymasterError`. The same bytes move the same assets.
      * - the paymaster answered with a 4018 (`RetiredDeployment`: a retired
      *   v1 program answers every attempt with it, or an inner program's error
      *   with that code), on its first answer: `V1WalletRetiredError` when it
@@ -314,6 +319,8 @@ export class Paymaster {
                 // DeferredAuthorizationExpired (3014): the slot only moves on,
                 // so the same bytes can never pass again.
                 if (!maybeSent && hasDeferredExpiredCode(error)) throw error;
+                // ActionUnlistedSolOutflow / ActionUnlistedTokenOutflow (3037 / 3038).
+                if (!maybeSent && hasUnlistedOutflowCode(error)) throw error;
                 // RetiredDeployment (4018): the next attempt gets the same answer.
                 if (hasRetiredDeploymentCode(error)) {
                     if (!maybeSent) throw this.retiredDeploymentFailure(error);

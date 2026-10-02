@@ -11,13 +11,25 @@
  * limit does not name it.
  */
 import { PublicKey } from '@solana/web3.js';
-import { Actions, type SessionAction } from '../program';
+import { Actions, serializeActions, type SessionAction } from '../program';
 import { PROGRAM_ID_DEVNET, PROGRAM_ID_MAINNET } from '../program/utils';
-import { chainHasError, errorChainText, isNamedError } from '../program/errorShape';
+import { chainHasError, errorChain, errorChainText, isNamedError } from '../program/errorShape';
 import type { SpendingLimits } from '../types';
 
 /** The most actions the program accepts in one policy. */
 export const MAX_POLICY_ACTIONS = 16;
+
+/**
+ * The most bytes of actions a preset may make. They travel in the transaction
+ * that registers them (CreateSession, or AddAuthority for a delegate) beside
+ * the passkey's WebAuthn response, and a transaction holds 1232 bytes. 688
+ * of them are taken whatever the actions. The clientDataJSON the browser
+ * writes takes about 175 for the portal's frame on an app's page, and about
+ * 110 more when Chrome adds the extra key it adds at random. 244 bytes leave
+ * room for a clientDataJSON of 300, so a preset that would not fit is refused
+ * before the passkey is asked, not after.
+ */
+export const MAX_POLICY_ACTION_BYTES = 1232 - 688 - 300;
 
 const U64_MAX = (1n << 64n) - 1n;
 
@@ -38,8 +50,12 @@ function windowSlots(what: string, value: unknown): bigint {
  * The session actions a `SpendingLimits` preset stands for: the SOL limits,
  * then each token's, in the order given. Throws, before anything is read or
  * prompted, on a token with no limit or a mint that is not a public key, on a
- * mint named twice, on an amount outside a u64, on a window of 0 slots, and
- * on more than 16 actions in all (what the program accepts).
+ * mint named twice, on an amount outside a u64, on a window of 0 slots, on
+ * more than 16 actions in all (what the program accepts), and on actions of
+ * more than 244 bytes (what fits in the transaction beside the passkey's
+ * response; see `MAX_POLICY_ACTION_BYTES`). A SOL limit takes 19 bytes
+ * (`solRecurring` 43), a token's `lifetimeCap` or `perTxMax` 51 and its
+ * `recurring` 75.
  *
  * An asset this preset does not name cannot leave the vault: give a SOL limit
  * whenever the session may spend SOL, rent for an account the vault pays for
@@ -103,6 +119,14 @@ export function spendingLimitsToActions(limits: SpendingLimits | undefined): Ses
     if (actions.length > MAX_POLICY_ACTIONS) {
         throw new RangeError(
             `spendingLimits makes ${actions.length} actions; a policy holds at most ${MAX_POLICY_ACTIONS}`,
+        );
+    }
+    const bytes = serializeActions(actions).length;
+    if (bytes > MAX_POLICY_ACTION_BYTES) {
+        throw new RangeError(
+            `spendingLimits makes ${bytes} bytes of actions; at most ${MAX_POLICY_ACTION_BYTES} fit in the ` +
+                "transaction beside the passkey's response. A SOL limit takes 19 bytes (solRecurring 43), a " +
+                "token's lifetimeCap or perTxMax 51 and its recurring 75: drop a limit, or a mint.",
         );
     }
     return actions;
@@ -180,6 +204,21 @@ function isLazorKitV2ProgramId(id: string): boolean {
     return id === PROGRAM_ID_MAINNET.toBase58() || id === PROGRAM_ID_DEVNET.toBase58();
 }
 
+/** The error has the shape of `code`, from whichever program: web3.js text, a TransactionError, Kora's text. */
+function hasCode(text: string, code: number): boolean {
+    const hex = `0x${code.toString(16)}`;
+    return new RegExp(`custom program error: ${hex}\\b|"Custom":\\s*${code}\\b|Custom\\(\\s*${code}\\s*\\)`, 'i').test(text);
+}
+
+/**
+ * The error has the shape of a 3037 or 3038, from whichever program. The
+ * same bytes move the same assets, so the paymaster does not resend one.
+ */
+export function hasUnlistedOutflowCode(error: unknown): boolean {
+    const text = errorChainText(error);
+    return hasCode(text, UNLISTED_SOL_OUTFLOW_CODE) || hasCode(text, UNLISTED_TOKEN_OUTFLOW_CODE);
+}
+
 /**
  * Whose `code` (3037 or 3038) this error is, as far as the error itself says:
  * `'lazorkit'` when the logs name the LazorKit v2 program as the first to
@@ -190,8 +229,7 @@ function isLazorKitV2ProgramId(id: string): boolean {
 function outflowVerdict(error: unknown, code: number): 'lazorkit' | 'other' | 'unknown' {
     const text = errorChainText(error);
     const hex = `0x${code.toString(16)}`;
-    const shape = new RegExp(`custom program error: ${hex}\\b|"Custom":\\s*${code}\\b|Custom\\(\\s*${code}\\s*\\)`, 'i');
-    if (!shape.test(text)) return 'other';
+    if (!hasCode(text, code)) return 'other';
     const firstFailure = new RegExp(`Program (\\w{32,44}) failed: custom program error: ${hex}\\b`, 'i').exec(text);
     if (!firstFailure) return 'unknown';
     return isLazorKitV2ProgramId(firstFailure[1]) ? 'lazorkit' : 'other';
@@ -221,21 +259,49 @@ export function isUnlistedTokenOutflowError(error: unknown): boolean {
 }
 
 /**
+ * Whether the send's outcome is not known: a `TransactionOutcomeUnknownError`
+ * (or `ConfirmationTimeoutError`), or a paymaster error with `maybeSent`, in
+ * the chain. A refusal it carries came from a later attempt, and an earlier
+ * one may have landed.
+ */
+function outcomeUnknown(error: unknown): boolean {
+    return errorChain(error).some((link) => {
+        if (isNamedError(link, 'TransactionOutcomeUnknownError') || isNamedError(link, 'ConfirmationTimeoutError')) {
+            return true;
+        }
+        try {
+            return typeof link === 'object' && link !== null && (link as { maybeSent?: unknown }).maybeSent === true;
+        } catch {
+            return false;
+        }
+    });
+}
+
+/**
  * The error a session or delegate send reports: a policy refusal for an
  * asset it does not name as `UnlistedSolOutflowError` /
  * `UnlistedTokenOutflowError`, with the original as `cause`; anything else as
- * it came.
+ * it came. Nothing ran in such a refusal, so an error whose outcome is not
+ * known (`TransactionOutcomeUnknownError`, `maybeSent`) is left as it came.
+ *
+ * `hasPolicy`: false for a signer with no policy (an Admin key), whose 3037 /
+ * 3038 is LazorKit's only when the logs say so.
  */
-export function toPolicyError(error: unknown, signer: PolicySigner): unknown {
+export function toPolicyError(error: unknown, signer: PolicySigner, hasPolicy = true): unknown {
     if (
         error instanceof UnlistedSolOutflowError ||
         error instanceof UnlistedTokenOutflowError ||
         isNamedError(error, 'UnlistedSolOutflowError', UNLISTED_SOL_OUTFLOW_CODE) ||
-        isNamedError(error, 'UnlistedTokenOutflowError', UNLISTED_TOKEN_OUTFLOW_CODE)
+        isNamedError(error, 'UnlistedTokenOutflowError', UNLISTED_TOKEN_OUTFLOW_CODE) ||
+        outcomeUnknown(error)
     ) {
         return error;
     }
-    if (isUnlistedSolOutflowError(error)) return new UnlistedSolOutflowError(signer, error);
-    if (isUnlistedTokenOutflowError(error)) return new UnlistedTokenOutflowError(signer, error);
+    const refused = (code: number, is: (error: unknown) => boolean) =>
+        hasPolicy ? is(error) : outflowVerdict(error, code) === 'lazorkit';
+    if (refused(UNLISTED_SOL_OUTFLOW_CODE, isUnlistedSolOutflowError)) return new UnlistedSolOutflowError(signer, error);
+    if (refused(UNLISTED_TOKEN_OUTFLOW_CODE, isUnlistedTokenOutflowError)) {
+        return new UnlistedTokenOutflowError(signer, error);
+    }
     return error;
 }

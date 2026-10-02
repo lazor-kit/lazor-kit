@@ -1149,9 +1149,12 @@ export const signAndSendWithAuthorityAction = async (
     set({ isSigning: true, error: null });
     // The protocol this flow runs on, from its own account — for error reporting.
     let flowVersion: ProtocolVersion | undefined;
+    // The kept key's rank, as recorded when it was added.
+    let role: number | undefined;
     try {
         const stored = await keyForConnectedWallet({ get, slot: 'authority', storage: keyStorageOf(config), connection });
         if (!stored) throw new Error('No authority key found. Add an authority first.');
+        role = stored.info.role;
         const authorityKey = stored.signer;
         const authorityPda = new PublicKey(stored.info.authorityPda);
         const walletPda = new PublicKey(stored.info.walletPda);
@@ -1180,8 +1183,11 @@ export const signAndSendWithAuthorityAction = async (
         });
         return txSignature;
     } catch (error) {
-        // A delegate's policy names what may leave the vault (3037 / 3038).
-        return handleActionError(toPolicyError(error, 'authority'), set, flowVersion ?? walletVersion(get));
+        // A delegate's policy names what may leave the vault (3037 / 3038). An
+        // Admin key has no policy: a 3037 / 3038 is LazorKit's only when the
+        // logs say so. A record with no role is taken as a delegate's.
+        const hasPolicy = role === undefined || role === ROLE_SPENDER;
+        return handleActionError(toPolicyError(error, 'authority', hasPolicy), set, flowVersion ?? walletVersion(get));
     } finally {
         set({ isSigning: false });
     }

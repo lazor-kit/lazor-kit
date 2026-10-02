@@ -6,10 +6,12 @@
 //
 // Checked: the actions a `SpendingLimits` preset stands for, as the program
 // reads them, with one entry per mint; the presets it refuses before anything
-// is read or prompted; the refusals as `UnlistedSolOutflowError` /
-// `UnlistedTokenOutflowError` (from either copy of the package, wrapped or
-// raw) and as a session or delegate send reports them; the error names. A
-// scripted RPC and paymaster, no network. Run with `pnpm test`.
+// is read or prompted, those that do not fit in the transaction included; the
+// refusals as `UnlistedSolOutflowError` / `UnlistedTokenOutflowError` (from
+// either copy of the package, wrapped or raw) and as a session or delegate
+// send reports them, not resent; an Admin key's, and one whose outcome is not
+// known, as they came; the error names. A scripted RPC and paymaster, no
+// network. Run with `pnpm test`.
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import { test, beforeEach } from 'node:test';
@@ -46,24 +48,18 @@ const INNER = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 // ─── The preset ─────────────────────────────────────────────────────────────
 
 test('SpendingLimits names SOL and each listed mint: the actions, as the program reads them', () => {
-    const actions = W.spendingLimitsToActions({
-        solLifetimeCap: 9_000_000n,
-        solPerTxMax: 1_000_000n,
-        solRecurring: { limit: 2_000_000n, windowSlots: 216_000n },
-        tokens: [
-            { mint: USDC, lifetimeCap: 50_000_000n, perTxMax: 5_000_000n, recurring: { limit: 10_000_000n, windowSlots: 9_000n } },
-            { mint: BONK.toBase58(), perTxMax: 7n },
-        ],
-    });
-    const parsed = parseActions(serializeActions(actions)).map(({ type, limit, window, spent, lastReset, mint, expiresAt }) => ({
-        type,
-        limit,
-        window,
-        spent,
-        lastReset,
-        mint: mint?.toBase58(),
-        expiresAt,
-    }));
+    const parsed = (limits) =>
+        parseActions(serializeActions(W.spendingLimitsToActions(limits))).map(
+            ({ type, limit, window, spent, lastReset, mint, expiresAt }) => ({
+                type,
+                limit,
+                window,
+                spent,
+                lastReset,
+                mint: mint?.toBase58(),
+                expiresAt,
+            }),
+        );
     const row = (type, limit, mint, window) => ({
         type,
         limit,
@@ -73,15 +69,34 @@ test('SpendingLimits names SOL and each listed mint: the actions, as the program
         mint: mint?.toBase58(),
         expiresAt: 0n,
     });
-    assert.deepEqual(parsed, [
-        row(SessionActionType.SolLimit, 9_000_000n),
-        row(SessionActionType.SolMaxPerTx, 1_000_000n),
-        row(SessionActionType.SolRecurringLimit, 2_000_000n, undefined, 216_000n),
-        row(SessionActionType.TokenLimit, 50_000_000n, USDC),
-        row(SessionActionType.TokenMaxPerTx, 5_000_000n, USDC),
-        row(SessionActionType.TokenRecurringLimit, 10_000_000n, USDC, 9_000n),
-        row(SessionActionType.TokenMaxPerTx, 7n, BONK),
-    ]);
+    assert.deepEqual(
+        parsed({
+            solLifetimeCap: 9_000_000n,
+            solPerTxMax: 1_000_000n,
+            solRecurring: { limit: 2_000_000n, windowSlots: 216_000n },
+            tokens: [
+                { mint: USDC, lifetimeCap: 50_000_000n, perTxMax: 5_000_000n },
+                { mint: BONK.toBase58(), perTxMax: 7n },
+            ],
+        }),
+        [
+            row(SessionActionType.SolLimit, 9_000_000n),
+            row(SessionActionType.SolMaxPerTx, 1_000_000n),
+            row(SessionActionType.SolRecurringLimit, 2_000_000n, undefined, 216_000n),
+            row(SessionActionType.TokenLimit, 50_000_000n, USDC),
+            row(SessionActionType.TokenMaxPerTx, 5_000_000n, USDC),
+            row(SessionActionType.TokenMaxPerTx, 7n, BONK),
+        ],
+    );
+    // All three limits on one mint (all of them on each of two mints do not fit: see below).
+    assert.deepEqual(
+        parsed({ tokens: [{ mint: USDC, lifetimeCap: 50_000_000n, perTxMax: 5_000_000n, recurring: { limit: 10_000_000n, windowSlots: 9_000n } }] }),
+        [
+            row(SessionActionType.TokenLimit, 50_000_000n, USDC),
+            row(SessionActionType.TokenMaxPerTx, 5_000_000n, USDC),
+            row(SessionActionType.TokenRecurringLimit, 10_000_000n, USDC, 9_000n),
+        ],
+    );
 });
 
 test('a token limit is encoded as the program lays it out: type, data length, expiry 0, mint, amount', () => {
@@ -129,11 +144,37 @@ test('the presets the program would refuse, or that name nothing, are refused', 
         assert.throws(() => W.spendingLimitsToActions(limits), message, JSON.stringify(limits, (_k, v) => (typeof v === 'bigint' ? `${v}n` : v)));
     }
 
-    // A policy holds at most 16 actions: SOL's 3 and 13 more fit, 14 do not.
+    // A policy holds at most 16 actions.
     const mints = (n) => Array.from({ length: n }, (_, i) => ({ mint: fixed(100 + i), perTxMax: 1n }));
     const sol = { solLifetimeCap: 1n, solPerTxMax: 1n, solRecurring: { limit: 1n, windowSlots: 1n } };
-    assert.equal(W.spendingLimitsToActions({ ...sol, tokens: mints(13) }).length, 16);
     assert.throws(() => W.spendingLimitsToActions({ ...sol, tokens: mints(14) }), /makes 17 actions; a policy holds at most 16/);
+});
+
+test("the actions must fit in the transaction that registers them, beside the passkey's response: 244 bytes at most", () => {
+    const window = { limit: 1n, windowSlots: 1n };
+    // solRecurring (43 bytes), a lifetimeCap (51) and two recurring limits (75 each): 244 bytes.
+    const largest = {
+        solRecurring: window,
+        tokens: [
+            { mint: USDC, lifetimeCap: 1n, recurring: window },
+            { mint: BONK, recurring: window },
+        ],
+    };
+    assert.equal(serializeActions(W.spendingLimitsToActions(largest)).length, 244);
+    // solPerTxMax is 19 bytes more.
+    assert.throws(
+        () => W.spendingLimitsToActions({ ...largest, solPerTxMax: 1n }),
+        /spendingLimits makes 263 bytes of actions; at most 244 fit/,
+    );
+
+    // The README's shape (solPerTxMax, and perTxMax and lifetimeCap for each mint): 2 mints fit, 3 do not.
+    const mints = (n, limits) => Array.from({ length: n }, (_, i) => ({ mint: fixed(100 + i), ...limits }));
+    const readme = (n) => ({ solPerTxMax: 1n, tokens: mints(n, { perTxMax: 1n, lifetimeCap: 1n }) });
+    assert.equal(W.spendingLimitsToActions(readme(2)).length, 5);
+    assert.throws(() => W.spendingLimitsToActions(readme(3)), /makes 325 bytes of actions/);
+    // One perTxMax for each mint: 4 fit beside solPerTxMax, 5 do not.
+    assert.equal(W.spendingLimitsToActions({ solPerTxMax: 1n, tokens: mints(4, { perTxMax: 1n }) }).length, 5);
+    assert.throws(() => W.spendingLimitsToActions({ solPerTxMax: 1n, tokens: mints(5, { perTxMax: 1n }) }), /makes 274 bytes/);
 });
 
 // ─── The refusals ───────────────────────────────────────────────────────────
@@ -238,6 +279,8 @@ let requests = 0;
 let landedErr = null;
 /** The paymaster's JSON-RPC error for a send, or `null` to send it. */
 let refusal = null;
+/** The first send's answer is lost: the request fails once it may have reached the paymaster. */
+let firstAnswerLost = false;
 let sends = 0;
 
 const rpcFetch = async (_url, init) => {
@@ -269,6 +312,7 @@ globalThis.fetch = async (url, init) => {
     if (method === 'getPayerSigner') return answer({ result: { signer_address: FEE_PAYER.toBase58() } });
     if (method === 'signAndSendTransaction') {
         sends++;
+        if (firstAnswerLost && sends === 1) throw new TypeError('fetch failed: the connection was reset');
         if (refusal) return answer({ error: refusal });
         return answer({ result: { signature: Keypair.generate().publicKey.toBase58() + Keypair.generate().publicKey.toBase58() } });
     }
@@ -290,6 +334,7 @@ beforeEach(() => {
     sends = 0;
     landedErr = null;
     refusal = null;
+    firstAnswerLost = false;
     store.setState({
         connection: new Connection(RPC, { commitment: 'confirmed', fetch: rpcFetch, disableRetryOnRateLimit: true }),
         config: { portalUrl: 'http://portal.test', paymasterConfig: { paymasterUrl: PAYMASTER }, rpcUrl: RPC, cluster: 'devnet' },
@@ -324,8 +369,8 @@ function keptSession() {
     );
 }
 
-/** A delegate authority key kept for WALLET, as `keptSession`. */
-function keptAuthority() {
+/** An authority key kept for WALLET, as `keptSession`: a delegate's, unless `role` says otherwise. */
+function keptAuthority(role = W.ROLE_SPENDER) {
     const key = Keypair.generate();
     const authorityPda = W.findAuthorityPda(WALLET, key.publicKey.toBytes(), PROGRAM)[0];
     accounts.set(authorityPda.toBase58(), PROGRAM.toBase58());
@@ -336,7 +381,7 @@ function keptAuthority() {
             publicKey: key.publicKey.toBase58(),
             authorityPda: authorityPda.toBase58(),
             walletPda: WALLET.toBase58(),
-            role: W.ROLE_SPENDER,
+            role,
         }),
     );
 }
@@ -352,16 +397,21 @@ async function rejection(promise) {
     assert.fail('resolved');
 }
 
-test('createSession refuses a preset that names a mint with no limit, before anything is read or prompted', async () => {
+test('createSession refuses a preset that names a mint with no limit, or does not fit, before anything is read or prompted', async () => {
     for (const spendingLimits of [
         { solPerTxMax: 1n, tokens: [{ mint: USDC }] },
         { tokens: [{ mint: USDC, perTxMax: 1n }, { mint: USDC, perTxMax: 2n }] },
         { tokens: [] },
+        // The README's shape for 5 mints: 529 bytes of actions, which no CreateSession transaction holds.
+        {
+            solPerTxMax: 1n,
+            tokens: Array.from({ length: 5 }, (_, i) => ({ mint: fixed(100 + i), perTxMax: 1n, lifetimeCap: 1n })),
+        },
     ]) {
         requests = 0;
         const failures = [];
         const error = await rejection(store.getState().createSession({ spendingLimits, onFail: (e) => failures.push(e) }));
-        assert.match(error.message, /has no limit|twice|createSession needs spendingLimits/);
+        assert.match(error.message, /has no limit|twice|createSession needs spendingLimits|529 bytes of actions; at most 244 fit/);
         assert.equal(requests, 0, 'nothing read or sent');
         assert.deepEqual(failures, [error]);
         assert.equal(store.getState().error, error);
@@ -394,7 +444,36 @@ test("a delegate's send the paymaster refuses for a token its policy does not na
     assert.equal(error.message, 'This key is not allowed to spend this token');
     assert.equal(error.signer, 'authority');
     assert.equal(error.cause.name, 'PaymasterError');
-    assert.ok(sends >= 1);
+    // The same bytes move the same assets: they are not sent again.
+    assert.equal(sends, 1);
+});
+
+test("an Admin key's send refused with a 3037 that names no program is reported as it came: an Admin has no policy", async () => {
+    keptAuthority(W.ROLE_ADMIN);
+    refusal = { code: -32602, message: korasText(3037) };
+    const error = await rejection(store.getState().signAndSendWithAuthority({ instructions: transfer() }));
+    assert.equal(error.name, 'PaymasterError');
+    assert.match(error.message, /Custom\(3037\)/);
+
+    // Whose it is when the logs name LazorKit as the first to fail with it.
+    refusal = { code: -32002, message: 'Transaction simulation failed', data: { logs: logsFor(3037, V2) } };
+    const named = await rejection(store.getState().signAndSendWithAuthority({ instructions: transfer() }));
+    assert.ok(named instanceof W.UnlistedSolOutflowError, `${named.name}: ${named.message}`);
+});
+
+test('a refusal after an attempt whose answer was lost is TransactionOutcomeUnknownError, not a policy refusal: that attempt may have landed', async () => {
+    keptSession();
+    firstAnswerLost = true;
+    refusal = { code: -32602, message: korasText(3037) };
+    const failures = [];
+    const error = await rejection(store.getState().signAndSendWithSession({ instructions: transfer(), onFail: (e) => failures.push(e) }));
+    assert.ok(error instanceof W.TransactionOutcomeUnknownError, `${error.name}: ${error.message}`);
+    assert.ok(!(error instanceof W.UnlistedSolOutflowError));
+    assert.equal(error.cause.name, 'PaymasterError');
+    assert.equal(error.cause.maybeSent, true);
+    assert.deepEqual(failures, [error]);
+    // Sent again after the lost answer: a later answer cannot say the first did not land.
+    assert.ok(sends > 1);
 });
 
 test("an inner program's 3037, which the logs name, is reported as it came", async () => {

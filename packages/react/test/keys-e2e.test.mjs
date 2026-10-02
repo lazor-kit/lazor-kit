@@ -155,6 +155,8 @@ globalThis.fetch = async (url, init) => {
  * portal's iframe would once the user approved with the passkey.
  */
 const approvals = [];
+/** When set, the length the portal's clientDataJSON is padded to (with a key of its own). */
+let clientDataBytes;
 const answered = new Set();
 const portal = setInterval(() => {
     const iframe = document.getElementById('lazorkit-iframe');
@@ -164,7 +166,11 @@ const portal = setInterval(() => {
     answered.add(iframe.src);
     const challenge = url.searchParams.get('message');
     approvals.push(challenge);
-    const clientDataJSON = JSON.stringify({ type: 'webauthn.get', challenge, origin: PORTAL });
+    let clientDataJSON = JSON.stringify({ type: 'webauthn.get', challenge, origin: PORTAL });
+    if (clientDataBytes) {
+        // `,"pad":"` and the closing quote are 9 bytes.
+        clientDataJSON = clientDataJSON.replace(/}$/, `,"pad":"${'x'.repeat(clientDataBytes - clientDataJSON.length - 9)}"}`);
+    }
     window.dispatchEvent(
         new window.MessageEvent('message', {
             origin: PORTAL,
@@ -254,6 +260,7 @@ beforeEach(async () => {
     accounts.clear();
     sent.length = 0;
     approvals.length = 0;
+    clientDataBytes = undefined;
     warnings.length = 0;
 });
 
@@ -401,6 +408,27 @@ test('createSession with token limits registers a SOL action and one for each mi
         { mint: USDC.toBase58(), lifetimeCap: '50000000', perTxMax: '1000000', recurring: undefined },
         { mint: BONK.toBase58(), lifetimeCap: undefined, perTxMax: undefined, recurring: { limit: '10', windowSlots: '216000' } },
     ]);
+});
+
+test("the largest limits createSession takes fill its transaction exactly when the passkey's clientDataJSON is 300 bytes", async () => {
+    const W = await load();
+    connect(W);
+    // The portal's, signed in its frame on an app's page, with the key Chrome adds at random: about 300 bytes.
+    clientDataBytes = 300;
+    const recurring = { limit: 10n, windowSlots: 216_000n };
+    await W.useWalletStore.getState().createSession({
+        // 244 bytes of actions: solRecurring (43), a lifetimeCap (51) and two recurring limits (75 each).
+        spendingLimits: {
+            solRecurring: recurring,
+            tokens: [
+                { mint: fixed(21), lifetimeCap: 1n, recurring },
+                { mint: fixed(22), recurring },
+            ],
+        },
+    });
+    assert.equal(approvals.length, 1);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].serialize().length, 1232, 'the most a transaction holds');
 });
 
 // ─── addAuthority → reload → authority send ─────────────────────────────────
