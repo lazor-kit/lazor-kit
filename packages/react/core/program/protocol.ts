@@ -75,18 +75,27 @@ const V1_PROGRAM_IDS = [
  */
 export function isRetiredDeploymentError(error: unknown, version?: ProtocolVersion): boolean {
     if (chainHasError(error, V1WalletRetiredError, 'V1WalletRetiredError', RETIRED_DEPLOYMENT_CODE)) return true;
+    if (!hasRetiredDeploymentCode(error)) return false;
     const text = errorChainText(error);
-    if (
-        !/custom program error: 0xfb2\b/i.test(text) &&
-        !/"Custom":\s*4018\b/.test(text) &&
-        !/Custom\(\s*4018\s*\)/.test(text)
-    ) {
-        return false;
-    }
     if (V1_PROGRAM_IDS.some((id) => new RegExp(`Program ${id} failed: custom program error: 0xfb2`).test(text))) {
         return true;
     }
     return version === 1;
+}
+
+/**
+ * The error has the shape of a 4018, from whichever program: web3.js text
+ * (`0xfb2`), a TransactionError in JSON (`"Custom":4018`) or as Kora prints it
+ * (`Custom(4018)`), in the error or in what it wraps. A retired v1 program
+ * answers every attempt with it, so the paymaster does not resend one.
+ */
+export function hasRetiredDeploymentCode(error: unknown): boolean {
+    const text = errorChainText(error);
+    return (
+        /custom program error: 0xfb2\b/i.test(text) ||
+        /"Custom":\s*4018\b/.test(text) ||
+        /Custom\(\s*4018\s*\)/.test(text)
+    );
 }
 
 /**

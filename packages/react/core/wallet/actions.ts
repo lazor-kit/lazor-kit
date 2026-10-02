@@ -87,6 +87,7 @@ function walletVersion(get: () => WalletState): ProtocolVersion | undefined {
 function paymasterFor(config: WalletConfig, version: ProtocolVersion): Paymaster {
     return new Paymaster(
         version === 1 ? (config.v1PaymasterConfig ?? config.paymasterConfig) : config.paymasterConfig,
+        { protocolVersion: version },
     );
 }
 

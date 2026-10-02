@@ -393,6 +393,7 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
             version === 1
                 ? (this._config.v1PaymasterConfig ?? this._config.paymasterConfig)
                 : this._config.paymasterConfig,
+            { protocolVersion: version },
         );
         const client: LazorKitClient = clientFor(version, connection);
         return { connection, paymaster, client };

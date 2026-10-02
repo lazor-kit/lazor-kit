@@ -86,9 +86,10 @@ v2 addresses and are wrong for a v1 wallet. How `connect` finds a returning
 user's wallet on either protocol is below.
 
 Once LazorKit retires v1, a v1 wallet's transactions fail with
-`V1WalletRetiredError`. Its funds are safe; move it with
-`LazorKitClient.migrateV1Wallet` from `@lazorkit/sdk-legacy`, or send the user
-to the LazorKit migration page.
+`V1WalletRetiredError`, on the paymaster's first answer: the retired program
+answers every attempt with the same 4018, so it is not retried. Its funds are
+safe; move it with `LazorKitClient.migrateV1Wallet` from `@lazorkit/sdk-legacy`,
+or send the user to the LazorKit migration page.
 
 ## Which wallet is the user's
 
