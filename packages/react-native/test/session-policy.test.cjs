@@ -7,8 +7,9 @@
 // Checked: the actions the README's example builds, as the program reads
 // them; the refusals as `UnlistedSolOutflowError` / `UnlistedTokenOutflowError`
 // (from either copy of the package, wrapped or raw) and as a session send
-// reports them; the error names. A scripted RPC and paymaster, no network.
-// The native modules the package loads are stubbed. Run with `pnpm test`.
+// reports them, one whose outcome is not known as it came; the error names.
+// A scripted RPC and paymaster, no network. The native modules the package
+// loads are stubbed. Run with `pnpm test`.
 'use strict';
 const Module = require('module');
 const { test, beforeEach } = require('node:test');
@@ -159,6 +160,8 @@ const accounts = new Map();
 let landedErr = null;
 /** The paymaster's JSON-RPC error for a send, or `null` to send it. */
 let refusal = null;
+/** The HTTP status the paymaster's refusal comes with. */
+let refusalStatus = 200;
 let owner;
 
 const rpcFetch = async (_url, init) => {
@@ -186,7 +189,7 @@ globalThis.fetch = async (url, init) => {
   const answer = (body) => new Response(JSON.stringify({ jsonrpc: '2.0', id, ...body }), { status: 200 });
   if (method === 'getPayerSigner') return answer({ result: { signer_address: feePayer.toBase58() } });
   if (method === 'signAndSendTransaction') {
-    if (refusal) return answer({ error: refusal });
+    if (refusal) return new Response(JSON.stringify({ jsonrpc: '2.0', id, error: refusal }), { status: refusalStatus });
     return answer({ result: { signature: Keypair.generate().publicKey.toBase58() + Keypair.generate().publicKey.toBase58() } });
   }
   throw new Error(`unscripted paymaster ${method}`);
@@ -201,6 +204,7 @@ beforeEach(() => {
   accounts.clear();
   landedErr = null;
   refusal = null;
+  refusalStatus = 200;
   const connection = new Connection(RPC, { commitment: 'confirmed', fetch: rpcFetch, disableRetryOnRateLimit: true });
   try {
     owner = new sdk.LazorKitClient(connection).programId.toBase58();
@@ -274,4 +278,18 @@ test("an inner program's 3037, which the logs name, and any other failure are re
   landedErr = { InstructionError: [0, { Custom: 3023 }] };
   const other = await rejection(store.getState().signAndSendWithSession({ ...session(), instructions: transfer() }, {}));
   assert.equal(other.name, 'TransactionFailedError');
+});
+
+test('a refusal in an answer that may come after the send (a 5xx) is TransactionOutcomeUnknownError, not a policy refusal: it may have landed', async () => {
+  refusal = { code: -32603, message: korasText(3037) };
+  refusalStatus = 502;
+  const failures = [];
+  const error = await rejection(
+    store.getState().signAndSendWithSession({ ...session(), instructions: transfer() }, { onFail: (e) => failures.push(e) }),
+  );
+  assert.ok(error instanceof M.TransactionOutcomeUnknownError, `${error.name}: ${error.message}`);
+  assert.ok(!(error instanceof M.UnlistedSolOutflowError));
+  assert.equal(error.cause.name, 'PaymasterError');
+  assert.equal(error.cause.maybeSent, true);
+  assert.deepEqual(failures, [error]);
 });

@@ -412,7 +412,9 @@ async function forgetSession() {
 
 A session's `actions`, and the `policy` of a key added with
 `addAuthorityEd25519` and `ROLE_SPENDER`, name what may leave the wallet, and
-under LazorKit v2 nothing they do not name may:
+under LazorKit v2 nothing they do not name may (from the program release that
+adds errors 3037 and 3038: until then an asset they do not name is not
+bounded at all, see the end of this section):
 
 - **SOL** leaves only with an `Actions.sol*` action (`solMaxPerTx`,
   `solLimit`, `solRecurringLimit`). Without one, a transaction that lowers the
@@ -431,7 +433,15 @@ under LazorKit v2 nothing they do not name may:
   their balance: owner, delegate, close authority and state stay as they were
   (`SessionTokenAuthorityChanged`, 3032).
 - A session or policy holds at most 16 actions, and at most one of each kind
-  per mint.
+  per mint, and they must fit in the transaction that registers them, beside
+  the passkey's response: keep them within 244 bytes. `Actions.solMaxPerTx`
+  and `solLimit` take 19 bytes (`solRecurringLimit` 43), `tokenMaxPerTx` and
+  `tokenLimit` 51 and `tokenRecurringLimit` 75: `solMaxPerTx` with
+  `tokenMaxPerTx` and `tokenLimit` for 2 mints (223 bytes), or `solMaxPerTx`
+  with `tokenMaxPerTx` for 4 (223). The transaction holds 1232 bytes, and the
+  passkey's clientDataJSON takes up to about 300 of them. Nothing checks this
+  before the portal opens: actions that do not fit fail after the user
+  approved.
 
 A session made with `unrestricted: true` (no actions) has none of these
 bounds: it can move anything the wallet holds until it expires.
@@ -458,9 +468,14 @@ await createSession(
 );
 ```
 
-The program enforces this from the release that adds errors 3037 and 3038. A
-session or delegate whose actions name SOL only can move no token after that:
-create it again, naming the mints it spends.
+The program enforces this from the release that adds errors 3037 and 3038.
+Until that release an asset the actions do not name is not bounded at all: a
+session with token actions only can spend all the wallet's SOL, and one with
+SOL actions only any token. After it, a session or delegate whose actions
+name SOL only can move no token: revoke it (`revokeSession`, or
+`removeAuthority` for a delegate) and register one whose actions name the
+mints it spends. The program does not create a second session for the same
+key while the first exists.
 
 ## Signing messages
 

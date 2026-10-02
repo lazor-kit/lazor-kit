@@ -12,7 +12,7 @@
  * action does not name it. The same as the web SDK's.
  */
 import { PROGRAM_ID_DEVNET, PROGRAM_ID_MAINNET } from '../../program/utils';
-import { chainHasError, errorChainText, isNamedError } from '../../program/errorShape';
+import { chainHasError, errorChain, errorChainText, isNamedError } from '../../program/errorShape';
 
 /** The program's ActionUnlistedSolOutflow, seen as `custom program error: 0xbdd`. */
 export const UNLISTED_SOL_OUTFLOW_CODE = 3037;
@@ -109,17 +109,38 @@ export function isUnlistedTokenOutflowError(error: unknown): boolean {
 }
 
 /**
+ * Whether the send's outcome is not known: a `TransactionOutcomeUnknownError`
+ * (or `ConfirmationTimeoutError`), or a paymaster error with `maybeSent`, in
+ * the chain. A refusal it carries may have come after the transaction was
+ * sent (a 5xx answer), so it may have landed.
+ */
+function outcomeUnknown(error: unknown): boolean {
+  return errorChain(error).some((link) => {
+    if (isNamedError(link, 'TransactionOutcomeUnknownError') || isNamedError(link, 'ConfirmationTimeoutError')) {
+      return true;
+    }
+    try {
+      return typeof link === 'object' && link !== null && (link as { maybeSent?: unknown }).maybeSent === true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
  * The error a session send reports: a policy refusal for an asset its
  * actions do not name as `UnlistedSolOutflowError` /
  * `UnlistedTokenOutflowError`, with the original as `cause`; anything else as
- * it came.
+ * it came. Nothing ran in such a refusal, so an error whose outcome is not
+ * known (`TransactionOutcomeUnknownError`, `maybeSent`) is left as it came.
  */
 export function toPolicyError(error: unknown, signer: PolicySigner): unknown {
   if (
     error instanceof UnlistedSolOutflowError ||
     error instanceof UnlistedTokenOutflowError ||
     isNamedError(error, 'UnlistedSolOutflowError', UNLISTED_SOL_OUTFLOW_CODE) ||
-    isNamedError(error, 'UnlistedTokenOutflowError', UNLISTED_TOKEN_OUTFLOW_CODE)
+    isNamedError(error, 'UnlistedTokenOutflowError', UNLISTED_TOKEN_OUTFLOW_CODE) ||
+    outcomeUnknown(error)
   ) {
     return error;
   }
