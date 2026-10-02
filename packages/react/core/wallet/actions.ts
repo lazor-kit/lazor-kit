@@ -17,15 +17,19 @@ import {
     TransactionInstruction,
     Connection,
 } from '@solana/web3.js';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import bs58 from 'bs58';
 import { SignResult } from '../portal';
-import { StorageManager, WalletInfo } from '../storage';
+import { WalletInfo, walletRecords } from '../storage';
 import { Paymaster } from '../paymaster/paymaster';
-import { WalletState, ConnectOptions, DisconnectOptions, SignAndSendTransactionPayload, CreateSessionPayload, RevokeSessionPayload, AddAuthorityPayload, AuthorizeAndExecutePayload, AuthorizeDeferredPayload, ExecuteDeferredPayload } from '../types';
+import { WalletState, ConnectOptions, DisconnectOptions, SignAndSendTransactionPayload, SignAndSendPayload, CreateSessionPayload, RevokeSessionPayload, AddAuthorityPayload, AuthorizeAndExecutePayload, AuthorizeDeferredPayload, ExecuteDeferredPayload } from '../types';
 import {
     createDialogManager,
+    createPortalDialog,
     getCredentialHash,
     handleActionError,
     cleanupLegacyStorage,
+    notify,
 } from './utils';
 import { clearPendingConfirmation, connectAbandoned, connectFreshWallet } from './resolveWallet';
 import {
@@ -50,8 +54,17 @@ import { type AuthorityTurn, sendAndConfirm, withAuthority } from './sequence';
 import { buildPreviewTransactionBase64 } from './preview';
 import { deferredExpiryOffset, executeBeforeExpiry } from './deferred';
 import { type KeySigner, type KeyStorage, forgetKey, generateKey, saveKey, wipeKey, wipeMark } from '../keys';
-import { keyForConnectedWallet } from './keyBinding';
-import type { SignMessageResult } from '../message/signedMessage';
+import { keyForConnectedWallet, walletOfKey } from './keyBinding';
+import type { SignMessageResult, SignedMessageInput } from '../message/signedMessage';
+import { loadKey } from '../keys';
+import { UserRejectedError, isUserRejection } from '../errors';
+import { acceptStoredWallet, programIdsFor } from '../client/validate';
+import { connectEmbedded } from '../embedded/connect';
+import { passkeySeatOf } from '../embedded/chain';
+import { emit } from '../embedded/events';
+import { EmbeddedPrompt } from '../embedded/prompt';
+import { buildReview, snapshotInstructions } from '../embedded/review';
+import type { Assertion } from '../embedded/webauthn';
 
 export function randomBytes(size: number): Uint8Array {
     return globalThis.crypto.getRandomValues(new Uint8Array(size));
@@ -128,6 +141,16 @@ async function buildAndSendTx(params: {
     turn?: AuthorityTurn;
     /** A passkey authority this transaction creates: its first challenge is read at or past the creation. */
     createsAuthority?: PublicKey;
+    /** Called with the signature once the paymaster has sent it, before confirmation (see `sendAndConfirm`). */
+    onSubmitted?: (signature: string) => void;
+    /**
+     * Embedded mode: the signature the paymaster returns must be the fee
+     * payer's signature over this transaction's message, as built here. Any
+     * other is not this transaction's (see `sendAndConfirm`'s `checkSignature`).
+     */
+    verifyFeePayer?: boolean;
+    /** The slot the transaction landed in, when it is not a passkey lane's. */
+    onLanded?: (slot: number) => void;
 }): Promise<string> {
     const { paymaster, connection, feePayer, instructions } = params;
     const signers = params.signers ?? [];
@@ -136,6 +159,7 @@ async function buildAndSendTx(params: {
 
     let send: () => Promise<string>;
     let simulateLogs: () => Promise<readonly string[] | null | undefined>;
+    let message: Uint8Array;
     if (txVersion === 'legacy') {
         if ((params.addressLookupTables?.length ?? 0) > 0) {
             throw new Error('Address lookup tables are only supported with txVersion="v0"');
@@ -145,6 +169,7 @@ async function buildAndSendTx(params: {
         tx.recentBlockhash = blockhash;
         tx.feePayer = feePayer;
         for (const signer of signers) await signer.signTransaction(tx);
+        message = new Uint8Array(tx.serializeMessage());
         send = () => paymaster.signAndSend(tx);
         simulateLogs = async () => (await connection.simulateTransaction(tx)).value.logs;
     } else {
@@ -155,6 +180,7 @@ async function buildAndSendTx(params: {
         }).compileToV0Message(params.addressLookupTables ?? []);
         const tx = new VersionedTransaction(v0Message);
         for (const signer of signers) await signer.signTransaction(tx);
+        message = v0Message.serialize();
         send = () => paymaster.signAndSendVersionedTransaction(tx);
         simulateLogs = async () =>
             (await connection.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true })).value.logs;
@@ -167,7 +193,20 @@ async function buildAndSendTx(params: {
         turn: params.turn,
         createsAuthority: params.createsAuthority,
         simulateLogs,
+        onSubmitted: params.onSubmitted,
+        onLanded: params.onLanded,
+        checkSignature: params.verifyFeePayer ? (signature) => isFeePayerSignature(signature, message, feePayer) : undefined,
     });
+}
+
+/** Whether `signature` (base58) is `feePayer`'s Ed25519 signature over `message`: the transaction built here. */
+function isFeePayerSignature(signature: string, message: Uint8Array, feePayer: PublicKey): boolean {
+    try {
+        const bytes = bs58.decode(signature);
+        return bytes.length === 64 && ed25519.verify(bytes, message, feePayer.toBytes());
+    } catch {
+        return false;
+    }
 }
 
 
@@ -179,15 +218,24 @@ async function buildAndSendTx(params: {
  */
 let connectInFlight: AbortController | null = null;
 
+/** Abandon a connect in flight (configure does, when the store switches mode or rpId). */
+export function abandonConnect(): void {
+    connectInFlight?.abort();
+    connectInFlight = null;
+}
+
 /**
- * Connect wallet action
+ * Connect wallet action. Portal mode: as 3.x. Embedded mode: see
+ * ../embedded/connect. `preAsserted`: a passkey already picked (autofill).
  */
 export const connectAction = async (
     get: () => WalletState,
     set: (state: Partial<WalletState>) => void,
-    options?: ConnectOptions & { feeMode?: 'paymaster' | 'user' }
+    options?: ConnectOptions & { feeMode?: 'paymaster' | 'user' },
+    preAsserted?: { assertion: Assertion; challenge: Uint8Array },
 ): Promise<WalletInfo> => {
     const { isConnecting, config } = get();
+    const embedded = config.mode === 'embedded';
 
     if (isConnecting) {
         throw new Error('Already connecting');
@@ -198,8 +246,16 @@ export const connectAction = async (
     set({ isConnecting: true, error: null });
 
     try {
-        let existingWallet = await StorageManager.getWallet();
-        cleanupLegacyStorage();
+        const records = walletRecords();
+        let existingWallet = await records.getWallet();
+        if (embedded) {
+            // A record from another rpId, mode or cluster is not this app's wallet.
+            const valid = acceptStoredWallet(existingWallet, config, programIdsFor(config));
+            if (existingWallet && !valid) await records.clearWallet();
+            existingWallet = valid;
+        } else {
+            cleanupLegacyStorage();
+        }
 
         if (existingWallet) {
             const version = versionOf(existingWallet);
@@ -208,7 +264,7 @@ export const connectAction = async (
             // migration page, say. Then it is closed and its address is dead;
             // forget it and connect afresh, which finds the v2 wallet.
             if (version === 1 && !(await connection.getAccountInfo(new PublicKey(existingWallet.smartWallet)))) {
-                await StorageManager.clearWallet();
+                await records.clearWallet();
                 set({ wallet: null });
                 existingWallet = null;
             } else if (!existingWallet.vaultPda) {
@@ -217,7 +273,7 @@ export const connectAction = async (
                 // address funds belong at.
                 const [vault] = clientFor(version, connection).findVault(new PublicKey(existingWallet.smartWallet));
                 existingWallet = { ...existingWallet, vaultPda: vault.toBase58() };
-                await StorageManager.saveWallet(existingWallet);
+                await records.saveWallet(existingWallet);
             }
         }
 
@@ -235,6 +291,53 @@ export const connectAction = async (
         }
 
         const connection = get().connection;
+        if (embedded) {
+            const result = await connectEmbedded({
+                config,
+                connection,
+                signal: attempt.signal,
+                setStep: (step) => {
+                    if (connectInFlight === attempt) set({ step });
+                },
+                confirmWallet: options?.confirmWallet,
+                onConfirmWallet: options?.onConfirmWallet,
+                preAsserted,
+                heldSessionKey: async () => {
+                    // D10: the session key this device holds, and the wallet it is bound to.
+                    const stored = await loadKey(keyStorageOf(config), 'session');
+                    if (!stored) return null;
+                    const walletPda = await walletOfKey(connection, 'session', stored.signer.publicKey, stored.info);
+                    return walletPda ? { walletPda, publicKey: stored.signer.publicKey.toBase58() } : null;
+                },
+                createWallet: async ({ seed, owner }) => {
+                    const client = clientFor(2, connection);
+                    const paymaster = paymasterFor(config, 2);
+                    const feePayer = await paymaster.getPayer();
+                    const { instructions, walletPda, authorityPda } = await client.createWallet({
+                        payer: feePayer,
+                        userSeed: seed,
+                        owner: { type: 'secp256r1', ...owner },
+                    });
+                    let slot: number | undefined;
+                    const signature = await buildAndSendTx({
+                        paymaster,
+                        connection,
+                        feePayer,
+                        instructions,
+                        createsAuthority: authorityPda,
+                        verifyFeePayer: true,
+                        onLanded: (landed) => (slot = landed),
+                    });
+                    return { walletPda, authorityPda, signature, slot };
+                },
+            });
+            if (attempt.signal.aborted) throw connectAbandoned();
+            await walletRecords().saveWallet(result.wallet);
+            set({ wallet: result.wallet });
+            emit(config, { type: 'connected', how: result.how, signatures: result.signatures });
+            return result.wallet;
+        }
+
         // See ./resolveWallet: which wallet is this passkey's own is proven,
         // not guessed from the public credential hash, and a wallet the rule
         // will not adopt goes to the user. A v1 wallet made before LazorKit v2
@@ -247,7 +350,7 @@ export const connectAction = async (
             watchMints: config.watchMints,
             onConfirmWallet: options?.onConfirmWallet ?? config.onConfirmWallet,
             confirmWallet: options?.confirmWallet,
-            openPortal: () => createDialogManager(config),
+            openPortal: () => createPortalDialog(config),
             createWallet: async (owner) => {
                 const client = clientFor(2, connection);
                 const paymaster = paymasterFor(config, 2);
@@ -264,7 +367,7 @@ export const connectAction = async (
         });
 
         if (attempt.signal.aborted) throw connectAbandoned();
-        await StorageManager.saveWallet(walletInfo);
+        await records.saveWallet(walletInfo);
         set({ wallet: walletInfo });
         return walletInfo;
 
@@ -272,7 +375,7 @@ export const connectAction = async (
         if (attempt.signal.aborted) {
             // Abandoned by disconnect, which already reset the store: leave
             // its `error` alone, but still fail this call.
-            throw connectAbandoned();
+            throw embedded ? new UserRejectedError('abandoned') : connectAbandoned();
         }
         return handleActionError(error, set, walletVersion(get));
     } finally {
@@ -280,7 +383,7 @@ export const connectAction = async (
         // it, and a connect started since may have set it again.
         if (connectInFlight === attempt) {
             connectInFlight = null;
-            set({ isConnecting: false });
+            set({ isConnecting: false, step: null });
         }
     }
 };
@@ -318,8 +421,8 @@ export const disconnectAction = async (
         connectInFlight?.abort();
         connectInFlight = null;
         clearPendingConfirmation();
-        await StorageManager.clearWallet();
-        set({ wallet: null, error: null, isConnecting: false, isLoading: false });
+        await walletRecords().clearWallet();
+        set({ wallet: null, error: null, isConnecting: false, isLoading: false, ...(get().isSigning ? {} : { step: null }) });
     } catch (error: unknown) {
         return handleActionError(error, set);
     } finally {
@@ -339,9 +442,10 @@ export const disconnectAction = async (
 export const signAndSendTransactionAction = async (
     get: () => WalletState,
     set: (state: Partial<WalletState>) => void,
-    payload: SignAndSendTransactionPayload
+    payload: SignAndSendPayload
 ): Promise<string> => {
     const { isSigning, connection, wallet, config } = get();
+    const embedded = config.mode === 'embedded';
 
     if (isSigning) {
         throw new Error('Already signing');
@@ -355,35 +459,68 @@ export const signAndSendTransactionAction = async (
         refuse(set, 'No connection available');
     }
 
-    set({ isSigning: true, error: null });
+    set({ isSigning: true, error: null, ...(embedded ? { step: 'preparing' as const } : {}) });
+    // Embedded: what the sheet shows is what is signed and sent, whatever the
+    // app does to its instruction objects meanwhile.
+    const instructions = embedded ? snapshotInstructions(payload.instructions) : payload.instructions;
+    const lookupTables = embedded
+        ? [...(payload.transactionOptions?.addressLookupTableAccounts ?? [])]
+        : payload.transactionOptions?.addressLookupTableAccounts;
+    const onSubmitted = (signature: string) => {
+        if (embedded) {
+            set({ step: 'submitted' });
+            emit(config, { type: 'submitted', signature });
+        }
+        notify(payload.onSubmitted, signature);
+    };
 
     try {
         const { client, version, walletPda, authorityPda, publicKeyBytes, credentialIdHash } =
-            await resolvePasskeyWallet(wallet, connection);
+            await resolvePasskeyWallet(wallet, connection, config);
         const paymaster = paymasterFor(config, version);
         const feePayer = await paymaster.getPayer();
+
+        // D14: reviewed before the challenge exists. A challenge names a slot
+        // and lives about 150 slots; a person reading must not hold one open.
+        if (embedded && (payload.confirm ?? config.confirm ?? true)) {
+            const review = await buildReview({
+                connection,
+                appName: config.appName ?? 'This app',
+                feePayer,
+                vault: new PublicKey(wallet.vaultPda ?? client.findVault(walletPda)[0]),
+                instructions,
+                addressLookupTables: lookupTables,
+            });
+            set({ step: 'reviewing' });
+            const approved = await new EmbeddedPrompt(config).reviewTransaction(review);
+            if (!approved) throw new UserRejectedError('review-cancelled');
+            set({ step: 'preparing' });
+        }
 
         const txSignature = await withAuthority(authorityPda, async (turn) => {
             const prepared = await client.prepareExecute({
                 payer: feePayer,
                 walletPda,
                 secp256r1: { credentialIdHash, publicKeyBytes, authorityPda, ...(await turn.challengeReads(connection)) },
-                instructions: payload.instructions,
+                instructions,
             });
             const encodedChallenge = toBase64Url(prepared.challenge);
 
             // A display-only v0 transaction so the portal can render the ixs,
             // compiled with the caller's lookup tables like the one sent.
-            const latest = await connection.getLatestBlockhash();
-            const base64Tx = buildPreviewTransactionBase64({
-                feePayer,
-                recentBlockhash: latest.blockhash,
-                instructions: payload.instructions,
-                addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
-            });
+            // Embedded mode reviewed them already.
+            const base64Tx = embedded
+                ? ''
+                : buildPreviewTransactionBase64({
+                      feePayer,
+                      recentBlockhash: (await connection.getLatestBlockhash()).blockhash,
+                      instructions,
+                      addressLookupTables: lookupTables,
+                  });
 
             const dialogManager = createDialogManager(config);
             try {
+                if (embedded) set({ step: 'awaiting-passkey' });
                 const signResult: SignResult = await dialogManager.openSign(
                     encodedChallenge,
                     base64Tx,
@@ -391,27 +528,30 @@ export const signAndSendTransactionAction = async (
                     payload.transactionOptions?.clusterSimulation,
                 );
 
-                const { instructions } = client.finalizeExecute(prepared, decodeSignResult(signResult));
+                const { instructions: signed } = client.finalizeExecute(prepared, decodeSignResult(signResult));
                 return await buildAndSendTx({
                     paymaster,
                     connection,
                     feePayer,
-                    instructions,
-                    addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+                    instructions: signed,
+                    addressLookupTables: lookupTables,
                     txVersion: payload.transactionOptions?.txVersion,
                     turn,
+                    onSubmitted,
+                    verifyFeePayer: embedded,
                 });
             } finally {
                 dialogManager.destroy();
             }
         });
 
+        if (embedded) emit(config, { type: 'confirmed', signature: txSignature });
         return txSignature;
 
     } catch (error: unknown) {
         return handleActionError(error, set, walletVersion(get));
     } finally {
-        set({ isSigning: false });
+        set({ isSigning: false, ...(embedded ? { step: null } : {}) });
     }
 };
 
@@ -457,10 +597,23 @@ function decodeSignResult(signResult: SignResult) {
  * the stored wallet itself — not whichever wallet lists this passkey first,
  * which could be one someone else added the passkey to.
  */
-async function resolvePasskeyWallet(wallet: WalletInfo, connection: Connection) {
+async function resolvePasskeyWallet(wallet: WalletInfo, connection: Connection, config?: WalletConfig) {
     const version = versionOf(wallet);
     const client = clientFor(version, connection);
     const credentialIdHash = getCredentialHash(wallet.credentialId);
+    if (config?.mode === 'embedded') {
+        // Derived and read, not scanned: a normal RPC is enough to send.
+        const walletPda = new PublicKey(wallet.smartWallet);
+        const seat = await passkeySeatOf({ connection, client, wallet: walletPda, credentialIdHash });
+        if (!seat) {
+            if (version === 1 && !(await connection.getAccountInfo(walletPda))) throw new V1WalletMigratedError();
+            throw new Error('The connected wallet no longer lists this passkey');
+        }
+        // From the chain, never the stored copy (see below).
+        const publicKeyBytes = seat.publicKey ?? (await readPasskeyPubkey(version, connection, seat.authorityPda));
+        const [vaultPda] = client.findVault(walletPda);
+        return { walletPda, authorityPda: seat.authorityPda, vaultPda, client, version, credentialIdHash, publicKeyBytes };
+    }
     const matches = await client.findWalletsByAuthority(credentialIdHash, 'secp256r1');
     const match = matches.find((m) => m.walletPda.toBase58() === wallet.smartWallet);
     if (!match) {
@@ -502,7 +655,7 @@ export const createSessionAction = async (
     set({ isSigning: true, error: null });
     try {
         const { client, version, walletPda, authorityPda, publicKeyBytes, credentialIdHash } =
-            await resolvePasskeyWallet(wallet, connection);
+            await resolvePasskeyWallet(wallet, connection, config);
         const paymaster = paymasterFor(config, version);
         const feePayer = await paymaster.getPayer();
 
@@ -654,7 +807,7 @@ export const revokeSessionAction = async (
             : await keyForConnectedWallet({ get, slot: 'session', storage: keyStorageOf(config), connection });
         if (!external && !stored) throw new Error('No session key found');
 
-        const resolved = await resolvePasskeyWallet(wallet, connection);
+        const resolved = await resolvePasskeyWallet(wallet, connection, config);
         const { client, version, authorityPda, publicKeyBytes, credentialIdHash } = resolved;
         const sessionPda = external ?? new PublicKey(stored!.info.sessionPda);
         const walletPda = external ? resolved.walletPda : new PublicKey(stored!.info.walletPda);
@@ -811,7 +964,7 @@ export const addAuthorityAction = async (
     set({ isSigning: true, error: null });
     try {
         const { client, version, walletPda, authorityPda, publicKeyBytes, credentialIdHash } =
-            await resolvePasskeyWallet(wallet, connection);
+            await resolvePasskeyWallet(wallet, connection, config);
         const paymaster = paymasterFor(config, version);
         const feePayer = await paymaster.getPayer();
 
@@ -902,7 +1055,7 @@ export const removeAuthorityAction = async (
     set({ isSigning: true, error: null });
     try {
         const { client, version, walletPda, authorityPda, publicKeyBytes, credentialIdHash } =
-            await resolvePasskeyWallet(wallet, connection);
+            await resolvePasskeyWallet(wallet, connection, config);
         const paymaster = paymasterFor(config, version);
         const feePayer = await paymaster.getPayer();
         const targetAuthorityPda = new PublicKey(payload.targetAuthorityPda);
@@ -968,7 +1121,7 @@ export const authorizeAndExecuteAction = async (
     try {
         const expiryOffset = deferredExpiryOffset(payload.expiryOffset);
         const { client, version, walletPda, authorityPda, publicKeyBytes, credentialIdHash } =
-            await resolvePasskeyWallet(wallet, connection);
+            await resolvePasskeyWallet(wallet, connection, config);
         const paymaster = paymasterFor(config, version);
         const feePayer = await paymaster.getPayer();
 
@@ -1063,7 +1216,7 @@ export const authorizeDeferredAction = async (
     try {
         const expiryOffset = deferredExpiryOffset(payload.expiryOffset);
         const { client, version, walletPda, authorityPda, publicKeyBytes, credentialIdHash } =
-            await resolvePasskeyWallet(wallet, connection);
+            await resolvePasskeyWallet(wallet, connection, config);
         const paymaster = paymasterFor(config, version);
         const feePayer = await paymaster.getPayer();
 
@@ -1229,7 +1382,7 @@ export const signAndSendWithAuthorityAction = async (
 export const signMessageAction = async (
     get: () => WalletState,
     set: (state: Partial<WalletState>) => void,
-    message: string
+    message: SignedMessageInput
 ): Promise<SignMessageResult> => {
     const { isSigning, wallet, config } = get();
 
@@ -1241,7 +1394,8 @@ export const signMessageAction = async (
         refuse(set, 'No wallet connected');
     }
 
-    set({ isSigning: true, error: null });
+    const embedded = config.mode === 'embedded';
+    set({ isSigning: true, error: null, ...(embedded ? { step: 'awaiting-passkey' as const } : {}) });
 
     try {
         const dialogManager = createDialogManager(config);
@@ -1258,9 +1412,10 @@ export const signMessageAction = async (
             dialogManager.destroy();
         }
     } catch (error: unknown) {
-        set({ error: error as Error });
+        // A closed sheet or portal is the user's no, not a failure.
+        if (!isUserRejection(error)) set({ error: error as Error });
         throw error;
     } finally {
-        set({ isSigning: false });
+        set({ isSigning: false, ...(embedded ? { step: null } : {}) });
     }
 };
