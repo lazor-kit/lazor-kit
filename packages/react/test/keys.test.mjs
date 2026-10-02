@@ -15,6 +15,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createPublicKey, verify, webcrypto } from 'node:crypto';
+import { freshPage } from './helpers/fresh-page.mjs';
 import {
     Connection,
     Keypair,
@@ -102,7 +103,6 @@ globalThis.fetch = async (url, init) => {
 const warnings = [];
 console.warn = (...args) => warnings.push(args.map(String).join(' '));
 
-let pages = 0;
 let PROGRAM;
 
 /** The stored record of a connected v2 wallet: what the store holds once `connect` resolves. */
@@ -122,7 +122,7 @@ const walletInfo = (walletPda) => ({
  * for none.
  */
 async function page({ keyStorage, wallet = WALLET } = {}) {
-    const W = await import(`../dist/index.mjs?page=${++pages}`);
+    const W = await freshPage();
     PROGRAM = W.PROGRAM_ID_DEVNET;
     W.registerCluster(RPC, 'devnet');
     W.useWalletStore.setState({

@@ -22,6 +22,7 @@ import assert from 'node:assert/strict';
 import { createPublicKey, verify, webcrypto } from 'node:crypto';
 import { JSDOM } from 'jsdom';
 import { Connection, Keypair, PublicKey, SystemProgram, VersionedTransaction } from '@solana/web3.js';
+import { freshPage } from './helpers/fresh-page.mjs';
 
 if (!globalThis.crypto) globalThis.crypto = webcrypto; // Node 18
 
@@ -188,7 +189,6 @@ after(() => {
 
 // ─── Pages ──────────────────────────────────────────────────────────────────
 
-let pages = 0;
 let mounted;
 
 /**
@@ -199,12 +199,13 @@ let mounted;
 async function load({ keyStorage } = {}) {
     unmount();
     document.body.innerHTML = '';
-    const W = await import(`../dist/index.mjs?page=${++pages}`);
+    const W = await freshPage();
     PROGRAM = W.PROGRAM_ID_DEVNET;
     const container = document.createElement('div');
     document.body.appendChild(container);
     mounted = createRoot(container);
     const props = {
+        mode: 'portal',
         rpcUrl: RPC,
         portalUrl: PORTAL,
         paymasterConfig,
