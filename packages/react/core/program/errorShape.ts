@@ -85,13 +85,13 @@ export function chainHasError(
     error: unknown,
     errorClass: abstract new (...args: never[]) => Error,
     name: string,
-    code?: number,
+    code?: number | string,
 ): boolean {
     return errorChain(error).some((link) => link instanceof errorClass || isNamedError(link, name, code));
 }
 
 /** An error of this `name` (and `code`, when given), whichever copy of the package made it. */
-export function isNamedError(value: unknown, name: string, code?: number): boolean {
+export function isNamedError(value: unknown, name: string, code?: number | string): boolean {
     if (typeof value !== 'object' || value === null) return false;
     return read(value, 'name') === name && (code === undefined || read(value, 'code') === code);
 }

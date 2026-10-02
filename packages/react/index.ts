@@ -17,8 +17,12 @@ export type { SpendingLimits, ActionCallbacks, DisconnectOptions, RemoveAuthorit
 export { DialogManager, PortalCancelledError } from './core/portal';
 export { StorageManager } from '././core/storage';
 // Deletes the session and authority keys the SDK keeps (createSession,
-// addAuthority), e.g. at sign-out: `disconnect` keeps them.
+// addAuthority), e.g. at sign-out.
 export { forgetStoredKeys } from './core/keys';
+// A kept key signs only for the wallet it was made for: the refusal when
+// another wallet, or none, is connected.
+export { KeyWalletMismatchError, isKeyWalletMismatchError } from './core/wallet/keyBinding';
+export type { KeyWalletMismatchReason } from './core/wallet/keyBinding';
 
 // Configuration exports
 export * from './config';

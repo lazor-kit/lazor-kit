@@ -47,7 +47,8 @@ import { DEFAULTS } from '../../config';
 import { type AuthorityTurn, sendAndConfirm, withAuthority } from './sequence';
 import { buildPreviewTransactionBase64 } from './preview';
 import { deferredExpiryOffset, executeBeforeExpiry } from './deferred';
-import { type KeySigner, type KeyStorage, forgetKey, generateKey, loadKey, saveKey } from '../keys';
+import { type KeySigner, type KeyStorage, forgetKey, generateKey, saveKey } from '../keys';
+import { keyForConnectedWallet } from './keyBinding';
 
 export function randomBytes(size: number): Uint8Array {
     return globalThis.crypto.getRandomValues(new Uint8Array(size));
@@ -556,9 +557,12 @@ export const createSessionAction = async (
         // is on chain now: a key that cannot be stored is kept for this page,
         // and the call still succeeds.
         if (generatedKey) {
+            // Bound to the wallet it was made for: it signs only while that
+            // wallet is connected (./keyBinding).
             await saveKey(keyStorageOf(config), 'session', generatedKey, {
                 sessionPda: sessionPda.toBase58(),
                 walletPda: walletPda.toBase58(),
+                bound: true,
                 expiresAt: expiresAt.toString(),
                 spendingLimits: payload.spendingLimits ? {
                     solLifetimeCap: payload.spendingLimits.solLifetimeCap?.toString(),
@@ -607,27 +611,25 @@ export const revokeSessionAction = async (
         //   (a) External sessionPda passed in → revoke that specific session.
         //       walletPda comes from the wallet record on-chain (resolved
         //       below via credential-hash lookup).
-        //   (b) No arg → revoke the session whose key the SDK keeps.
+        //   (b) No arg → revoke the session whose key the SDK keeps, which
+        //       must be the connected wallet's (an expired one is deleted).
         const external = payload.sessionPda
             ? typeof payload.sessionPda === 'string'
                 ? new PublicKey(payload.sessionPda)
                 : payload.sessionPda
             : null;
 
+        // The kept session first: one of another wallet is refused before
+        // anything is read for the passkey, let alone prompted.
+        const stored = external
+            ? null
+            : await keyForConnectedWallet({ get, slot: 'session', storage: keyStorageOf(config), connection });
+        if (!external && !stored) throw new Error('No session key found');
+
         const resolved = await resolvePasskeyWallet(wallet, connection);
         const { client, version, authorityPda, publicKeyBytes, credentialIdHash } = resolved;
-
-        let sessionPda: PublicKey;
-        let walletPda: PublicKey;
-        if (external) {
-            sessionPda = external;
-            walletPda = resolved.walletPda;
-        } else {
-            const stored = await loadKey(keyStorageOf(config), 'session');
-            if (!stored) throw new Error('No session key found');
-            sessionPda = new PublicKey(stored.info.sessionPda);
-            walletPda = new PublicKey(stored.info.walletPda);
-        }
+        const sessionPda = external ?? new PublicKey(stored!.info.sessionPda);
+        const walletPda = external ? resolved.walletPda : new PublicKey(stored!.info.walletPda);
 
         const paymaster = paymasterFor(config, version);
         const feePayer = await paymaster.getPayer();
@@ -671,7 +673,10 @@ export const revokeSessionAction = async (
 
 /**
  * Sign and send transaction using the stored session key (no passkey required).
- * A plaintext key an earlier release left in localStorage is moved first.
+ * A plaintext key an earlier release left in localStorage is moved first. The
+ * key signs only while the wallet it was made for is connected
+ * (`KeyWalletMismatchError` otherwise, nothing signed or sent), and an expired
+ * session's key is deleted.
  */
 export const signAndSendWithSessionAction = async (
     get: () => WalletState,
@@ -686,7 +691,7 @@ export const signAndSendWithSessionAction = async (
     // The protocol this flow runs on, from its own account — for error reporting.
     let flowVersion: ProtocolVersion | undefined;
     try {
-        const stored = await loadKey(keyStorageOf(config), 'session');
+        const stored = await keyForConnectedWallet({ get, slot: 'session', storage: keyStorageOf(config), connection });
         if (!stored) throw new Error('No session key found. Create a session first.');
         const sessionKey = stored.signer;
         const sessionPda = new PublicKey(stored.info.sessionPda);
@@ -797,6 +802,7 @@ export const addAuthorityAction = async (
         await saveKey(keyStorageOf(config), 'authority', authorityKey, {
             authorityPda: newAuthorityPda.toBase58(),
             walletPda: walletPda.toBase58(),
+            bound: true,
             role,
         });
 
@@ -1090,7 +1096,9 @@ export const executeDeferredAction = async (
 
 /**
  * Sign and send transaction using the stored ed25519 authority key (no passkey required).
- * A plaintext key an earlier release left in localStorage is moved first.
+ * A plaintext key an earlier release left in localStorage is moved first. The
+ * key signs only while the wallet it was added to is connected
+ * (`KeyWalletMismatchError` otherwise, nothing signed or sent).
  */
 export const signAndSendWithAuthorityAction = async (
     get: () => WalletState,
@@ -1105,7 +1113,7 @@ export const signAndSendWithAuthorityAction = async (
     // The protocol this flow runs on, from its own account — for error reporting.
     let flowVersion: ProtocolVersion | undefined;
     try {
-        const stored = await loadKey(keyStorageOf(config), 'authority');
+        const stored = await keyForConnectedWallet({ get, slot: 'authority', storage: keyStorageOf(config), connection });
         if (!stored) throw new Error('No authority key found. Add an authority first.');
         const authorityKey = stored.signer;
         const authorityPda = new PublicKey(stored.info.authorityPda);

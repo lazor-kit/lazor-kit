@@ -4,9 +4,12 @@
 // a non-extractable WebCrypto Ed25519 key, sealed with AES-GCM where there is
 // no WebCrypto Ed25519, or into memory where there is no IndexedDB. Whatever
 // holds it, the key signs exactly as web3.js's Keypair does with the same seed
-// (on fixed seeds, in both wire formats). Sends go to a scripted RPC and
-// paymaster, no network; every "page" is a fresh copy of the package, as a
-// reload is. Run with `pnpm test`.
+// (on fixed seeds, in both wire formats). A kept key signs only while the
+// wallet it belongs to is connected; an entry an earlier release left is
+// bound to its wallet on first use, or refused; an expired session's key is
+// deleted when read. Sends go to a scripted RPC and paymaster, no network;
+// every "page" is a fresh copy of the package, as a reload is. Run with
+// `pnpm test`.
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import { test, beforeEach, afterEach } from 'node:test';
@@ -37,6 +40,7 @@ const fixed = (byte) => Keypair.fromSeed(new Uint8Array(32).fill(byte));
 const FEE_PAYER = fixed(7).publicKey;
 const BLOCKHASH = fixed(9).publicKey.toBase58();
 const WALLET = fixed(11).publicKey;
+const OTHER_WALLET = fixed(12).publicKey;
 const RECIPIENT = fixed(13).publicKey;
 
 /** Fixed seeds: RFC 8032 §7.1 TESTs 1-3, a seed with leading zero bytes, and 0xff…. */
@@ -52,20 +56,29 @@ const SEEDS = [
 
 /** Accounts that exist: address → owner. */
 const accounts = new Map();
+/** What some of them hold: address → Buffer (empty otherwise). */
+const accountData = new Map();
 /** Every transaction the paymaster was asked to send. */
 const sent = [];
+/** The slot `getSlot` answers. */
+let chainSlot = 1000;
+/** `getLatestBlockhash` answers once this settles (see `holdBlockhash`). */
+let blockhashGate = Promise.resolve();
 
 const rpcFetch = async (_url, init) => {
     const { id, method, params } = JSON.parse(init.body);
     const reply = (result) => new Response(JSON.stringify({ jsonrpc: '2.0', id, result }), { status: 200 });
     if (method === 'getLatestBlockhash') {
+        await blockhashGate;
         return reply({ context: { slot: 1 }, value: { blockhash: BLOCKHASH, lastValidBlockHeight: 1e9 } });
     }
+    if (method === 'getSlot') return reply(chainSlot);
     if (method === 'getAccountInfo') {
         const owner = accounts.get(params[0]);
+        const data = accountData.get(params[0]) ?? Buffer.alloc(0);
         return reply({
             context: { slot: 1 },
-            value: owner ? { data: ['', 'base64'], executable: false, lamports: 1_000_000, owner, rentEpoch: 0, space: 0 } : null,
+            value: owner ? { data: [data.toString('base64'), 'base64'], executable: false, lamports: 1_000_000, owner, rentEpoch: 0, space: data.length } : null,
         });
     }
     if (method === 'getMultipleAccounts') return reply({ context: { slot: 1 }, value: params[0].map(() => null) });
@@ -92,8 +105,23 @@ console.warn = (...args) => warnings.push(args.map(String).join(' '));
 let pages = 0;
 let PROGRAM;
 
-/** A fresh copy of the package, as after a reload: nothing in memory, storage as it was. */
-async function page({ keyStorage } = {}) {
+/** The stored record of a connected v2 wallet: what the store holds once `connect` resolves. */
+const walletInfo = (walletPda) => ({
+    credentialId: Buffer.from('a passkey').toString('base64'),
+    passkeyPubkey: [2, ...new Array(32).fill(1)],
+    smartWallet: walletPda.toBase58(),
+    walletDevice: '',
+    platform: 'web',
+    expo: '',
+    protocolVersion: 2,
+});
+
+/**
+ * A fresh copy of the package, as after a reload: nothing in memory, storage
+ * as it was. `wallet`: the connected wallet's PDA (default `WALLET`), or null
+ * for none.
+ */
+async function page({ keyStorage, wallet = WALLET } = {}) {
     const W = await import(`../dist/index.mjs?page=${++pages}`);
     PROGRAM = W.PROGRAM_ID_DEVNET;
     W.registerCluster(RPC, 'devnet');
@@ -106,7 +134,7 @@ async function page({ keyStorage } = {}) {
             cluster: 'devnet',
             ...(keyStorage ? { keyStorage } : {}),
         },
-        wallet: null,
+        wallet: wallet ? walletInfo(wallet) : null,
         isSigning: false,
         error: null,
     });
@@ -118,37 +146,44 @@ beforeEach(() => {
     globalThis.indexedDB = new IDBFactory();
     storage.clear();
     accounts.clear();
+    accountData.clear();
     sent.length = 0;
     warnings.length = 0;
+    chainSlot = 1000;
+    blockhashGate = Promise.resolve();
 });
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-/** A localStorage entry as releases up to 3.2 wrote it for `createSession`. */
-function plantSession(W, keypair) {
-    const [sessionPda] = W.findSessionPda(WALLET, keypair.publicKey.toBytes(), PROGRAM);
+/**
+ * A localStorage entry as releases up to 3.2 wrote it for `createSession`:
+ * for `wallet`'s session, unless `sessionPda` says otherwise; the entry may
+ * name another wallet (`named`).
+ */
+function plantSession(W, keypair, { wallet = WALLET, named = wallet, sessionPda, expiresAt = '123456' } = {}) {
+    sessionPda ??= W.findSessionPda(wallet, keypair.publicKey.toBytes(), PROGRAM)[0];
     accounts.set(sessionPda.toBase58(), PROGRAM.toBase58());
     const entry = JSON.stringify({
         secretKey: Array.from(keypair.secretKey),
         publicKey: keypair.publicKey.toBase58(),
         sessionPda: sessionPda.toBase58(),
-        walletPda: WALLET.toBase58(),
-        expiresAt: '123456',
+        walletPda: named.toBase58(),
+        expiresAt,
         spendingLimits: { solPerTxMax: '1000000' },
     });
     storage.set('lazorkit-session', entry);
     return { sessionPda, entry };
 }
 
-/** A localStorage entry as releases up to 3.2 wrote it for `addAuthority`. */
-function plantAuthority(W, keypair) {
-    const [authorityPda] = W.findAuthorityPda(WALLET, keypair.publicKey.toBytes(), PROGRAM);
+/** A localStorage entry as releases up to 3.2 wrote it for `addAuthority`, as `plantSession`. */
+function plantAuthority(W, keypair, { wallet = WALLET, named = wallet, authorityPda } = {}) {
+    authorityPda ??= W.findAuthorityPda(wallet, keypair.publicKey.toBytes(), PROGRAM)[0];
     accounts.set(authorityPda.toBase58(), PROGRAM.toBase58());
     const entry = JSON.stringify({
         secretKey: Array.from(keypair.secretKey),
         publicKey: keypair.publicKey.toBase58(),
         authorityPda: authorityPda.toBase58(),
-        walletPda: WALLET.toBase58(),
+        walletPda: named.toBase58(),
         role: 1,
     });
     storage.set('lazorkit-authority', entry);
@@ -694,6 +729,216 @@ test('IndexedDB that cannot hold any CryptoKey: as with no IndexedDB, the key se
     } finally {
         restore();
     }
+});
+
+// ─── Which wallet a kept key signs for ───────────────────────────────────────
+
+async function rejection(promise) {
+    try {
+        await promise;
+    } catch (error) {
+        return error;
+    }
+    assert.fail('resolved');
+}
+
+/** Counts the transactions a WebCrypto key signs (a key's 32-byte probe is not one), until the returned undo. */
+function countSignatures() {
+    const subtle = crypto.subtle;
+    const original = subtle.sign;
+    const counter = { count: 0 };
+    subtle.sign = function (algorithm, key, data) {
+        if (data.byteLength > 32) counter.count++;
+        return original.call(this, algorithm, key, data);
+    };
+    counter.restore = () => delete subtle.sign;
+    return counter;
+}
+
+const sendWith = (W, slot, payload) =>
+    slot === 'session'
+        ? W.useWalletStore.getState().signAndSendWithSession(payload)
+        : W.useWalletStore.getState().signAndSendWithAuthority(payload);
+const plant = (W, slot, keypair, options) => (slot === 'session' ? plantSession(W, keypair, options) : plantAuthority(W, keypair, options));
+
+for (const slot of ['session', 'authority']) {
+    test(`${slot}: with no wallet connected, or another one, the kept key signs nothing (KeyWalletMismatchError); with its own wallet connected again, it signs`, async () => {
+        const keypair = SEEDS[0];
+        const W = await page({ wallet: null });
+        plant(W, slot, keypair);
+        const signatures = countSignatures();
+        try {
+            for (const [connected, reason] of [
+                [null, 'no-wallet'],
+                [OTHER_WALLET, 'other-wallet'],
+            ]) {
+                W.useWalletStore.setState({ wallet: connected ? walletInfo(connected) : null, error: null });
+                const calls = [];
+                const error = await rejection(
+                    sendWith(W, slot, {
+                        instructions: transfer(),
+                        onSuccess: () => calls.push('onSuccess'),
+                        onFail: (e) => calls.push([e, W.useWalletStore.getState().isSigning]),
+                    }),
+                );
+                assert.ok(error instanceof W.KeyWalletMismatchError, String(error));
+                assert.equal(W.isKeyWalletMismatchError(error), true);
+                assert.equal(error.name, 'KeyWalletMismatchError');
+                assert.equal(error.reason, reason);
+                assert.equal(error.slot, slot);
+                assert.equal(error.keyWallet, WALLET.toBase58());
+                assert.equal(error.connectedWallet, connected ? connected.toBase58() : undefined);
+                assert.match(error.message, /Nothing was signed or sent/);
+                assert.deepEqual(calls, [[error, false]], 'onFail once, after isSigning cleared');
+                assert.equal(W.useWalletStore.getState().error, error);
+                assert.equal(sent.length, 0, 'nothing sent');
+                assert.equal(signatures.count, 0, 'nothing signed');
+            }
+        } finally {
+            signatures.restore();
+        }
+        // The key stays, bound to its wallet.
+        const record = await storedRecord(slot);
+        assert.equal(record.info.walletPda, WALLET.toBase58());
+        assert.equal(record.info.bound, true, 'bound on its first use');
+
+        W.useWalletStore.setState({ wallet: walletInfo(WALLET) });
+        await sendWith(W, slot, { instructions: transfer() });
+        assertSignedAsWeb3(keypair, 'v0');
+    });
+}
+
+test('an entry an earlier release left is bound on its first use to the wallet its PDA derives from, and the binding is stored', async () => {
+    const W = await page();
+    plantSession(W, SEEDS[1]);
+    plantAuthority(W, SEEDS[2]);
+    await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+    await W.useWalletStore.getState().signAndSendWithAuthority({ instructions: transfer() });
+    for (const slot of ['session', 'authority']) {
+        const record = await storedRecord(slot);
+        assert.equal(record.info.walletPda, WALLET.toBase58(), slot);
+        assert.equal(record.info.bound, true, slot);
+    }
+    // Bound: after a reload, another wallet is refused without any look at the chain.
+    const reloaded = await page({ wallet: OTHER_WALLET });
+    accounts.clear();
+    const error = await rejection(reloaded.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }));
+    assert.equal(error.reason, 'other-wallet');
+});
+
+test('an entry that names the wrong wallet is bound to the wallet its account on chain names, when that account names its key', async () => {
+    const keypair = SEEDS[3];
+    const W = await page({ wallet: OTHER_WALLET });
+    // The session is WALLET's, but the entry says OTHER_WALLET.
+    const { sessionPda } = plantSession(W, keypair, { named: OTHER_WALLET });
+    const data = Buffer.alloc(80);
+    data[0] = 0x23;
+    WALLET.toBuffer().copy(data, 8);
+    keypair.publicKey.toBuffer().copy(data, 40);
+    data.writeBigUInt64LE(123456n, 72);
+    accountData.set(sessionPda.toBase58(), data);
+
+    const error = await rejection(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }));
+    assert.equal(error.reason, 'other-wallet');
+    assert.equal(error.keyWallet, WALLET.toBase58(), 'the wallet the chain names, not the one the entry named');
+    assert.equal(sent.length, 0);
+    assert.equal((await storedRecord('session')).info.walletPda, WALLET.toBase58());
+
+    W.useWalletStore.setState({ wallet: walletInfo(WALLET) });
+    await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+    assertSignedAsWeb3(keypair, 'v0');
+});
+
+test('an entry whose wallet cannot be confirmed is unbound: refused for every wallet, kept until forgetStoredKeys', async () => {
+    const keypair = SEEDS[4];
+    const W = await page();
+    // A PDA that does not derive from the wallet the entry names, and no account names the key.
+    plantSession(W, keypair, { sessionPda: fixed(21).publicKey });
+    plantAuthority(W, SEEDS[0], { authorityPda: fixed(22).publicKey });
+    // An account at the PDA that names another key does not bind it either.
+    const data = Buffer.alloc(80);
+    WALLET.toBuffer().copy(data, 8);
+    fixed(23).publicKey.toBuffer().copy(data, 40);
+    accountData.set(fixed(21).publicKey.toBase58(), data);
+    const signatures = countSignatures();
+    try {
+        for (const connected of [WALLET, OTHER_WALLET, null]) {
+            W.useWalletStore.setState({ wallet: connected ? walletInfo(connected) : null });
+            for (const slot of ['session', 'authority']) {
+                const calls = [];
+                const error = await rejection(sendWith(W, slot, { instructions: transfer(), onFail: (e) => calls.push(e) }));
+                assert.ok(W.isKeyWalletMismatchError(error), String(error));
+                assert.equal(error.reason, 'unbound');
+                assert.equal(error.keyWallet, undefined);
+                assert.match(error.message, /forgetStoredKeys\(\)/);
+                assert.deepEqual(calls, [error]);
+            }
+        }
+        assert.equal(sent.length, 0);
+        assert.equal(signatures.count, 0);
+    } finally {
+        signatures.restore();
+    }
+    assert.equal((await storedRecord('session')).info.bound, undefined, 'not bound');
+    await W.forgetStoredKeys();
+    await assert.rejects(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /No session key found/);
+});
+
+test('a wallet that disconnects while a send is being built: the key does not sign, and nothing is sent', async () => {
+    const W = await page();
+    plantAuthority(W, SEEDS[1]);
+    let release;
+    blockhashGate = new Promise((resolve) => (release = resolve));
+    const signatures = countSignatures();
+    try {
+        const pending = W.useWalletStore.getState().signAndSendWithAuthority({ instructions: transfer() });
+        // Past the check, building the transaction.
+        for (let i = 0; i < 200 && !W.useWalletStore.getState().isSigning; i++) await new Promise((r) => setTimeout(r, 1));
+        await new Promise((r) => setTimeout(r, 20));
+        await W.useWalletStore.getState().disconnect();
+        release();
+        const error = await rejection(pending);
+        assert.equal(error.reason, 'no-wallet');
+        assert.equal(sent.length, 0);
+        assert.equal(signatures.count, 0);
+    } finally {
+        signatures.restore();
+    }
+});
+
+test('an expired session key is deleted when read; one that expires this slot still signs', async () => {
+    const W = await page();
+    const { sessionPda } = plantSession(W, SEEDS[2], { expiresAt: '1000' });
+    chainSlot = 1000;
+    await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+    assertSignedAsWeb3(SEEDS[2], 'v0');
+
+    chainSlot = 1001;
+    const calls = [];
+    const error = await rejection(
+        W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer(), onFail: (e) => calls.push(e) }),
+    );
+    assert.match(error.message, /^No session key found: the stored session .* expired after slot 1000 \(the chain is at slot 1001\)/);
+    assert.ok(error.message.includes(sessionPda.toBase58()));
+    assert.deepEqual(calls, [error]);
+    assert.equal(sent.length, 1, 'only the first send');
+    assert.equal(await storedRecord('session'), undefined, 'deleted');
+    await assert.rejects(
+        W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }),
+        /^Error: No session key found\. Create a session first\.$/,
+    );
+});
+
+test('an expired session key a page holds in memory only, and its plaintext, are deleted too', async () => {
+    const W = await page({ keyStorage: 'memory' });
+    plantSession(W, SEEDS[3], { expiresAt: '10' });
+    await assert.rejects(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /expired after slot 10/);
+    assert.equal(storage.size, 0);
+    await assert.rejects(
+        W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }),
+        /^Error: No session key found\. Create a session first\.$/,
+    );
+    assert.equal(sent.length, 0);
 });
 
 // ─── forgetStoredKeys: sign-out ──────────────────────────────────────────────

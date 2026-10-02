@@ -357,8 +357,12 @@ They also recognise the raw program error, as web3.js text (`0xbbe`, `0xbc6`,
 or with the logs in a paymaster's `data`. For a raw error the logs decide
 whose it is: a 3006 with no logs counts as LazorKit's, a 3014 with no logs
 does not, and a 4018 counts when the logs name the v1 program or `version` is
-1. The other error classes have no predicate: compare `error.name`
-(`'TransactionFailedError'`, `'PaymasterError'`, `'V1WalletMigratedError'`,
+1. `isKeyWalletMismatchError` is true for a `KeyWalletMismatchError` (a
+kept session or authority key that was not used because its wallet is not the
+connected one, see [Session and authority keys](#session-and-authority-keys)),
+from either copy and wrapped the same way. The other error classes have no
+predicate: compare `error.name` (`'TransactionFailedError'`,
+`'PaymasterError'`, `'V1WalletMigratedError'`,
 `'WalletNeedsConfirmationError'`, …), which holds across copies too.
 
 The portal's transaction preview is compiled without lookup tables whenever it
@@ -402,6 +406,39 @@ keys that an earlier `'auto'` run stored in IndexedDB are not read.
 Nothing is written to localStorage any more, and a `sessionKey` you pass in is
 never stored: only you hold its secret.
 
+**A kept key signs only for its own wallet.** Each key is stored with the
+wallet it was registered for (its wallet PDA), its session or authority PDA,
+and a session's expiry. `signAndSendWithSession`, `signAndSendWithAuthority`
+and `revokeSession()` (without `sessionPda`) use the key only while that same
+wallet is connected. With no wallet connected, or another one, they reject
+with `KeyWalletMismatchError` before anything is signed or sent: `reason` is
+`'no-wallet'` or `'other-wallet'`, `keyWallet` the wallet PDA the key signs
+for, `connectedWallet` the connected one. The key itself checks again when it
+signs, so a wallet that disconnects or switches while a send is being built
+stops it too. Connect `keyWallet` again and the key signs, or create a session
+(add an authority) for the connected wallet, which replaces it.
+
+```ts
+import { isKeyWalletMismatchError } from '@lazorkit/wallet';
+
+try {
+  await signAndSendWithSession({ instructions });
+} catch (error) {
+  if (isKeyWalletMismatchError(error)) {
+    // Not this wallet's session: ask for the passkey and create one for it.
+    await createSession({ spendingLimits });
+  } else throw error;
+}
+```
+
+A stored session key whose session has expired is deleted the next time it is
+read (a send, or `revokeSession()`), which then rejects with "No session key
+found: the stored session … expired after slot …". It is deleted once the
+chain, read at the connection's commitment, is past the session's
+`expiresAt`: never while the session can still sign. Revoke an expired
+session by its PDA (`revokeSession({ sessionPda })`) if you want its account
+closed.
+
 **What this does not protect against.** In (1) and (2) the key is still at
 rest in the browser profile. Chromium writes a non-extractable key's bytes to
 the profile's IndexedDB files unencrypted (checked in Chrome for Testing 147;
@@ -423,6 +460,17 @@ only go to memory (3), the plaintext is deleted anyway. An entry in those
 slots that this SDK did not write is left untouched, and no key is read from
 it. After the move, going back to 3.2 or earlier finds no key ("No session key
 found. Create a session first."), and the user creates a new session.
+
+Such an entry names its wallet, but 3.2 never checked it. On its first use
+the key is bound to that wallet if the program derives the entry's session or
+authority PDA from that wallet and the key (v2 or v1, on the cluster the app
+is on). Otherwise it is bound to the wallet the PDA's account on chain names,
+if that account is LazorKit's and names this key. The binding is stored, and
+the key then signs only for that wallet, as above. **An entry whose wallet
+cannot be confirmed either way stays unbound and is never used**: every send
+rejects with `KeyWalletMismatchError` and `reason: 'unbound'`, whichever
+wallet is connected. Call `forgetStoredKeys()` and create the session (add the
+authority) again.
 
 **If your app removed `lazorkit-session` / `lazorkit-authority` at sign-out**
 (or called `localStorage.clear()`), that no longer removes the keys: they are
@@ -454,10 +502,10 @@ function SignOutButton() {
 - `forgetStoredKeys()` deletes both, wherever they are kept: IndexedDB, this
   page's memory, and any plaintext an earlier release left. It rejects if
   IndexedDB holds keys and could not be cleared.
-- `disconnect` keeps both keys. A kept key also signs with no wallet
-  connected: `signAndSendWithSession` and `signAndSendWithAuthority` sign for
-  the wallet the key was registered for, whichever wallet is connected, or
-  none. On a shared computer, call `forgetStoredKeys()` at sign-out.
+- A stored session key is deleted when it is read after its session expired.
+- `disconnect` keeps both keys. A kept key signs only once the wallet it was
+  registered for is connected again (see above). On a shared computer, call
+  `forgetStoredKeys()` at sign-out.
 
 If a key cannot be stored after its session or authority has landed, the call
 still succeeds: the key signs for the rest of this page, and a warning is

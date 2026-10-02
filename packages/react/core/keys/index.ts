@@ -3,6 +3,7 @@ export {
     saveKey,
     loadKey,
     forgetKey,
+    updateKeyInfo,
     migrateLegacyKeys,
     forgetStoredKeys,
 } from './vault';

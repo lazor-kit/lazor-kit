@@ -296,6 +296,15 @@ function assertNoPlaintext() {
     }
 }
 
+async function rejection(promise) {
+    try {
+        await promise;
+    } catch (error) {
+        return error;
+    }
+    assert.fail('resolved');
+}
+
 async function until(condition, what) {
     for (let i = 0; i < 200; i++) {
         if (await condition()) return;
@@ -373,11 +382,13 @@ test('addAuthority → reload → signAndSendWithAuthority: the key kept in Inde
 test('LazorkitProvider moves the plaintext keys an earlier release left when it mounts, before any send', async () => {
     const session = Keypair.generate();
     const authority = Keypair.generate();
-    const sessionPda = fixed(31).toBase58();
-    const authorityPda = fixed(33).toBase58();
+    // The PDAs 3.2 wrote: the session's and the authority's for WALLET and their key.
+    const P = await import('../dist/index.mjs?pdas');
+    const sessionPda = P.findSessionPda(WALLET, session.publicKey.toBytes(), P.PROGRAM_ID_DEVNET)[0].toBase58();
+    const authorityPda = P.findAuthorityPda(WALLET, authority.publicKey.toBytes(), P.PROGRAM_ID_DEVNET)[0].toBase58();
     localStorage.setItem(
         'lazorkit-session',
-        JSON.stringify({ secretKey: Array.from(session.secretKey), publicKey: session.publicKey.toBase58(), sessionPda, walletPda: WALLET.toBase58(), expiresAt: '9' }),
+        JSON.stringify({ secretKey: Array.from(session.secretKey), publicKey: session.publicKey.toBase58(), sessionPda, walletPda: WALLET.toBase58(), expiresAt: '900000' }),
     );
     localStorage.setItem(
         'lazorkit-authority',
@@ -390,10 +401,12 @@ test('LazorkitProvider moves the plaintext keys an earlier release left when it 
     assert.equal((await storedRecord('authority')).publicKey, authority.publicKey.toBase58());
     assert.equal(sent.length, 0);
 
-    // And the moved key signs.
+    // And the moved key signs, for its own wallet: bound to it on this first use.
     landed(sessionPda);
+    connect(W);
     await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
     assertSignedBy(sent.at(-1), session.publicKey);
+    assert.equal((await storedRecord('session')).info.bound, true);
 });
 
 // ─── A key that cannot be stored after its transaction landed ───────────────
@@ -545,6 +558,32 @@ test("revokeSession deletes the kept key once its session is revoked, and leaves
     await W.useWalletStore.getState().revokeSession();
     assert.equal(await storedRecord('session'), undefined, 'deleted once its session is revoked');
     await assert.rejects(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /No session key found/);
+});
+
+test("revokeSession() refuses another wallet's kept session before the passkey is read or prompted", async () => {
+    const W = await load();
+    connect(W);
+    const { sessionPda } = await W.useWalletStore.getState().createSession({ unrestricted: true });
+    landed(sessionPda);
+    const own = W.useWalletStore.getState().wallet;
+    // Another wallet is connected now (its passkey is not even on chain).
+    W.useWalletStore.setState({ wallet: { ...own, smartWallet: fixed(45).toBase58(), vaultPda: undefined } });
+    const prompts = approvals.length;
+    const sends = sent.length;
+    const calls = [];
+    const error = await rejection(W.useWalletStore.getState().revokeSession({ onFail: (e) => calls.push(e) }));
+    assert.ok(W.isKeyWalletMismatchError(error), String(error));
+    assert.equal(error.reason, 'other-wallet');
+    assert.deepEqual(calls, [error]);
+    assert.equal(approvals.length, prompts, 'no passkey prompt');
+    assert.equal(sent.length, sends);
+    assert.ok(await storedRecord('session'), 'the key stays');
+
+    // Its own wallet again: revoked, and the key deleted.
+    W.useWalletStore.setState({ wallet: own });
+    await W.useWalletStore.getState().revokeSession();
+    assert.equal(approvals.length, prompts + 1);
+    assert.equal(await storedRecord('session'), undefined);
 });
 
 test('removeAuthority deletes the kept key once its authority is removed, and leaves it when another is', async () => {

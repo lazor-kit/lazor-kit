@@ -57,23 +57,37 @@ export type { KeySigner } from './signer';
  */
 export type KeyStorage = 'auto' | 'memory';
 
-/** What the stored session key is for. */
+/**
+ * What the stored session key is for. The key is bound to `walletPda`: it is
+ * used only while that wallet is connected (see ../wallet/keyBinding).
+ */
 export interface SessionKeyInfo {
     readonly sessionPda: string;
+    /** The wallet the session belongs to: its wallet PDA. */
     readonly walletPda: string;
+    /** The last slot the session signs in, as a decimal string. */
     readonly expiresAt?: string;
     readonly spendingLimits?: {
         readonly solLifetimeCap?: string;
         readonly solPerTxMax?: string;
         readonly solRecurring?: { readonly limit: string; readonly windowSlots: string };
     };
+    /**
+     * `walletPda` is confirmed: the key was made for the wallet connected
+     * then, or an entry moved from an earlier release was checked against its
+     * PDA or the chain. Absent until then.
+     */
+    readonly bound?: true;
 }
 
-/** What the stored authority key is for. */
+/** What the stored authority key is for. Bound to `walletPda` as a session key is. */
 export interface AuthorityKeyInfo {
     readonly authorityPda: string;
+    /** The wallet the authority belongs to: its wallet PDA. */
     readonly walletPda: string;
     readonly role?: number;
+    /** As `SessionKeyInfo.bound`. */
+    readonly bound?: true;
 }
 
 interface SlotInfo {
@@ -213,14 +227,17 @@ export async function loadKey<S extends KeySlot>(storage: KeyStorage, slot: S): 
 }
 
 /**
- * Forgets the key in `slot` when `matches` its info: the session revoked, the
- * authority removed. Never throws: called once that has landed.
+ * Forgets the key in `slot` when `matches` its info: the session revoked or
+ * expired, the authority removed, the session key at `disconnect`. Waits for a
+ * migration of the slot in flight first. Never throws: called once that has
+ * landed.
  */
 export async function forgetKey<S extends KeySlot>(
     storage: KeyStorage,
     slot: S,
     matches: (info: SlotInfo[S]) => boolean,
 ): Promise<void> {
+    await migrations.get(slot);
     try {
         const remembered = inMemory.get(slot);
         if (remembered && matches(remembered.info as SlotInfo[S])) inMemory.delete(slot);
@@ -233,6 +250,40 @@ export async function forgetKey<S extends KeySlot>(
         await deleteRecord(db, slot, (current) => isKeyRecord(current, slot) && matches(current.info as unknown as SlotInfo[S]));
     } catch (error) {
         console.warn(`[LazorKit] The ${slot} key could not be deleted:`, error);
+    }
+}
+
+/**
+ * Records `info` for the key in `slot`, where the slot still holds the key
+ * with this public key: its wallet confirmed (`bound`). A key this page holds
+ * in memory is updated there (and stored with it, if it is stored later).
+ * Never throws: a key whose binding could not be written is checked again on
+ * its next use.
+ */
+export async function updateKeyInfo<S extends KeySlot>(
+    storage: KeyStorage,
+    slot: S,
+    publicKey: PublicKey,
+    info: SlotInfo[S],
+): Promise<void> {
+    const remembered = inMemory.get(slot);
+    if (remembered?.signer.publicKey.equals(publicKey)) {
+        inMemory.set(slot, { ...remembered, info });
+        return;
+    }
+    if (storage === 'memory') return;
+    try {
+        const db = await openKeysDb();
+        if (!db) return;
+        const record = await getRecord(db, slot);
+        if (!isKeyRecord(record, slot) || record.publicKey !== publicKey.toBase58()) return;
+        await putRecord(
+            db,
+            { ...record, info: { ...info } as Record<string, unknown> },
+            (current) => isKeyRecord(current, slot) && current.publicKey === record.publicKey,
+        );
+    } catch (error) {
+        warnOnce(`bind-${slot}`, `[LazorKit] The ${slot} key's wallet could not be recorded; it is checked again on its next use: ${String(error)}`);
     }
 }
 

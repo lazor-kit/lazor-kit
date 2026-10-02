@@ -99,7 +99,10 @@ export interface RevokeSessionPayload {
     /**
      * Optional — revoke a *specific* session by its PDA. Accepts base58
      * or PublicKey. When omitted, the SDK revokes the session whose key it
-     * keeps (the last `createSession` without `sessionKey`).
+     * keeps (the last `createSession` without `sessionKey`), which must be
+     * the connected wallet's: `KeyWalletMismatchError` otherwise, before the
+     * passkey prompt. A kept key whose session has expired is deleted then,
+     * and the call rejects.
      *
      * Use this when you registered an external session key (e.g. a backend /
      * agent session). The key the SDK keeps is deleted once the session it

@@ -106,6 +106,29 @@ test('isDeferredExpiredError reads through wrappers, and still claims no bare 30
     assert.equal(W.isDeferredExpiredError({ InstructionError: [0, { Custom: 3014 }] }), false);
 });
 
+test('isKeyWalletMismatchError is true for every KeyWalletMismatchError, from either copy, wrapped or not', () => {
+    const wallet = Keypair.generate().publicKey.toBase58();
+    const other = Keypair.generate().publicKey.toBase58();
+    const own = new W.KeyWalletMismatchError('session', 'other-wallet', wallet, other);
+    assert.equal(own.name, 'KeyWalletMismatchError');
+    assert.equal(own.reason, 'other-wallet');
+    assert.ok(own.message.includes(wallet) && own.message.includes(other));
+    assert.equal(W.isKeyWalletMismatchError(own), true);
+    assert.equal(W.isKeyWalletMismatchError(new W.KeyWalletMismatchError('authority', 'no-wallet', wallet, undefined)), true);
+    assert.equal(W.isKeyWalletMismatchError(new W.KeyWalletMismatchError('session', 'unbound', undefined, undefined)), true);
+    const copy = new W2.KeyWalletMismatchError('authority', 'no-wallet', wallet, undefined);
+    assert.ok(!(copy instanceof W.KeyWalletMismatchError));
+    assert.equal(W.isKeyWalletMismatchError(copy), true);
+    assert.equal(W2.isKeyWalletMismatchError(own), true);
+    assert.equal(W.isKeyWalletMismatchError(walletAdapterWrap(own)), true);
+    assert.equal(W.isKeyWalletMismatchError(new Error('wrapped', { cause: copy })), true);
+    // An error that only shares the name is not one, nor is any other error.
+    assert.equal(W.isKeyWalletMismatchError(Object.assign(new Error('x'), { name: 'KeyWalletMismatchError' })), false);
+    assert.equal(W.isKeyWalletMismatchError(new Error('No session key found. Create a session first.')), false);
+    assert.equal(W.isKeyWalletMismatchError(new W.SignatureReusedError()), false);
+    assert.equal(W.isKeyWalletMismatchError(undefined), false);
+});
+
 test('isRetiredDeploymentError is true for every V1WalletRetiredError, from either copy, wrapped or not', () => {
     assert.equal(W.isRetiredDeploymentError(new W.V1WalletRetiredError()), true);
     assert.equal(W.isRetiredDeploymentError(new W.V1WalletRetiredError(web3Error(4018, V1, V1))), true);

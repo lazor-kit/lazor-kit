@@ -71,7 +71,18 @@ export interface WalletHookInterface {
     onSuccess?: (sessionPda: string, sessionPublicKey: string) => void;
     onFail?: (error: Error) => void;
   }) => Promise<{ sessionPda: string; sessionPublicKey: string }>;
+  /**
+   * Revokes `sessionPda`, or without it the session whose key the SDK keeps,
+   * which must be the connected wallet's (`KeyWalletMismatchError` otherwise,
+   * before the passkey prompt).
+   */
   revokeSession: (payload?: { sessionPda?: PublicKey | string; onSuccess?: () => void; onFail?: (error: Error) => void }) => Promise<void>;
+  /**
+   * Signs with the session key the SDK keeps, no passkey prompt. Only while
+   * the wallet the session belongs to is connected: otherwise it rejects with
+   * `KeyWalletMismatchError`, and nothing is signed or sent. A key whose
+   * session has expired is deleted, and the call rejects.
+   */
   signAndSendWithSession: (payload: SendTxPayload & ActionCallbacks<string>) => Promise<string>;
 
   // Ed25519 authority actions
@@ -83,6 +94,11 @@ export interface WalletHookInterface {
     onFail?: (error: Error) => void;
   }) => Promise<{ authorityPda: string; authorityPublicKey: string }>;
   removeAuthority: (targetAuthorityPda: string, options?: RemoveAuthorityOptions) => Promise<void>;
+  /**
+   * Signs with the authority key the SDK keeps, no passkey prompt. Only while
+   * the wallet the authority was added to is connected: otherwise it rejects
+   * with `KeyWalletMismatchError`, and nothing is signed or sent.
+   */
   signAndSendWithAuthority: (payload: SendTxPayload & ActionCallbacks<string>) => Promise<string>;
 
   // Deferred execution
