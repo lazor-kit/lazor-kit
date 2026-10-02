@@ -171,6 +171,38 @@ test('a reload is connected on its first effect (no flash of "disconnected")', a
     void RP_ID;
 });
 
+test('hydrating a server render over a stored wallet: no mismatch from useWallet or useLazorkitState, then connected', async () => {
+    globalThis.fetch = (url, init) => chain.fetch(url, init);
+    const client = W.createLazorkitClient(embeddedConfig(), { replace: true });
+    const connecting = client.connect();
+    const sheet = await until(() => document.querySelector('dialog[data-lk="no-passkey"]'), 'the sheet');
+    sheet.querySelector('[data-lk="create"]').click();
+    await connecting;
+
+    // The next page load: the server rendered it disconnected.
+    const [R, H] = await freshPages('index.mjs', 'hooks.mjs');
+    const { hydrateRoot } = await import('react-dom/client');
+    function Probe() {
+        const { status } = H.useLazorkitState();
+        return h('p', null, h('output', { id: 'state' }, status), h('output', { id: 'wallet' }, R.useWallet().status));
+    }
+    const container = document.createElement('div');
+    container.innerHTML = '<p><output id="state">disconnected</output><output id="wallet">disconnected</output></p>';
+    document.body.appendChild(container);
+    const recoverable = [];
+    let root;
+    await act(async () => {
+        root = hydrateRoot(container, h(R.LazorkitProvider, embeddedProps(), h(Probe)), {
+            onRecoverableError: (error) => recoverable.push(String(error?.message ?? error)),
+        });
+    });
+    await act(async () => {});
+    assert.deepEqual(recoverable, [], 'no hydration mismatch');
+    assert.equal(container.querySelector('#state').textContent, 'connected');
+    assert.equal(container.querySelector('#wallet').textContent, 'connected');
+    await act(async () => root.unmount());
+});
+
 test('/hooks: the same useWallet and store as the root; useWalletStatus gives the step; useLazorkitClient is the page client', async () => {
     globalThis.fetch = (url, init) => chain.fetch(url, init);
     const [R, H] = await freshPages('index.mjs', 'hooks.mjs');
