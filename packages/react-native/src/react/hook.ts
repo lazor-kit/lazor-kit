@@ -58,9 +58,10 @@ export function useWallet(): LazorWalletHook {
 
   // Each action's promise settles, and its callbacks run, once `isSigning`
   // (or `isConnecting`) is false again: `await send(a); await send(b)` runs
-  // both, and so does a send from `onSuccess`. What a callback throws is
-  // logged and changes nothing. The store reports to the callbacks, so the
-  // hook passes them through.
+  // both, and so does a send from `onSuccess`. A call refused because another
+  // is running settles at once, while that call still holds the flag. What a
+  // callback throws is logged and changes nothing. The store reports to the
+  // callbacks, so the hook passes them through.
   const handleConnect = (connectOptions: ConnectOptions): Promise<WalletInfo> => connect(connectOptions);
 
   const handleDisconnect = (disconnectOptions?: DisconnectOptions): Promise<void> =>

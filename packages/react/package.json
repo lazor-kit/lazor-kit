@@ -47,7 +47,7 @@
     "dev": "rollup -c -w",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/deferred.test.mjs test/errors.test.mjs test/callbacks.test.mjs",
+    "test": "node --test test/deferred.test.mjs test/errors.test.mjs test/callbacks.test.mjs test/landed-key.test.mjs",
     "prepublishOnly": "npm run clean && npm run build"
   },
   "publishConfig": {
@@ -85,6 +85,7 @@
     "@wallet-standard/base": "^1.1.0",
     "@wallet-standard/features": "^1.1.0",
     "@wallet-standard/wallet": "^1.1.0",
+    "jsdom": "^26.1.0",
     "typescript": "^5.9.3"
   }
 }

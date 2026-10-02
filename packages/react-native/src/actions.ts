@@ -87,7 +87,8 @@ import { getFeePayer } from './core/paymaster';
  *
  * A second request while one is running rejects with `SigningError` (and
  * calls its onFail): resolving it with nothing would leave its caller
- * waiting forever.
+ * waiting forever. That refusal is reported at once, while `isSigning` is
+ * still `true`: the flag belongs to the request that is running.
  */
 async function withSigningState<T>(
   get: () => WalletStateClient,
@@ -138,8 +139,9 @@ function notify<A>(callback: ((arg: A) => void) | undefined, arg: A): void {
  * Runs a call that keeps no `isSigning` (connect, disconnect) and reports its
  * outcome as `withSigningState` does: to `callbacks`, once the call is over
  * (`isConnecting` cleared), right before the returned promise settles the
- * same way. Refusals included; what a callback throws is logged and changes
- * nothing.
+ * same way. Refusals included; a connect refused because another is running
+ * is over at once, and `isConnecting` stays `true` (it is that connect's).
+ * What a callback throws is logged and changes nothing.
  */
 async function reportOutcome<T>(
   callbacks:

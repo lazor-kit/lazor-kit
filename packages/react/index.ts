@@ -11,7 +11,7 @@ export { useWalletStore } from './react/store';
 // Type exports
 export type { WalletInfo, WalletConfig } from '././core/storage';
 export type { WalletHookInterface, ConnectHookOptions, DeferredTxPayload } from './react/useWallet';
-export type { SpendingLimits, ActionCallbacks, DisconnectOptions, RemoveAuthorityOptions } from './core/types';
+export type { SpendingLimits, ActionCallbacks, DisconnectOptions, RemoveAuthorityOptions, SignMessageOptions } from './core/types';
 
 // Core exports (for advanced usage)
 export { DialogManager, PortalCancelledError } from './core/portal';

@@ -73,14 +73,14 @@ export const useWalletStore = create<WalletState>()(
       },
 
       // Wallet actions. Each call's onSuccess / onFail runs once the action
-      // is over (`isSigning` / `isConnecting` cleared), right before its
-      // promise settles; what a callback throws changes nothing (see
-      // `reportOutcome`).
+      // is over (`isSigning` / `isConnecting` cleared, unless the call was
+      // refused because another holds it), right before its promise settles;
+      // what a callback throws changes nothing (see `reportOutcome`).
       connect: (options) => reportOutcome(options, () => connectAction(get, set, options)),
       disconnect: (options) => reportOutcome(options, () => disconnectAction(set)),
       signAndSendTransaction: (payload) =>
         reportOutcome(payload, () => signAndSendTransactionAction(get, set, payload)),
-      signMessage: (message) => signMessageAction(get, set, message),
+      signMessage: (message, options) => reportOutcome(options, () => signMessageAction(get, set, message)),
 
       // Session key actions
       createSession: (payload) =>

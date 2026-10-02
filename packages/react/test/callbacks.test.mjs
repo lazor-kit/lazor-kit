@@ -10,7 +10,11 @@
 //   reported as failed);
 // - C4 a send started from a callback runs;
 // - C5 every declared callback is honoured (disconnect, removeAuthority);
-// - C6 a throwing adapter / Wallet Standard listener does not fail connect.
+// - C6 a throwing adapter / Wallet Standard listener does not fail connect,
+//   nor stop the listeners after it.
+// A call refused because another is running is the one exception to C1: its
+// onFail runs at once, while the running call still holds the flag. And
+// disconnect leaves `isSigning` to an action still running, as on mobile.
 // Run with `pnpm test`.
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -40,6 +44,9 @@ const LAZORKIT = W.PROGRAM_ID_DEVNET.toBase58();
 /** DeferredExec accounts that exist, with an authorization still open. */
 const openAuthorizations = new Set();
 let sends = 0;
+/** The paymaster answers a send once this settles (see `holdSends`). */
+let sendGate = Promise.resolve();
+let heldSends = 0;
 
 const rpcFetch = async (_url, init) => {
     const { id, method, params } = JSON.parse(init.body);
@@ -70,6 +77,8 @@ globalThis.fetch = async (url, init) => {
     if (method === 'getPayerSigner') return answer({ result: { signer_address: feePayer.toBase58() } });
     if (method === 'signAndSendTransaction') {
         sends++;
+        heldSends++;
+        await sendGate;
         return answer({ result: { signature: Keypair.generate().publicKey.toBase58() + Keypair.generate().publicKey.toBase58() } });
     }
     throw new Error(`unscripted paymaster ${method}`);
@@ -111,6 +120,22 @@ function deferredPayload() {
         compactInstructions: [],
         remainingAccounts: [],
     });
+}
+
+/** Holds the paymaster's sends until the returned function is called. */
+function holdSends() {
+    let release;
+    sendGate = new Promise((resolve) => (release = resolve));
+    heldSends = 0;
+    return () => {
+        sendGate = Promise.resolve();
+        release();
+    };
+}
+
+async function until(condition, what) {
+    for (let i = 0; i < 400 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.ok(condition(), `timed out waiting for ${what}`);
 }
 
 async function rejection(promise) {
@@ -200,6 +225,7 @@ test("C3: a throwing onFail does not replace the action's error", async () => {
 /** Every action that takes callbacks, called with `callbacks`. */
 const actions = {
     signAndSendTransaction: (callbacks) => store.getState().signAndSendTransaction({ instructions: [], ...callbacks }),
+    signMessage: (callbacks) => store.getState().signMessage('hello', callbacks),
     createSession: (callbacks) => store.getState().createSession({ unrestricted: true, ...callbacks }),
     revokeSession: (callbacks) => store.getState().revokeSession({ ...callbacks }),
     signAndSendWithSession: (callbacks) => store.getState().signAndSendWithSession({ instructions: [], ...callbacks }),
@@ -210,16 +236,18 @@ const actions = {
     authorizeDeferred: (callbacks) => store.getState().authorizeDeferred({ instructions: [], ...callbacks }),
     executeDeferred: (callbacks) => store.getState().executeDeferred({ deferredPayload: deferredPayload(), ...callbacks }),
 };
-const needsWallet = ['signAndSendTransaction', 'createSession', 'revokeSession', 'addAuthority', 'removeAuthority', 'authorizeAndExecute', 'authorizeDeferred'];
+const needsWallet = ['signAndSendTransaction', 'signMessage', 'createSession', 'revokeSession', 'addAuthority', 'removeAuthority', 'authorizeAndExecute', 'authorizeDeferred'];
 
-test('C2: a call refused while another is signing calls its onFail, and leaves error (the running call\'s) alone', async () => {
+test('C2: a call refused while another is signing calls its onFail at once, and leaves error and isSigning (the running call\'s) alone', async () => {
     for (const [name, call] of Object.entries(actions)) {
         const running = new Error('the running call');
         store.setState({ isSigning: true, error: running, wallet: storedWallet() });
         const calls = [];
-        const error = await rejection(call({ onSuccess: () => calls.push('onSuccess'), onFail: (e) => calls.push(e) }));
+        const error = await rejection(
+            call({ onSuccess: () => calls.push('onSuccess'), onFail: (e) => calls.push([e, store.getState().isSigning]) }),
+        );
         assert.equal(error.message, 'Already signing', name);
-        assert.deepEqual(calls, [error], name);
+        assert.deepEqual(calls, [[error, true]], name);
         assert.equal(store.getState().error, running, name);
         assert.equal(store.getState().isSigning, true, name);
     }
@@ -265,14 +293,43 @@ test('C1, C3: connect calls onSuccess once isConnecting is false, and a throwing
     await W.StorageManager.clearWallet();
 });
 
-test("C2: a connect refused while one runs calls its onFail, and leaves error alone", async () => {
+test("C2: a connect refused while one runs calls its onFail at once, and leaves error and isConnecting alone", async () => {
     const running = new Error('the running connect');
     store.setState({ isConnecting: true, error: running });
     const calls = [];
-    const error = await rejection(store.getState().connect({ onFail: (e) => calls.push(e) }));
+    const error = await rejection(store.getState().connect({ onFail: (e) => calls.push([e, store.getState().isConnecting]) }));
     assert.equal(error.message, 'Already connecting');
-    assert.deepEqual(calls, [error]);
+    assert.deepEqual(calls, [[error, true]]);
     assert.equal(store.getState().error, running);
+    assert.equal(store.getState().isConnecting, true);
+});
+
+test('disconnect leaves isSigning to the action still running: a second one is refused, and the first calls back once it is over', async () => {
+    const release = holdSends();
+    store.setState({ wallet: storedWallet() });
+    const order = [];
+    let nested;
+    const first = store.getState().executeDeferred({
+        deferredPayload: deferredPayload(),
+        onSuccess: () => {
+            order.push(['first onSuccess', store.getState().isSigning]);
+            nested = store.getState().executeDeferred({ deferredPayload: deferredPayload() });
+        },
+    });
+    await until(() => heldSends === 1, 'the first send to reach the paymaster');
+
+    await store.getState().disconnect();
+    assert.equal(store.getState().wallet, null);
+    assert.equal(store.getState().isSigning, true);
+    const refused = await rejection(store.getState().executeDeferred({ deferredPayload: deferredPayload() }));
+    assert.equal(refused.message, 'Already signing');
+    assert.equal(heldSends, 1);
+
+    release();
+    assert.equal(typeof (await first), 'string');
+    assert.deepEqual(order, [['first onSuccess', false]]);
+    assert.equal(typeof (await nested), 'string');
+    assert.equal(store.getState().isSigning, false);
 });
 
 test('C5: disconnect and removeAuthority honour their callbacks', async () => {
@@ -307,6 +364,43 @@ test('C6: a throwing adapter listener does not fail connect or disconnect', asyn
     assert.equal(adapter.connected, false);
     assert.deepEqual(errors, []);
     assert.equal(logged.length, 2);
+});
+
+test('C6: a throwing adapter listener does not stop the listeners after it, which run as emit runs them', async () => {
+    const wallet = storedWallet();
+    await W.StorageManager.saveWallet(wallet);
+    const adapter = new W.LazorkitWalletAdapter({ rpcUrl: RPC, paymasterConfig: { paymasterUrl: PAYMASTER } });
+    const calls = [];
+    const context = { name: 'the context given to on' };
+    for (const event of ['connect', 'disconnect']) {
+        adapter.on(event, () => {
+            throw new Error(`app bug in a ${event} listener`);
+        });
+        // As wallet-adapter-react's WalletProvider registers its own.
+        adapter.on(event, (...args) => calls.push([event, 'after the throwing one', ...args.map(String)]));
+        adapter.once(event, () => calls.push([event, 'once']));
+        adapter.on(event, function () {
+            calls.push([event, 'with a context', this]);
+        }, context);
+    }
+    await adapter.connect();
+    await adapter.disconnect();
+    await W.StorageManager.saveWallet(wallet); // disconnect forgot it
+    await adapter.connect();
+    assert.deepEqual(calls, [
+        ['connect', 'after the throwing one', wallet.vaultPda],
+        ['connect', 'once'],
+        ['connect', 'with a context', context],
+        ['disconnect', 'after the throwing one'],
+        ['disconnect', 'once'],
+        ['disconnect', 'with a context', context],
+        ['connect', 'after the throwing one', wallet.vaultPda],
+        ['connect', 'with a context', context],
+    ]);
+    assert.equal(adapter.listenerCount('connect'), 3);
+    assert.equal(logged.length, 3);
+    await adapter.disconnect();
+    await W.StorageManager.clearWallet();
 });
 
 test("C6: a throwing Wallet Standard listener does not fail standard:connect, nor stop the other listeners", async () => {

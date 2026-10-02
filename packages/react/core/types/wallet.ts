@@ -31,11 +31,13 @@ export interface WalletState {
     // Actions. A call's `onSuccess` / `onFail` runs once the action is over
     // (`isSigning` / `isConnecting` already false), right before its promise
     // settles the same way; what a callback throws is logged and changes
-    // nothing.
+    // nothing. A call refused because another is running ('Already signing',
+    // 'Already connecting') calls `onFail` at once, while the flag is still
+    // `true`: it belongs to the call that is running.
     connect: (options?: ConnectOptions & { feeMode?: 'paymaster' | 'user' }) => Promise<WalletInfo>;
     disconnect: (options?: DisconnectOptions) => Promise<void>;
     signAndSendTransaction: (payload: SignAndSendTransactionPayload) => Promise<string>;
-    signMessage: (message: string) => Promise<{ signature: string, signedPayload: string }>;
+    signMessage: (message: string, options?: SignMessageOptions) => Promise<{ signature: string, signedPayload: string }>;
 
     // Session key actions
     createSession: (payload?: CreateSessionPayload) => Promise<{ sessionPda: string; sessionPublicKey: string }>;
@@ -143,16 +145,24 @@ export interface ConnectOptions {
      * not fail the connect.
      */
     readonly onSuccess?: (wallet: WalletInfo) => void;
-    /** Called with the error the promise rejects with ('Already connecting' included), once `isConnecting` is false again. */
+    /**
+     * Called with the error the promise rejects with, once `isConnecting` is
+     * false again. A refusal because another connect is running ('Already
+     * connecting') calls it at once, while `isConnecting` is still `true`: the
+     * flag belongs to that connect.
+     */
     readonly onFail?: (error: Error) => void;
 }
 
 /**
  * What an action reports its outcome to: `onSuccess` with what its promise
- * resolves with, `onFail` with the error it rejects with (refusals such as
- * 'Already signing' included). Either runs once the action is over, with
- * `isSigning` / `isConnecting` already false, right before the promise
- * settles. What a callback throws is logged and changes nothing.
+ * resolves with, `onFail` with the error it rejects with, refusals included.
+ * Either runs once the action is over, with `isSigning` / `isConnecting`
+ * already false, right before the promise settles. The one exception is a
+ * refusal because another call is running ('Already signing', 'Already
+ * connecting'): its `onFail` runs at once, and the flag stays `true`, since it
+ * belongs to the call that is running. What a callback throws is logged and
+ * changes nothing.
  */
 export interface ActionCallbacks<T> {
     readonly onSuccess?: (result: T) => void;
@@ -170,6 +180,9 @@ export interface RemoveAuthorityOptions {
     readonly onSuccess?: () => void;
     readonly onFail?: (error: Error) => void;
 }
+
+/** `signMessage`'s callbacks, as every action's: called once the call is over (`isSigning` false), right before its promise settles. */
+export type SignMessageOptions = ActionCallbacks<{ signature: string; signedPayload: string }>;
 
 export interface SignAndSendTransactionPayload {
     readonly transactionOptions?: {

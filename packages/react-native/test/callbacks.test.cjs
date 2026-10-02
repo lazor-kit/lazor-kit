@@ -11,6 +11,9 @@
 // - C4 a send started from a callback runs;
 // - C5 every declared callback is honoured (store and hook connect and
 //   disconnect).
+// A call refused because another is running is the one exception to C1: its
+// onFail runs at once, while the running call still holds the flag. And
+// disconnect leaves `isSigning` to an action still running, as on web.
 // Run with `pnpm test`.
 'use strict';
 const Module = require('module');
@@ -70,6 +73,9 @@ const feePayer = Keypair.generate().publicKey;
 const openAuthorizations = new Set();
 let owner;
 let sends = 0;
+/** The paymaster answers a send once this settles (see `holdSends`). */
+let sendGate = Promise.resolve();
+let heldSends = 0;
 
 const rpcFetch = async (_url, init) => {
   const { id, method, params } = JSON.parse(init.body);
@@ -100,6 +106,8 @@ globalThis.fetch = async (url, init) => {
   if (method === 'getPayerSigner') return answer({ result: { signer_address: feePayer.toBase58() } });
   if (method === 'signAndSendTransaction') {
     sends++;
+    heldSends++;
+    await sendGate;
     return answer({ result: { signature: Keypair.generate().publicKey.toBase58() + Keypair.generate().publicKey.toBase58() } });
   }
   throw new Error(`unscripted paymaster ${method}`);
@@ -150,6 +158,22 @@ function deferredPayload() {
       remainingAccounts: [],
     }),
   );
+}
+
+/** Holds the paymaster's sends until the returned function is called. */
+function holdSends() {
+  let release;
+  sendGate = new Promise((resolve) => (release = resolve));
+  heldSends = 0;
+  return () => {
+    sendGate = Promise.resolve();
+    release();
+  };
+}
+
+async function until(condition, what) {
+  for (let i = 0; i < 400 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.ok(condition(), `timed out waiting for ${what}`);
 }
 
 async function rejection(promise) {
@@ -241,14 +265,15 @@ test('C1, C2: a connect that fails calls onFail once isConnecting is false, with
   assert.equal(store.getState().error, error);
 });
 
-test('C2: a connect refused while one runs calls its onFail, and leaves error (the running one\'s) alone', async () => {
+test('C2: a connect refused while one runs calls its onFail at once, and leaves error and isConnecting (the running one\'s) alone', async () => {
   const running = new Error('the running connect');
   store.setState({ isConnecting: true, error: running });
   const calls = [];
-  const error = await rejection(store.getState().connect({ redirectUrl, onFail: (e) => calls.push(e) }));
+  const error = await rejection(store.getState().connect({ redirectUrl, onFail: (e) => calls.push([e, store.getState().isConnecting]) }));
   assert.equal(error.message, 'Already connecting');
-  assert.deepEqual(calls, [error]);
+  assert.deepEqual(calls, [[error, true]]);
   assert.equal(store.getState().error, running);
+  assert.equal(store.getState().isConnecting, true);
 });
 
 test('C3, C5: disconnect honours its callbacks, from the store and from the hook', async () => {
@@ -292,16 +317,50 @@ const actions = {
   transferSol: (callbacks) => store.getState().transferSol({ recipient: feePayer, lamports: 1 }, { redirectUrl, ...callbacks }),
 };
 
-test("C2: a call refused while another is signing calls its onFail, and leaves error (the running call's) alone", async () => {
+test("C2: a call refused while another is signing calls its onFail at once, and leaves error and isSigning (the running call's) alone", async () => {
   for (const [name, call] of Object.entries(actions)) {
     const running = new Error('the running call');
     store.setState({ isSigning: true, error: running });
     const calls = [];
-    const error = await rejection(call({ onSuccess: () => calls.push('onSuccess'), onFail: (e) => calls.push(e) }));
+    const error = await rejection(
+      call({ onSuccess: () => calls.push('onSuccess'), onFail: (e) => calls.push([e, store.getState().isSigning]) }),
+    );
     assert.equal(error.name, 'SigningError', name);
-    assert.deepEqual(calls, [error], name);
+    assert.deepEqual(calls, [[error, true]], name);
     assert.equal(store.getState().error, running, name);
+    assert.equal(store.getState().isSigning, true, name);
   }
+});
+
+test('disconnect leaves isSigning to the action still running: a second one is refused, and the first calls back once it is over', async () => {
+  const release = holdSends();
+  const order = [];
+  let nested;
+  const first = store.getState().executeDeferred(
+    { deferredPayload: deferredPayload() },
+    {
+      onSuccess: () => {
+        order.push(['first onSuccess', store.getState().isSigning]);
+        nested = store.getState().executeDeferred({ deferredPayload: deferredPayload() });
+      },
+    },
+  );
+  await until(() => heldSends === 1, 'the first send to reach the paymaster');
+
+  await store.getState().disconnect();
+  assert.equal(store.getState().wallet, null);
+  assert.equal(store.getState().isSigning, true);
+  const refused = await rejection(store.getState().executeDeferred({ deferredPayload: deferredPayload() }));
+  assert.equal(refused.name, 'SigningError');
+  assert.equal(heldSends, 1);
+
+  // Connected again (to a wallet already stored) before the first one ends.
+  store.setState({ wallet: storedWallet() });
+  release();
+  assert.equal(typeof (await first), 'string');
+  assert.deepEqual(order, [['first onSuccess', false]]);
+  assert.equal(typeof (await nested), 'string');
+  assert.equal(store.getState().isSigning, false);
 });
 
 test('C2: a call refused for want of a wallet calls its onFail, and records the error', async () => {

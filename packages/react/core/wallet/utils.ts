@@ -86,7 +86,10 @@ export const handleActionError = (
  * with, refusals included ("Already signing", no wallet). The callback runs
  * once the action is over, with `isSigning` / `isConnecting` already cleared,
  * and right before the returned promise settles. So a send started from
- * `onSuccess` runs, as one started on the line after `await` does.
+ * `onSuccess` runs, as one started on the line after `await` does. A refusal
+ * because another call is running ("Already signing", "Already connecting")
+ * is over at once: its `onFail` runs while the flag is still `true`, as it
+ * belongs to that call.
  *
  * What a callback throws is the app's own bug: it is logged, and it changes
  * nothing. A transaction that landed is never reported as failed, `onFail` is

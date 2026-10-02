@@ -3,7 +3,8 @@
  *
  * An action settles its promise only: the store reports the outcome to the
  * call's `onSuccess` / `onFail` once the action is over, with `isSigning` /
- * `isConnecting` already cleared (see `reportOutcome` in ./utils).
+ * `isConnecting` already cleared, or at once for a call refused because
+ * another holds the flag (see `reportOutcome` in ./utils).
  */
 import { sha256 } from 'js-sha256';
 import { Buffer } from 'buffer';
@@ -71,6 +72,26 @@ function refuse(set: (state: Partial<WalletState>) => void, message: string): ne
     const error = new Error(message);
     set({ error });
     throw error;
+}
+
+/**
+ * Writes the key of a session or authority that is already on chain, in place
+ * of the one the slot held. Never throws: a failure here (storage full, or
+ * blocked) must not report a transaction that landed as failed. The new key is
+ * then not kept, with a warning, and the slot is emptied rather than left
+ * holding the previous key, which later calls would sign with instead.
+ */
+function keepAfterLanding(kind: 'session' | 'authority', key: string, value: () => string): void {
+    try {
+        localStorage.setItem(key, value());
+    } catch (error) {
+        try {
+            localStorage.removeItem(key);
+        } catch {
+            // Storage is blocked altogether: there is nothing in it to sign with.
+        }
+        console.warn(`[LazorKit] The new ${kind} is on chain, but its key could not be stored:`, error);
+    }
 }
 
 /** The connected wallet's protocol, for error reporting. */
@@ -279,7 +300,10 @@ function namesWallet(wallet: WalletInfo, address: string): boolean {
 }
 
 /**
- * Disconnect wallet action
+ * Disconnect wallet action. `isSigning` is left to the action that set it, as
+ * on mobile: an action already running is not abandoned (its passkey prompt
+ * may still be open), and clearing its flag here would let a second one start
+ * beside it, whose flag the first would then clear when it ends.
  */
 export const disconnectAction = async (
     set: (state: Partial<WalletState>) => void,
@@ -292,7 +316,7 @@ export const disconnectAction = async (
         connectInFlight = null;
         clearPendingConfirmation();
         await StorageManager.clearWallet();
-        set({ wallet: null, error: null, isConnecting: false, isSigning: false, isLoading: false });
+        set({ wallet: null, error: null, isConnecting: false, isLoading: false });
     } catch (error: unknown) {
         return handleActionError(error, set);
     }
@@ -540,8 +564,10 @@ export const createSessionAction = async (
         // Only persist the locally-generated keypair. External keys belong
         // to the caller; writing them to the user's localStorage would be
         // a security footgun (e.g. the backend's key ending up in browser).
+        // The session is on chain now: a key that cannot be written (quota,
+        // storage blocked) is warned about, and the call still succeeds.
         if (sessionKeypair) {
-            localStorage.setItem('lazorkit-session', JSON.stringify({
+            keepAfterLanding('session', 'lazorkit-session', () => JSON.stringify({
                 secretKey: Array.from(sessionKeypair.secretKey),
                 publicKey: sessionKeypair.publicKey.toBase58(),
                 sessionPda: sessionPda.toBase58(),
@@ -777,7 +803,9 @@ export const addAuthorityAction = async (
             }
         });
 
-        localStorage.setItem('lazorkit-authority', JSON.stringify({
+        // The authority is on chain now: a key that cannot be written is
+        // warned about, and the call still succeeds.
+        keepAfterLanding('authority', 'lazorkit-authority', () => JSON.stringify({
             secretKey: Array.from(authorityKeypair.secretKey),
             publicKey: authorityKeypair.publicKey.toBase58(),
             authorityPda: newAuthorityPda.toBase58(),

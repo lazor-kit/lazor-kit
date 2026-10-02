@@ -255,7 +255,12 @@ export interface ConnectOptions {
    * fail the connect.
    */
   readonly onSuccess?: (wallet: WalletInfo) => void;
-  /** Called with the error the promise rejects with (refusals included), once `isConnecting` is false again. */
+  /**
+   * Called with the error the promise rejects with, once `isConnecting` is
+   * false again. A refusal because another connect is running ('Already
+   * connecting') calls it at once, while `isConnecting` is still `true`: the
+   * flag belongs to that connect.
+   */
   readonly onFail?: (error: Error) => void;
 }
 

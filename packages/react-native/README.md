@@ -229,13 +229,18 @@ Errors:
 | `LazorKitError` with `code: 'PORTAL_ERROR'` | The portal redirected with an `error`; its text is the message. |
 
 A second sign action while one is running rejects with `SigningError` (and
-calls its `onFail`). Each action's promise settles, and its `onSuccess` or
+calls its `onFail` at once, while `isSigning` is still `true`: the flag is the
+running action's). Each action's promise settles, and its `onSuccess` or
 `onFail` runs, only once `isSigning` is `false` again, so the next call can be
-made on the line after `await`, or from `onSuccess`.
+made on the line after `await`, or from `onSuccess`. `disconnect` leaves
+`isSigning` to an action still running, which goes on to its end and its
+callbacks.
 
 The same holds for every action, from the store as from the hook: `connect`
 and `disconnect` call back once `isConnecting` is `false` (the store's
-`connect` honours them too, and its `disconnect` takes them). Exactly one
+`connect` honours them too, and its `disconnect` takes them), except a
+`connect` refused because another is running ("Already connecting"), which
+calls back at once. Exactly one
 callback runs per call, and it agrees with the promise: `onSuccess` with what
 it resolves with, `onFail` with the error it rejects with, a refusal included
 (another call signing, "No wallet connected", `transferSol` too). What a

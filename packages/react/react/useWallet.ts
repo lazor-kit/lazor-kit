@@ -8,7 +8,7 @@ import { Buffer } from 'buffer';
 import { PublicKey, TransactionInstruction, AddressLookupTableAccount } from '@solana/web3.js';
 import { useWalletStore } from './store';
 import { WalletInfo } from '../core/storage';
-import type { ActionCallbacks, DisconnectOptions, RemoveAuthorityOptions, SpendingLimits } from '../core/types';
+import type { ActionCallbacks, DisconnectOptions, RemoveAuthorityOptions, SignMessageOptions, SpendingLimits } from '../core/types';
 import type { OnConfirmWallet } from '../core/wallet/confirmation';
 
 export interface WalletHookInterface {
@@ -32,9 +32,11 @@ export interface WalletHookInterface {
 
   // Actions. Every action's `onSuccess` / `onFail` runs once the action is
   // over (`isSigning` / `isConnecting` already false), right before its
-  // promise settles the same way, refusals included. A send started from
-  // `onSuccess` runs. What a callback throws is logged and changes nothing:
-  // a transaction that landed is never reported as failed.
+  // promise settles the same way, refusals included. A refusal because
+  // another call is running ('Already signing', 'Already connecting') calls
+  // `onFail` at once, while that call still holds the flag. A send started
+  // from `onSuccess` runs. What a callback throws is logged and changes
+  // nothing: a transaction that landed is never reported as failed.
   /**
    * Connect the stored wallet, or find the passkey's own. `confirmWallet`: the
    * vault (or wallet) address the user recognised after a
@@ -44,7 +46,7 @@ export interface WalletHookInterface {
   connect: (options?: ConnectHookOptions) => Promise<WalletInfo>;
   disconnect: (options?: DisconnectOptions) => Promise<void>;
   signAndSendTransaction: (payload: SendTxPayload & ActionCallbacks<string>) => Promise<string>;
-  signMessage: (message: string) => Promise<{ signature: string, signedPayload: string }>;
+  signMessage: (message: string, options?: SignMessageOptions) => Promise<{ signature: string, signedPayload: string }>;
   verifyMessage: (args: { signedPayload: Uint8Array, signature: Uint8Array, publicKey: Uint8Array }) => Promise<boolean>;
 
   // Session key actions
@@ -171,7 +173,7 @@ export const useWallet = (): WalletHookInterface => {
   );
 
   const handleSignMessage = useCallback(
-    (message: string) => signMessage(message),
+    (message: string, options?: SignMessageOptions) => signMessage(message, options),
     [signMessage]
   );
 

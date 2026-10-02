@@ -279,20 +279,26 @@ refuses a second call while one of its own is signing ("Already signing").
 
 **Callbacks.** Every action of `useWallet()` and the store takes `onSuccess`
 and `onFail` (`connect` and `disconnect` in their options, `removeAuthority`
-as its second argument). Exactly one of them runs per call, and it agrees with
-the promise: `onSuccess` with what the promise resolves with, `onFail` with
-the error it rejects with, a refusal ("Already signing", "No wallet
-connected") included. It runs once the action is over, with `isSigning` (or
-`isConnecting`) already `false`, right before the promise settles. So a send
-made from `onSuccess` runs, as one made on the line after `await` does. What a
+and `signMessage` as their second argument). Exactly one of them runs per
+call, and it agrees with the promise: `onSuccess` with what the promise
+resolves with, `onFail` with the error it rejects with, a refusal ("Already
+signing", "No wallet connected") included. It runs once the action is over,
+with `isSigning` (or `isConnecting`) already `false`, right before the promise
+settles. So a send made from `onSuccess` runs, as one made on the line after
+`await` does. The one exception is a call refused because another is running
+("Already signing", "Already connecting"): its `onFail` runs at once, and the
+flag stays `true`, since it belongs to the call that is running. What a
 callback throws is logged and changes nothing: a transaction that landed is
 never reported as failed, `onFail` is not called for it and `error` stays
 clear, and a throwing `onFail` does not replace the error. A refusal because
 another call is signing leaves `error` alone (it is that call's); one for want
-of a wallet sets it. `@lazorkit/wallet-mobile-adapter` keeps the same contract.
-`LazorkitWalletAdapter` and the Wallet Standard wallet log what an app's
-`connect`, `disconnect` or `change` listener throws, rather than failing a
-connect that has happened.
+of a wallet sets it. `disconnect` leaves `isSigning` to an action still
+running, which goes on to its end and its callbacks; until then a new action
+is refused with "Already signing". `@lazorkit/wallet-mobile-adapter` keeps the
+same contract. `LazorkitWalletAdapter` and the Wallet Standard wallet call
+each `connect`, `disconnect` or `change` listener on its own, and log what one
+throws: it neither stops the listeners after it nor fails a connect that has
+happened.
 
 | Error | When |
 |---|---|
@@ -385,12 +391,13 @@ Connects the stored wallet, or finds the passkey's own (see
 #### `disconnect(options?)`
 
 Disconnects the wallet. `options.onSuccess` / `options.onFail` run once it is
-over, as every action's do.
+over, as every action's do. An action still running is not abandoned: it keeps
+`isSigning` until it ends.
 
 **Returns** 
 `Promise<void>`
 
-#### `signMessage(message)`
+#### `signMessage(message, options?)`
 
 Signs a message string key.
 
@@ -399,6 +406,8 @@ Signs a message string key.
 | Param | Type | Description |
 |---|---|---|
 | `message` | `string` | Message content |
+| `options.onSuccess` | `(result: { signature: string, signedPayload: string }) => void` | Runs once `isSigning` is `false`, right before the promise resolves (see [Callbacks](#sending-transactions)). |
+| `options.onFail` | `(error: Error) => void` | Runs with the error the promise rejects with. |
 
 **Returns**
 `Promise<{ signature: string, signedPayload: string }>`
