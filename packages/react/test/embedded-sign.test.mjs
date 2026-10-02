@@ -3,11 +3,13 @@
 // and paymaster. One passkey prompt per send, pinned to the connected
 // passkey, with a low-S signature; the second of two sends reads its
 // challenge from a node at or past the first one's slot; `onSubmitted` once,
-// before `onSuccess`, never for a send that was not sent; a closed sheet is
-// `UserRejectedError` with nothing sent; 4018 and 3006 are never resent; the
-// review comes before the challenge exists, shows what is signed (a copy the
-// app cannot change meanwhile), and simulates on the provider's RPC; a
-// paymaster answering with another transaction's signature is caught. Run
+// before `onSuccess` and before the confirmation is read, never for a send
+// that was not sent; a closed sheet is `UserRejectedError` with nothing sent;
+// 4018 and 3006 are never resent; the review comes before any slot or counter
+// is read for the challenge, shows what is signed (a copy the app cannot
+// change meanwhile), and simulates on the provider's RPC; a paymaster
+// answering with another transaction's signature is caught; a v1 wallet
+// sends through the v1 relayer, and its 4018 is `V1WalletRetiredError`. Run
 // with `pnpm test`.
 import { test, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,8 +23,8 @@ import {
 } from '@solana/web3.js';
 import { freshPage } from './helpers/fresh-page.mjs';
 import { credential } from './helpers/fake-webauthn.mjs';
-import { embeddedConfig, loadPackage, rejection, scriptedUi, setUpPage, RP_ID } from './helpers/embedded-page.mjs';
-import { RPC } from './helpers/chain.mjs';
+import { embeddedConfig, loadPackage, rejection, scriptedUi, setUpPage, until, RP_ID } from './helpers/embedded-page.mjs';
+import { PAYMASTER, RPC } from './helpers/chain.mjs';
 
 console.debug = () => {};
 console.error = () => {};
@@ -50,6 +52,19 @@ function configure(overrides = {}, answers = []) {
     return W.createLazorkitClient(embeddedConfig({ ui, onEvent: (e) => events.push(e), ...overrides }), { replace: true });
 }
 const signGets = () => authenticator.calls.filter((c) => c.kind === 'get');
+/** The connected passkey's authority account (its seat on the wallet, and its counter). */
+const authorityOf = async () =>
+    W.findAuthorityPda(wallet, new Uint8Array(await crypto.subtle.digest('SHA-256', cred.rawId)), chain.PROGRAM)[0].toBase58();
+/**
+ * The RPC reads a challenge is made from: the slot it names, a blockhash, and
+ * the authority's counter (every read of the authority account; the seat
+ * lookup before the review is one).
+ */
+const challengeInputs = (authority) => ({
+    slots: chain.calls('getSlot').length,
+    blockhashes: chain.calls('getLatestBlockhash').length,
+    authorityReads: chain.calls('getAccountInfo').filter((c) => c.params[0] === authority).length,
+});
 const transfer = (lamports = 0) => [SystemProgram.transfer({ fromPubkey: vault, toPubkey: vault, lamports })];
 
 beforeEach(async () => {
@@ -132,6 +147,45 @@ test('onSubmitted: once, before onSuccess; a throwing one changes nothing', asyn
     assert.equal(W.useWalletStore.getState().error, null);
 });
 
+test('onSubmitted fires once the paymaster has sent it, before it is confirmed: step submitted, the send still pending', async () => {
+    // The node answers the status poll only when released.
+    let release;
+    const held = new Promise((resolve) => (release = resolve));
+    let polled = 0;
+    globalThis.fetch = async (url, init) => {
+        if (JSON.parse(init.body).method === 'getSignatureStatuses') {
+            polled++;
+            await held;
+        }
+        return chain.fetch(url, init);
+    };
+    let submitted = null;
+    let stepAtSubmit;
+    let settled = false;
+    const sending = W.getLazorkitClient()
+        .signAndSend({
+            instructions: transfer(),
+            onSubmitted: (sig) => {
+                submitted = sig;
+                stepAtSubmit = W.useWalletStore.getState().step;
+            },
+        })
+        .finally(() => (settled = true));
+    try {
+        await until(() => polled > 0, 'the confirmation poll');
+        assert.equal(typeof submitted, 'string', 'onSubmitted ran before the confirmation was read');
+        assert.equal(stepAtSubmit, 'submitted');
+        assert.equal(W.getLazorkitClient().getState().step, 'submitted');
+        assert.equal(W.getLazorkitClient().getState().status, 'signing');
+        assert.equal(settled, false, 'signAndSend is still waiting for the confirmation');
+        assert.deepEqual(events.filter((e) => e.type === 'submitted' || e.type === 'confirmed').map((e) => e.type), ['submitted']);
+    } finally {
+        release();
+    }
+    assert.equal(await sending, submitted);
+    assert.deepEqual(events.filter((e) => e.type === 'submitted' || e.type === 'confirmed').map((e) => e.type), ['submitted', 'confirmed']);
+});
+
 test('a closed passkey sheet: UserRejectedError, nothing sent, onSubmitted not called, error null', async () => {
     authenticator.next('cancel');
     let submitted = 0;
@@ -191,22 +245,21 @@ test('4018 and 3006 from the paymaster are sent exactly once', async () => {
 // ─── The review sheet (D14) ─────────────────────────────────────────────────
 
 test('the review opens before any passkey prompt or challenge read; approving signs what was reviewed', async () => {
+    const authority = await authorityOf();
     let atReview;
     configure({}, [
         (review) => {
-            atReview = {
-                gets: signGets().length,
-                blockhashes: chain.calls('getLatestBlockhash').length,
-                counterReads: chain.calls('getAccountInfo').filter((c) => c.params[1]?.minContextSlot !== undefined).length,
-                review,
-            };
+            atReview = { gets: signGets().length, ...challengeInputs(authority), review };
             return true;
         },
     ]);
     await W.getLazorkitClient().signAndSend({ instructions: transfer(500_000_000) });
     assert.equal(atReview.gets, 0, 'no passkey prompt before the review');
+    assert.equal(atReview.slots, 0, 'no slot read for a challenge before the review');
     assert.equal(atReview.blockhashes, 0);
-    assert.equal(atReview.counterReads, 0, 'no challenge read before the review');
+    assert.equal(atReview.authorityReads, 1, "only the seat lookup: the counter isn't read for a challenge yet");
+    const after = challengeInputs(authority);
+    assert.ok(after.slots >= 1 && after.authorityReads >= 2, 'the challenge is read after the review');
     assert.equal(atReview.review.rows[0].text, `Send 0.5 SOL to ${vault.toBase58().slice(0, 8)}…${vault.toBase58().slice(-8)}`);
     assert.equal(atReview.review.feeLine, 'Network fee: paid by Test App');
     assert.equal(signGets().length, 1);
@@ -217,10 +270,12 @@ test('the review opens before any passkey prompt or challenge read; approving si
 });
 
 test('cancelling the review: UserRejectedError review-cancelled, nothing prepared, prompted or sent', async () => {
+    const authority = await authorityOf();
     configure({}, [false]);
     const error = await rejection(W.getLazorkitClient().signAndSend({ instructions: transfer() }));
     assert.ok(error instanceof W.UserRejectedError);
     assert.equal(error.reason, 'review-cancelled');
+    assert.deepEqual(challengeInputs(authority), { slots: 0, blockhashes: 0, authorityReads: 1 }, 'no challenge was read');
     assert.equal(signGets().length, 0);
     assert.equal(chain.state.sent.length, 0);
     assert.equal(W.useWalletStore.getState().error, null);
@@ -396,6 +451,96 @@ test('the status is signing for the whole send, with its steps', async () => {
     await W.getLazorkitClient().signAndSend({ instructions: transfer() });
     unsubscribe();
     assert.deepEqual(steps, ['signing:preparing', 'signing:reviewing', 'signing:preparing', 'signing:awaiting-passkey', 'signing:submitted', 'connected:null']);
+});
+
+// ─── A v1 wallet (gate G4: usable until v1 is retired) ──────────────────────
+
+test('a v1 wallet restored in Embedded mode: sent through the v1 relayer, its authority read with no scan; 4018 is V1WalletRetiredError, sent once', async () => {
+    const V1 = W.PROGRAM_ID_DEVNET_V1;
+    const V1_PAYMASTER = 'http://paymaster-v1.test/';
+    const old = credential({ rpId: RP_ID, userHandle: randomBytes(16) });
+    authenticator.add(old);
+    const credentialIdHash = new Uint8Array(await crypto.subtle.digest('SHA-256', old.rawId));
+    // v1's PDA seeds have no `lk2:` prefix.
+    const pda = (...seeds) => PublicKey.findProgramAddressSync(seeds.map((s) => Buffer.from(s)), V1)[0];
+    const walletV1 = pda('wallet', randomBytes(32));
+    const vaultV1 = pda('vault', walletV1.toBuffer());
+    const authorityV1 = pda('authority', walletV1.toBuffer(), credentialIdHash);
+    // v1's layout: Authority discriminator 2, Secp256r1 at 1, Owner, counter
+    // at 8, wallet at 16, credential hash at 48, key at 80.
+    const authority = Buffer.alloc(145);
+    authority[0] = 2;
+    authority[1] = 1;
+    authority.writeUInt32LE(4, 8);
+    walletV1.toBuffer().copy(authority, 16);
+    Buffer.from(credentialIdHash).copy(authority, 48);
+    old.key.compressed.copy(authority, 80);
+    chain.state.accounts.set(authorityV1.toBase58(), { owner: V1.toBase58(), data: authority, lamports: 1_000_000 });
+    chain.state.accounts.set(walletV1.toBase58(), { owner: V1.toBase58(), data: Buffer.from([1, 0xfe, 0, 0, 1, 0, 0, 0]), lamports: 1_000_000 });
+
+    // The record Embedded mode keeps, for a v1 wallet this passkey reached through the 3.3 lookup.
+    localStorage.setItem(
+        `lazorkit:embedded:${RP_ID}:store`,
+        JSON.stringify({
+            state: {
+                wallet: {
+                    credentialId: Buffer.from(old.rawId).toString('base64'),
+                    passkeyPubkey: [...old.key.compressed],
+                    expo: 'web',
+                    platform: '',
+                    walletDevice: '',
+                    smartWallet: walletV1.toBase58(),
+                    vaultPda: vaultV1.toBase58(),
+                    protocolVersion: 1,
+                    mode: 'embedded',
+                    rpId: RP_ID,
+                    programId: V1.toBase58(),
+                    how: 'adopted',
+                    connectedAt: new Date().toISOString(),
+                },
+            },
+            version: 0,
+        }),
+    );
+    const paid = [];
+    let retired = false;
+    globalThis.fetch = async (url, init) => {
+        if (String(url) !== V1_PAYMASTER) return chain.fetch(url, init);
+        const body = JSON.parse(init.body);
+        paid.push(body.method);
+        if (retired && body.method === 'signAndSendTransaction') {
+            return new Response(
+                JSON.stringify({ jsonrpc: '2.0', id: body.id, error: { code: -32002, message: 'Transaction simulation failed: custom program error: 0xfb2', data: { logs: [] } } }),
+                { status: 200 },
+            );
+        }
+        return chain.fetch(PAYMASTER, init);
+    };
+
+    const page = await freshPage();
+    const client = page.createLazorkitClient(
+        embeddedConfig({ ui: scriptedUi(), confirm: false, v1PaymasterConfig: { paymasterUrl: V1_PAYMASTER } }),
+    );
+    assert.equal(client.getState().wallet?.smartWallet, walletV1.toBase58(), 'a v1 record of this rpId is restored');
+    const toSelf = [SystemProgram.transfer({ fromPubkey: vaultV1, toPubkey: vaultV1, lamports: 0 })];
+
+    const signature = await client.signAndSend({ instructions: toSelf });
+    assert.equal(typeof signature, 'string');
+    assert.ok(paid.includes('signAndSendTransaction'), 'sent through the v1 relayer');
+    const sent = chain.state.sent[chain.state.sent.length - 1];
+    const keys = sent.message.staticAccountKeys.map((k) => k.toBase58());
+    assert.ok(keys.includes(V1.toBase58()), "v1's program");
+    assert.ok(!keys.includes(chain.PROGRAM.toBase58()), "not v2's");
+    assert.equal(chain.calls('getProgramAccounts').length, 0, 'no scan');
+    assert.ok(chain.calls('getAccountInfo').some((c) => c.params[0] === authorityV1.toBase58()), 'the v1 authority, read where it is');
+
+    // The v1 program retired: the relayer's 4018 is V1WalletRetiredError, and is sent once.
+    retired = true;
+    paid.length = 0;
+    const error = await rejection(client.signAndSend({ instructions: toSelf }));
+    assert.ok(error instanceof page.V1WalletRetiredError, String(error));
+    assert.equal(paid.filter((m) => m === 'signAndSendTransaction').length, 1, '4018 is not retried');
+    assert.equal(page.userMessage(error), "This wallet's old version is retired. Move it to the new version to continue.");
 });
 
 void RPC;
