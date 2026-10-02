@@ -35,11 +35,34 @@ export interface KeyRecord {
     readonly createdAt: number;
 }
 
+/** How long an open may take before it counts as failed (Safari can leave one pending for ever). */
+const OPEN_TIMEOUT_MS = 5_000;
+/** How long a transaction may take before it counts as failed. */
+const TRANSACTION_TIMEOUT_MS = 10_000;
+
 let opening: Promise<IDBDatabase | null> | undefined;
 
-/** The database, or null where IndexedDB is not available (SSR, blocked storage, old private windows). */
+/**
+ * The database. Resolves null only where IndexedDB is not there at all (SSR,
+ * storage blocked for the page, Firefox's older private windows): nothing can
+ * be kept at rest here, now or later. Rejects where it is there but did not
+ * open this time (a lost connection, a full disk, an open that does not
+ * finish within `OPEN_TIMEOUT_MS`): the next call tries again.
+ */
 export function openKeysDb(): Promise<IDBDatabase | null> {
-    opening ??= new Promise<IDBDatabase | null>((resolve) => {
+    if (!opening) {
+        const attempt = openOnce();
+        opening = attempt;
+        const forget = () => {
+            if (opening === attempt) opening = undefined;
+        };
+        attempt.then((db) => db ?? forget(), forget);
+    }
+    return opening;
+}
+
+function openOnce(): Promise<IDBDatabase | null> {
+    return new Promise<IDBDatabase | null>((resolve, reject) => {
         let request: IDBOpenDBRequest;
         try {
             if (typeof indexedDB === 'undefined' || !indexedDB) return resolve(null);
@@ -47,6 +70,17 @@ export function openKeysDb(): Promise<IDBDatabase | null> {
         } catch {
             return resolve(null); // SecurityError where storage is blocked
         }
+        let done = false;
+        const timer = setTimeout(() => {
+            done = true;
+            reject(namedError('TimeoutError', `IndexedDB '${DB_NAME}' did not open within ${OPEN_TIMEOUT_MS} ms`));
+        }, OPEN_TIMEOUT_MS);
+        const finish = (settle: () => void) => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            settle();
+        };
         request.onupgradeneeded = () => {
             const db = request.result;
             if (!db.objectStoreNames.contains(KEYS)) db.createObjectStore(KEYS, { keyPath: 'slot' });
@@ -54,6 +88,10 @@ export function openKeysDb(): Promise<IDBDatabase | null> {
         };
         request.onsuccess = () => {
             const db = request.result;
+            if (done) {
+                db.close(); // Opened after its timeout: a later call opens its own.
+                return;
+            }
             // Another tab deleting or upgrading the database: let it, and open afresh next time.
             db.onversionchange = () => {
                 db.close();
@@ -62,14 +100,27 @@ export function openKeysDb(): Promise<IDBDatabase | null> {
             db.onclose = () => {
                 opening = undefined;
             };
-            resolve(db);
+            finish(() => resolve(db));
         };
-        request.onerror = () => resolve(null);
+        request.onerror = () => {
+            const error = request.error;
+            // Firefox before 115 refuses IndexedDB in a private window this
+            // way: not there, for good. Anything else may work next time.
+            finish(() =>
+                error?.name === 'InvalidStateError' || error?.name === 'SecurityError'
+                    ? resolve(null)
+                    : reject(error ?? new Error(`IndexedDB '${DB_NAME}' could not be opened`)),
+            );
+        };
+        // Blocked by another tab's connection: it closes on `versionchange`,
+        // and the timeout covers one that does not.
     });
-    return opening.then((db) => {
-        if (!db) opening = undefined; // Try again on the next call.
-        return db;
-    });
+}
+
+function namedError(name: string, message: string): Error {
+    const error = new Error(message);
+    error.name = name;
+    return error;
 }
 
 function transaction(db: IDBDatabase, stores: string[], mode: IDBTransactionMode): IDBTransaction {
@@ -86,9 +137,27 @@ function transaction(db: IDBDatabase, stores: string[], mode: IDBTransactionMode
 function committed<T>(tx: IDBTransaction, value: () => T): { promise: Promise<T>; guard: (body: () => void) => void } {
     let failure: unknown;
     const promise = new Promise<T>((resolve, reject) => {
-        tx.oncomplete = () => resolve(value());
-        tx.onerror = () => reject(failure ?? tx.error ?? new Error('IndexedDB transaction failed'));
-        tx.onabort = () => reject(failure ?? tx.error ?? new Error('IndexedDB transaction aborted'));
+        const timer = setTimeout(() => {
+            failure ??= namedError('TimeoutError', `IndexedDB transaction did not finish within ${TRANSACTION_TIMEOUT_MS} ms`);
+            reject(failure);
+            try {
+                tx.abort();
+            } catch {
+                // Already finished.
+            }
+        }, TRANSACTION_TIMEOUT_MS);
+        tx.oncomplete = () => {
+            clearTimeout(timer);
+            resolve(value());
+        };
+        tx.onerror = () => {
+            clearTimeout(timer);
+            reject(failure ?? tx.error ?? new Error('IndexedDB transaction failed'));
+        };
+        tx.onabort = () => {
+            clearTimeout(timer);
+            reject(failure ?? tx.error ?? new Error('IndexedDB transaction aborted'));
+        };
     });
     const guard = (body: () => void) => {
         try {

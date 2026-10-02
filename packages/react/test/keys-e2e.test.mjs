@@ -5,8 +5,9 @@
 // the page reloads, and the key the SDK kept signs a send with no passkey.
 // A scripted chain and paymaster, no network. Also: what LazorkitProvider
 // moves when it mounts, a key that cannot be stored after its transaction
-// landed, a caller's own session key, and deleting the key once its session
-// is revoked or its authority removed. Run with `pnpm test`.
+// landed (stored on a later use), a caller's own session key, and deleting
+// the key once its session is revoked or its authority removed. Run with
+// `pnpm test`.
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import { test, beforeEach, after } from 'node:test';
@@ -397,7 +398,7 @@ test('LazorkitProvider moves the plaintext keys an earlier release left when it 
 
 // ─── A key that cannot be stored after its transaction landed ───────────────
 
-test('a key that cannot be stored once its session landed: createSession still succeeds, and the key serves this page', async () => {
+test('a key that cannot be stored once its session landed: createSession still succeeds, the key serves this page, and is stored on a later use', async () => {
     let W = await load();
     connect(W);
     const put = IDBObjectStore.prototype.put;
@@ -419,13 +420,69 @@ test('a key that cannot be stored once its session landed: createSession still s
     landed(created.sessionPda);
     assert.deepEqual(calls, ['onSuccess'], 'a landed session is never reported as failed');
     assert.equal(W.useWalletStore.getState().error, null);
-    assert.ok(warnings.some((w) => w.includes('kept for this page only')));
+    assert.ok(warnings.some((w) => w.includes('could not be stored yet')), JSON.stringify(warnings));
     assert.equal(await storedRecord('session'), undefined);
     assertNoPlaintext();
 
+    // IndexedDB works again: the next use signs, and stores the key.
     await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
     assertSignedBy(sent.at(-1), new PublicKey(created.sessionPublicKey));
+    const record = await storedRecord('session');
+    assert.equal(record.publicKey, created.sessionPublicKey);
+    assert.equal(record.privateKey.extractable, false);
 
+    W = await load();
+    await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+    assertSignedBy(sent.at(-1), new PublicKey(created.sessionPublicKey));
+    assertNoPlaintext();
+});
+
+test('a stored-later key does not replace a newer one another tab stored meanwhile', async () => {
+    const W = await load();
+    connect(W);
+    const put = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (...args) {
+        if (this.name === 'keys') throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+        return put.apply(this, args);
+    };
+    let older;
+    try {
+        older = await W.useWalletStore.getState().createSession({ unrestricted: true });
+    } finally {
+        IDBObjectStore.prototype.put = put;
+    }
+    landed(older.sessionPda);
+    // Another tab creates a session now, and stores its key.
+    const other = await load();
+    connect(other);
+    const newer = await other.useWalletStore.getState().createSession({ unrestricted: true });
+    landed(newer.sessionPda);
+    assert.equal((await storedRecord('session')).publicKey, newer.sessionPublicKey);
+
+    // The first tab's next use: its own key signs, and the newer one stays stored.
+    await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+    assertSignedBy(sent.at(-1), new PublicKey(older.sessionPublicKey));
+    assert.equal((await storedRecord('session')).publicKey, newer.sessionPublicKey);
+});
+
+test('an IndexedDB that cannot hold the key (DataCloneError): createSession succeeds, the key serves this page only', async () => {
+    let W = await load();
+    connect(W);
+    const put = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (...args) {
+        if (this.name === 'keys') throw new DOMException('CryptoKey object could not be cloned.', 'DataCloneError');
+        return put.apply(this, args);
+    };
+    try {
+        const created = await W.useWalletStore.getState().createSession({ unrestricted: true });
+        landed(created.sessionPda);
+        assert.ok(warnings.some((w) => w.includes('kept for this page only')), JSON.stringify(warnings));
+        await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+        assertSignedBy(sent.at(-1), new PublicKey(created.sessionPublicKey));
+        assert.equal(warnings.filter((w) => w.includes('session key')).length, 1, 'not retried on every use');
+    } finally {
+        IDBObjectStore.prototype.put = put;
+    }
     W = await load();
     await assert.rejects(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /No session key found/);
 });

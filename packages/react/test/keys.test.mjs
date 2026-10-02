@@ -527,6 +527,175 @@ test('no secure context (no crypto.subtle): the key serves this page, and the pl
     }
 });
 
+// ─── IndexedDB that fails, hangs or cannot hold a CryptoKey ─────────────────
+
+/**
+ * This profile's IndexedDB, with its next `count` opens failing as Safari's
+ * do when its IndexedDB server connection is lost (an UnknownError, fired
+ * asynchronously). Later opens work.
+ */
+function failingOpens(count) {
+    const real = globalThis.indexedDB;
+    let left = count;
+    globalThis.indexedDB = {
+        open(...args) {
+            if (left-- <= 0) return real.open(...args);
+            const request = {
+                result: undefined,
+                error: new DOMException('Connection to Indexed Database server lost. Refresh the page to try again', 'UnknownError'),
+            };
+            setTimeout(() => request.onerror?.({ type: 'error', target: request, preventDefault() {} }));
+            return request;
+        },
+        databases: () => real.databases(),
+        deleteDatabase: (name) => real.deleteDatabase(name),
+        cmp: (a, b) => real.cmp(a, b),
+    };
+    return () => (globalThis.indexedDB = real);
+}
+
+test('an IndexedDB open that fails once keeps the plaintext: the key serves this page, and moves on the next read', async () => {
+    const keypair = SEEDS[0];
+    const restore = failingOpens(1);
+    let entry;
+    try {
+        const W = await page();
+        ({ entry } = plantSession(W, keypair));
+        await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+        assertSignedAsWeb3(keypair, 'v0');
+        assert.equal(storage.get('lazorkit-session'), entry, 'the plaintext stays');
+        assert.ok(warnings.some((w) => w.includes('could not be moved yet') && w.includes('UnknownError')), JSON.stringify(warnings));
+    } finally {
+        restore();
+    }
+    assert.equal(await storedRecord('session'), undefined);
+
+    // Reload, IndexedDB working again: the key moves.
+    const reloaded = await page();
+    await reloaded.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+    assertSignedAsWeb3(keypair, 'v0');
+    assert.equal(storage.get('lazorkit-session'), undefined, 'moved on the next read');
+    await assertNonExtractable('session', keypair);
+});
+
+test('the same for the authority key', async () => {
+    const keypair = SEEDS[1];
+    const restore = failingOpens(1);
+    let entry;
+    try {
+        const W = await page();
+        ({ entry } = plantAuthority(W, keypair));
+        await W.useWalletStore.getState().signAndSendWithAuthority({ instructions: transfer() });
+        assertSignedAsWeb3(keypair, 'v0');
+        assert.equal(storage.get('lazorkit-authority'), entry, 'the plaintext stays');
+    } finally {
+        restore();
+    }
+    const reloaded = await page();
+    await reloaded.useWalletStore.getState().signAndSendWithAuthority({ instructions: transfer() });
+    assertSignedAsWeb3(keypair, 'v0');
+    await assertNonExtractable('authority', keypair);
+});
+
+test('a key already in IndexedDB, when the open fails: the send fails with that error (not "no key"), and works on the next try', async () => {
+    const keypair = SEEDS[2];
+    const W = await page();
+    plantSession(W, keypair);
+    await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+    assert.equal(storage.size, 0);
+
+    const reloaded = await page();
+    const restore = failingOpens(1);
+    try {
+        await assert.rejects(
+            reloaded.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }),
+            (error) => error.name === 'UnknownError',
+        );
+    } finally {
+        restore();
+    }
+    assert.equal(reloaded.useWalletStore.getState().isSigning, false);
+    await reloaded.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+    assertSignedAsWeb3(keypair, 'v0');
+    await assertNonExtractable('session', keypair);
+});
+
+test('an IndexedDB open that never settles times out: the send still resolves, isSigning clears, the plaintext stays', async () => {
+    const keypair = SEEDS[3];
+    const real = globalThis.indexedDB;
+    // An open request that never fires (Safari's first-load hang).
+    globalThis.indexedDB = { open: () => ({}), databases: () => real.databases() };
+    let entry;
+    try {
+        const W = await page();
+        ({ entry } = plantSession(W, keypair));
+        const started = Date.now();
+        await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+        assert.ok(Date.now() - started < 9000, 'within the open timeout');
+        assertSignedAsWeb3(keypair, 'v0');
+        assert.equal(W.useWalletStore.getState().isSigning, false);
+        assert.equal(storage.get('lazorkit-session'), entry, 'the plaintext stays');
+        assert.ok(warnings.some((w) => w.includes('TimeoutError')), JSON.stringify(warnings));
+    } finally {
+        globalThis.indexedDB = real;
+    }
+    const reloaded = await page();
+    await reloaded.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+    assertSignedAsWeb3(keypair, 'v0');
+    await assertNonExtractable('session', keypair);
+});
+
+/** Until the returned undo, IndexedDB refuses to store a CryptoKey (DataCloneError): in `stores`, those records only. */
+function noCryptoKeysIn(stores) {
+    const put = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (value, ...rest) {
+        const isKey = (v) => !!v && typeof v === 'object' && typeof v.type === 'string' && typeof v.algorithm === 'object';
+        const holdsKey = isKey(value) || isKey(value?.privateKey);
+        if (stores.includes(this.name) && holdsKey) {
+            throw new DOMException('CryptoKey object could not be cloned.', 'DataCloneError');
+        }
+        return put.call(this, value, ...rest);
+    };
+    return () => (IDBObjectStore.prototype.put = put);
+}
+
+test('IndexedDB that cannot hold an Ed25519 CryptoKey (DataCloneError): the seed is sealed instead, and the plaintext goes', async () => {
+    const keypair = SEEDS[4];
+    const restore = noCryptoKeysIn(['keys']);
+    try {
+        const W = await page();
+        plantSession(W, keypair);
+        await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+        assertSignedAsWeb3(keypair, 'v0');
+        assert.equal(storage.get('lazorkit-session'), undefined, 'not left in the clear for ever');
+        const record = await storedRecord('session');
+        assert.equal(record.privateKey, undefined);
+        assert.equal(record.sealed.ct.length, 48);
+
+        const reloaded = await page();
+        await reloaded.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+        assertSignedAsWeb3(keypair, 'v0');
+    } finally {
+        restore();
+    }
+});
+
+test('IndexedDB that cannot hold any CryptoKey: as with no IndexedDB, the key serves this page and the plaintext goes', async () => {
+    const keypair = SEEDS[0];
+    const restore = noCryptoKeysIn(['keys', 'meta']);
+    try {
+        const W = await page();
+        plantSession(W, keypair);
+        await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+        assertSignedAsWeb3(keypair, 'v0');
+        assert.equal(storage.get('lazorkit-session'), undefined);
+        assert.equal(await storedRecord('session'), undefined);
+        assert.ok(warnings.some((w) => w.includes('DataCloneError')), JSON.stringify(warnings));
+    } finally {
+        restore();
+    }
+});
+
 afterEach(() => {
     globalThis.indexedDB = new IDBFactory();
 });

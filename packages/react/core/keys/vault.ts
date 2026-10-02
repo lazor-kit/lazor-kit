@@ -21,9 +21,12 @@
  *
  * A plaintext key an earlier release left in localStorage moves on the first
  * read (and when `LazorkitProvider` mounts): it is stored as above, and the
- * plaintext deleted once that write has committed. A write that fails leaves
- * the plaintext in place, to move on the next read; where there is nowhere to
- * keep it but memory, the plaintext is deleted and the key lasts this page.
+ * plaintext deleted once that write has committed. A write or an open that
+ * fails leaves the plaintext in place, to move on the next read, and the key
+ * signs from memory meanwhile. Only where there is nowhere to keep it but
+ * memory (no IndexedDB at all, no WebCrypto, an IndexedDB that cannot hold a
+ * CryptoKey, `keyStorage: 'memory'`) is the plaintext deleted and the key kept
+ * for this page.
  */
 import { Keypair, PublicKey } from '@solana/web3.js';
 import {
@@ -93,8 +96,20 @@ export const LEGACY_STORAGE_KEYS: Record<KeySlot, string> = {
     authority: 'lazorkit-authority',
 };
 
+/** A key kept in this page's memory. */
+interface MemoryKey {
+    readonly signer: KeySigner;
+    readonly info: unknown;
+    /**
+     * A key `saveKey` could not store this time (IndexedDB failed, not
+     * missing): stored on a later read once IndexedDB works, unless a newer key
+     * is there by then.
+     */
+    readonly unsaved?: { readonly key: NewKey; readonly createdAt: number };
+}
+
 /** Keys kept for this page only: where they could not be stored, or `keyStorage: 'memory'`. */
-const inMemory = new Map<KeySlot, { readonly signer: KeySigner; readonly info: unknown }>();
+const inMemory = new Map<KeySlot, MemoryKey>();
 
 // ─── Generate, save, load, forget ───────────────────────────────────────────
 
@@ -132,19 +147,34 @@ export async function saveKey<S extends KeySlot>(
         inMemory.set(slot, { signer: key.signer, info });
         return 'memory';
     }
-    try {
-        const db = await openKeysDb();
-        if (!db) throw new Error('IndexedDB is not available');
-        await putRecord(db, await toRecord(db, slot, key, info));
-        inMemory.delete(slot);
-        return 'indexeddb';
-    } catch (error) {
-        inMemory.set(slot, { signer: key.signer, info });
+    const createdAt = Date.now();
+    // Kept for this page. Stored on a later read when IndexedDB failed this
+    // time; not when it never can (no IndexedDB or WebCrypto, or an IndexedDB
+    // that cannot hold the key).
+    const keepForPage = (error: unknown, later: boolean): 'memory' => {
+        inMemory.set(slot, { signer: key.signer, info, ...(later ? { unsaved: { key, createdAt } } : {}) });
         console.warn(
-            `[LazorKit] The new ${slot} key could not be stored, and is kept for this page only:`,
+            later
+                ? `[LazorKit] The new ${slot} key could not be stored yet; it signs from this page's memory, and is stored on a later use:`
+                : `[LazorKit] The new ${slot} key could not be stored, and is kept for this page only:`,
             error,
         );
         return 'memory';
+    };
+    let db: IDBDatabase | null;
+    try {
+        db = await openKeysDb();
+    } catch (error) {
+        return keepForPage(error, true);
+    }
+    if (!db) return keepForPage(new Error('IndexedDB is not available'), false);
+    if ('seed' in key.material && !subtle()) return keepForPage(new Error('WebCrypto is not available'), false);
+    try {
+        await putRecord(db, await toRecord(db, slot, key, info, createdAt));
+        inMemory.delete(slot);
+        return 'indexeddb';
+    } catch (error) {
+        return keepForPage(error, !isCannotHold(error));
     }
 }
 
@@ -155,9 +185,13 @@ export async function saveKey<S extends KeySlot>(
 export async function loadKey<S extends KeySlot>(storage: KeyStorage, slot: S): Promise<StoredKey<S> | null> {
     await migrateSlot(storage, slot);
     const remembered = inMemory.get(slot);
-    if (remembered) return remembered as StoredKey<S>;
+    if (remembered) {
+        if (remembered.unsaved && storage !== 'memory') await storeUnsaved(slot, remembered);
+        return remembered as StoredKey<S>;
+    }
     if (storage === 'memory') return null;
 
+    // An open that fails rejects: the key may well be there, so this is not "no key".
     const db = await openKeysDb();
     if (!db) return null;
     const record = await getRecord(db, slot);
@@ -234,35 +268,87 @@ async function migrate(storage: KeyStorage, slot: KeySlot): Promise<void> {
         warnOnce(`legacy-${slot}`, `[LazorKit] localStorage '${LEGACY_STORAGE_KEYS[slot]}' is not a key this SDK wrote; it was left as it is.`);
         return;
     }
-    const key = await keyFromSeed(legacy.seed, legacy.publicKey);
-    legacy.seed.fill(0);
-
-    const db = storage === 'memory' ? null : await openKeysDb();
-    // A seed is stored sealed, which takes WebCrypto (a secure context).
-    if (!db || ('seed' in key.material && !subtle())) {
+    try {
+        const key = await keyFromSeed(legacy.seed, legacy.publicKey);
+        // Serves this page while the plaintext stays, unless the entry has
+        // changed meanwhile (a key saved since, or `forgetStoredKeys`).
+        const serveFromMemory = () => {
+            if (readLegacy(slot) === raw) inMemory.set(slot, { signer: key.signer, info: legacy.info });
+        };
         // Nowhere to keep it but memory. The plaintext goes all the same: the
         // key serves this page, and the session or authority stays on chain
         // with no one holding its key (the passkey's owner is unaffected).
-        inMemory.set(slot, { signer: key.signer, info: legacy.info });
-        removeLegacy(slot, raw);
-        return;
-    }
-    let wrote: boolean;
-    try {
+        const keepInMemoryOnly = () => {
+            serveFromMemory();
+            removeLegacy(slot, raw);
+        };
+
+        let db: IDBDatabase | null = null;
+        if (storage !== 'memory') {
+            try {
+                db = await openKeysDb();
+            } catch (error) {
+                // IndexedDB is there but did not open this time (a lost
+                // connection, a full disk, a timeout): the plaintext stays,
+                // to move on the next read, and the key serves this page.
+                serveFromMemory();
+                throw error;
+            }
+        }
+        // A seed is stored sealed, which takes WebCrypto (a secure context).
+        if (!db || ('seed' in key.material && !subtle())) return keepInMemoryOnly();
+
         // Written only while localStorage still holds this entry, checked in
         // the write's own transaction: a key saved since (here or in another
         // tab, which removes the entry first) is not overwritten.
-        wrote = await putRecord(db, await toRecord(db, slot, key, legacy.info), () => readLegacy(slot) === raw);
-    } catch (error) {
-        // Not stored: the plaintext stays, to move on the next read, and the
-        // key serves this page meanwhile.
-        inMemory.set(slot, { signer: key.signer, info: legacy.info });
-        throw error;
+        const stillThere = () => readLegacy(slot) === raw;
+        let wrote: boolean;
+        try {
+            try {
+                wrote = await putRecord(db, await toRecord(db, slot, key, legacy.info), stillThere);
+            } catch (error) {
+                // This IndexedDB cannot hold an Ed25519 CryptoKey: seal the seed instead.
+                if (!isCannotHold(error) || !('privateKey' in key.material)) throw error;
+                const sealed: NewKey = { signer: key.signer, material: { seed: legacy.seed } };
+                wrote = await putRecord(db, await toRecord(db, slot, sealed, legacy.info), stillThere);
+            }
+        } catch (error) {
+            // It cannot hold a CryptoKey at all: as with no IndexedDB.
+            if (isCannotHold(error)) {
+                warnOnce(`cannot-hold-${slot}`, `[LazorKit] IndexedDB here cannot keep the ${slot} key; it is kept for this page only: ${String(error)}`);
+                return keepInMemoryOnly();
+            }
+            // Not stored this time: the plaintext stays, to move on the next
+            // read, and the key serves this page meanwhile.
+            serveFromMemory();
+            throw error;
+        }
+        if (!wrote) return;
+        removeLegacy(slot, raw);
+        // The memory copy of this key (an earlier attempt's) is not needed now.
+        if (inMemory.get(slot)?.signer.publicKey.equals(key.signer.publicKey)) inMemory.delete(slot);
+    } finally {
+        legacy.seed.fill(0);
     }
-    if (!wrote) return;
-    removeLegacy(slot, raw);
-    // The memory copy of this key (an earlier attempt's) is not needed now.
-    if (inMemory.get(slot)?.signer.publicKey.equals(key.signer.publicKey)) inMemory.delete(slot);
+}
+
+/** A key `saveKey` could not store, stored now if IndexedDB works, unless a newer key is there. Never throws. */
+async function storeUnsaved(slot: KeySlot, entry: MemoryKey): Promise<void> {
+    const { key, createdAt } = entry.unsaved!;
+    try {
+        const db = await openKeysDb();
+        if (!db) return;
+        await putRecord(
+            db,
+            await toRecord(db, slot, key, entry.info as object, createdAt),
+            (current) => !isKeyRecord(current, slot) || current.createdAt < createdAt,
+        );
+        // Stored, or a newer key (another tab's) is: either way, read from IndexedDB from now on.
+        if (inMemory.get(slot) === entry) inMemory.delete(slot);
+    } catch (error) {
+        if (isCannotHold(error) && inMemory.get(slot) === entry) inMemory.set(slot, { signer: entry.signer, info: entry.info });
+        warnOnce(`unsaved-${slot}`, `[LazorKit] The ${slot} key still could not be stored; it signs from this page's memory: ${String(error)}`);
+    }
 }
 
 interface LegacyKey {
@@ -314,9 +400,15 @@ async function keyFromSeed(seed: Uint8Array, publicKey: PublicKey): Promise<NewK
     return { signer: keypairSigner(keypair), material: { seed: keypair.secretKey.slice(0, 32) } };
 }
 
-async function toRecord(db: IDBDatabase, slot: KeySlot, key: NewKey, info: object): Promise<KeyRecord> {
+async function toRecord(
+    db: IDBDatabase,
+    slot: KeySlot,
+    key: NewKey,
+    info: object,
+    createdAt = Date.now(),
+): Promise<KeyRecord> {
     const publicKey = key.signer.publicKey.toBase58();
-    const base = { slot, v: 1 as const, publicKey, info: { ...info } as Record<string, unknown>, createdAt: Date.now() };
+    const base = { slot, v: 1 as const, publicKey, info: { ...info } as Record<string, unknown>, createdAt };
     if ('privateKey' in key.material) return { ...base, privateKey: key.material.privateKey };
     const wrapKey = await wrapKeyFor(db);
     return { ...base, sealed: await seal(wrapKey, key.material.seed, sealContext(slot, publicKey)) };
@@ -385,6 +477,11 @@ function removeLegacy(slot: KeySlot, raw?: string): void {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+/** IndexedDB refused the value itself (a CryptoKey it cannot clone): trying again will not help. */
+function isCannotHold(error: unknown): boolean {
+    return (error as { name?: unknown } | null)?.name === 'DataCloneError';
+}
 
 function base58(value: unknown): string | null {
     if (typeof value !== 'string') return null;
