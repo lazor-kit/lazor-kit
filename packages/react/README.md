@@ -10,6 +10,27 @@ Traditionally, crypto requires users to manage complex seed phrases. LazorKit re
 - **Smart**: Programmable account logic (PDAs)
 - **Secure**: Hardware-bound credentials
 
+> **4.0 alpha.** This branch is the 4.0 alpha (Embedded mode, the Easy tier,
+> `/core` and `/hooks`). Its API can still change after device testing. It is
+> not published; 3.3.x is the release on npm. See
+> [Upgrading from 3.x](#upgrading-from-3x).
+
+## Two modes
+
+`LazorkitProvider` takes a `mode`, with no default:
+
+| | `mode="embedded"` | `mode="portal"` |
+|---|---|---|
+| Where the passkey lives | Your app's own domain (`rpId`) | `portal.lazor.sh` |
+| What opens | Nothing: the OS passkey sheet, and the SDK's own small sheets in your page | The LazorKit portal, in a dialog or a popup |
+| Wallets | Your app's own; a user's wallet here is not their wallet in another app | Shared by every app on the portal |
+| Who pays rent and fees | Your relayer (`paymasterConfig`; required on mainnet) | Your relayer, as in 3.x |
+| For | New apps | 3.x apps (they keep their users' wallets), and apps that want shared wallets |
+
+Moving an existing app from portal to Embedded mode is not an SDK upgrade: it
+gives every user a new wallet on your domain. Keep `mode="portal"` for an app
+that has users.
+
 ## Installation
 
 ```bash
@@ -18,13 +39,61 @@ npm install @lazorkit/wallet @coral-xyz/anchor @solana/web3.js
 
 ## Usage
 
+### Embedded mode
+
+```tsx
+import { LazorkitProvider, ConnectButton, useWallet } from '@lazorkit/wallet';
+import { SystemProgram, LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
+
+export const App = () => (
+  <LazorkitProvider
+    mode="embedded"
+    rpId="app.example.com"            // this page's host name; permanent (see below)
+    appName="Example"                 // passkeys are named "Example · Ab3d…9xYz"
+    rpcUrl={RPC_URL}
+    cluster="devnet"
+    paymasterConfig={{ paymasterUrl: YOUR_RELAYER_URL }}
+  >
+    <ConnectButton />
+    <Pay />
+  </LazorkitProvider>
+);
+
+function Pay() {
+  const { status, address, signAndSend } = useWallet();
+  if (status !== 'connected' || !address) return null;
+  const vault = new PublicKey(address);
+  return (
+    <button
+      onClick={() =>
+        signAndSend({
+          instructions: [
+            SystemProgram.transfer({ fromPubkey: vault, toPubkey: new PublicKey('RECIPIENT'), lamports: 0.1 * LAMPORTS_PER_SOL }),
+          ],
+          onSubmitted: (signature) => console.log('sent', signature), // before confirmation
+        })
+      }
+    >
+      Send 0.1 SOL
+    </button>
+  );
+}
+```
+
+`<ConnectButton>` shows "Continue with passkey", then the short vault address
+with a menu (Copy address, Sign out). `signAndSend` first shows a review sheet
+(what the transaction does, and a simulation), then the passkey prompt, and
+resolves once the transaction is confirmed. See [Embedded mode](#embedded-mode-1).
+
+### Portal mode (3.x apps)
+
 ```tsx
 import { LazorkitProvider, useWallet } from '@lazorkit/wallet';
 import { SystemProgram, LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
 
-// 1. Wrap App with Provider
 export const App = () => (
   <LazorkitProvider
+    mode="portal"
     rpcUrl={process.env.LAZORKIT_RPC_URL}
     portalUrl={process.env.LAZORKIT_PORTAL_URL}
     paymasterConfig={{ paymasterUrl: process.env.LAZORKIT_PAYMASTER_URL }}
@@ -33,33 +102,32 @@ export const App = () => (
   </LazorkitProvider>
 );
 
-// 2. Use Hook
 function WalletContent() {
-  const { connect, signAndSendTransaction, isConnected } = useWallet();
+  const { connect, signAndSend, status, vaultPubkey } = useWallet();
 
   const handleTx = async () => {
-    // Connect (Auto-reconnects)
-    if (!isConnected) await connect();
+    // Connect: the stored wallet, or the portal.
+    const wallet = status === 'connected' ? null : await connect();
+    const vault = vaultPubkey ?? new PublicKey(wallet!.vaultPda!);
 
-    // Sign and Send
-    const sig = await signAndSendTransaction({
+    const sig = await signAndSend({
       instructions: [
         SystemProgram.transfer({
-          fromPubkey: smartWalletPubkey,
+          fromPubkey: vault,
           toPubkey: new PublicKey('RECIPIENT'),
-          lamports: LAMPORTS_PER_SOL * 0.1
-        })
+          lamports: LAMPORTS_PER_SOL * 0.1,
+        }),
       ],
-      transactionOptions: { feeToken: 'USDC' }
     });
-    
-    console.log("Tx:", sig);
+    console.log('Tx:', sig);
   };
 
   return <button onClick={handleTx}>Execute Transaction</button>;
 }
 ```
 
+Everything below about connecting, sending, keys and messages applies to both
+modes unless it says otherwise.
 
 ## Wallets made before LazorKit v2
 
@@ -76,6 +144,7 @@ points at a v2 relayer, `v1PaymasterConfig` is required:
 
 ```tsx
 <LazorkitProvider
+  mode="portal"
   paymasterConfig={{ paymasterUrl: V2_PAYMASTER_URL }}
   v1PaymasterConfig={{ paymasterUrl: EXISTING_PAYMASTER_URL }}
 >
@@ -164,14 +233,16 @@ portal's origin, so this trusts the portal no more than before.
 
 ```tsx
 <LazorkitProvider
+  mode="portal"
   onConfirmWallet="builtin"            // default: the SDK's chooser
   trustedAuthorities={[BACKEND_ADMIN]}  // your own Ed25519 keys, base58
   watchMints={[MY_TOKEN_MINT]}          // SPL mints your app receives
 >
 ```
 
-- **`'builtin'`** (default) — a "Which wallet is yours?" dialog, drawn in the
-  portal dialog's frame. Each row shows the vault address (full address
+- **`'builtin'`** (default) — a "Which wallet is yours?" dialog ("Is this your
+  wallet?" for one), drawn in the portal dialog's frame, or in Embedded mode
+  in the SDK's own sheet. Each row shows the vault address (full address
   selectable, with a copy button), its SOL balance, "Legacy (v1)" for a wallet
   not yet migrated, "Not used with this passkey yet…" for a wallet it has
   never signed for, and "Also controlled by: …" for everything untrusted that
@@ -676,9 +747,304 @@ must not be used for authentication: they check only that `signature` is over
 `signedPayload`, not which message was signed, so any assertion the passkey
 ever made passes.
 
+## Embedded mode
+
+In Embedded mode the passkey is created under your app's own domain, and the
+SDK runs every passkey ceremony in your page with WebAuthn. No portal, iframe,
+popup or `postMessage` is involved.
+
+### Provider props
+
+| Prop | Required | Description |
+|---|---|---|
+| `mode` | yes | `"embedded"`. |
+| `rpId` | yes | The relying party: this page's host name (`app.example.com`), or a registrable parent of it (`example.com`). Lowercase ASCII (punycode for an international name), no scheme, port, path or trailing dot, not an IP address. `localhost` works in development. A mistake throws `LazorkitConfigError` when the provider renders. |
+| `appName` | yes | Your app's name. Passkeys are named `"<appName> · <short vault>"`, at most 60 bytes, and the sheets show it. |
+| `paymasterConfig` | on mainnet | Your relayer: it pays fees and the rent of every new wallet (D11). On mainnet, leaving it out throws; LazorKit's relayer is for devnet and testing. |
+| `cluster` | when the RPC URL does not say | `'devnet'` or `'mainnet'`. An RPC URL that names neither is taken as mainnet. The review sheet simulates on this cluster. |
+| `rpcUrl` | no | Your RPC. Embedded mode reads with a back-off for HTTP 429. |
+| `confirm` | no | Show the review sheet before every `signAndSend` (default `true`). |
+| `onConfirmWallet`, `trustedAuthorities`, `watchMints`, `keyStorage`, `v1PaymasterConfig` | no | As in portal mode. |
+| `onEvent` | no | Experimental: one call per passkey ceremony, sheet, connect and transaction (`LazorkitEvent`), for metrics. |
+
+A `localhost` rpId on mainnet throws: every local dev server on every port
+shares it.
+
+The page itself must be served from a domain (not an IP address) over https,
+or `http://localhost`. If it is not, or the browser has no WebAuthn (an in-app
+browser view), nothing throws: `availability` says `'misconfigured'` or
+`'unavailable'`, and `connect()` rejects with `LazorkitConfigError` or
+`PasskeyUnavailableError`.
+
+### Connecting
+
+There is one button, "Continue with passkey", for new and returning users:
+
+1. One `navigator.credentials.get()` asks for any passkey this rpId has. No
+   network request comes first. In Chrome with immediate mediation
+   (`getClientCapabilities().immediateGet`), and only when the call comes
+   from a click, it uses `uiMode: 'immediate'`: a user with no passkey on this
+   device sees no sheet at all. After one immediate request fails, the page
+   uses the normal sheet from then on.
+2. If no passkey comes back, the browser does not say whether there is none
+   or the user closed the sheet. The SDK then shows **No passkey on this
+   device?** with three choices:
+   - **Create a passkey**, with the name prefilled and editable;
+   - **Use a passkey on another device**, which asks again with the phone or
+     security key offered first (`hints: ['hybrid']`);
+   - **Not now**, which rejects `connect()` with `UserRejectedError`.
+
+   A passkey is never created without the user asking. If the user closes the
+   create sheet, the screen stays. If the authenticator already holds one of
+   this app's passkeys, the screen says so.
+3. A new passkey's `user.id` is its wallet's seed, so the wallet is at
+   `findWallet(user.id)`. The wallet is created through your relayer, and read
+   back before it is saved: it must have exactly one Owner, holding this
+   passkey's key, credential and rpId. The relayer's answer must also be its
+   own signature over the transaction the SDK built. If the wallet cannot be
+   created, the screen offers **Try again**, which needs no new passkey (the
+   chain is read again first). A later sign-in with that passkey also creates
+   it, with one prompt.
+4. A passkey that comes back with a 32-byte `userHandle` (one this SDK made)
+   names its wallet. The SDK reads that wallet and this passkey's authority
+   directly, with no search by credential:
+   - It is used without asking when this passkey has signed for it and
+     nothing else can spend from it.
+   - It is also used without asking when it has never been used, but its first
+     transaction was exactly this passkey's `CreateWallet` and nothing else.
+   - Anything else goes to the chooser.
+5. Any other passkey (made elsewhere, or by another app on this rpId) goes
+   through the lookup portal mode uses, on v2 and v1. If it holds no wallet,
+   one more prompt, pinned to the same passkey, recovers its public key, and
+   a wallet is created for it.
+
+A read that fails is a `NetworkError`. Nothing is created after a failed read.
+`disconnect()` during a connect closes its sheets, and the connect rejects
+with `UserRejectedError` (reason `'abandoned'`) and saves nothing.
+
+What each flow costs the user (passkey prompts / sheets the user acts on /
+portal dialogs), by design; the playground's end-to-end run measures them on
+devnet:
+
+| Flow | Count |
+|---|---|
+| New user (immediate mode: 1 / 1 / 0) | 2 / 1 / 0 |
+| Returning user, any device with the passkey | 1 / 0 / 0 |
+| Returning user, wallet never used | 1 / 0 / 0 (1 / 1 / 0 for a passkey made elsewhere) |
+| Passkey with no wallet | 2 / 0 / 0 |
+| Reload | 0 / 0 / 0 |
+| A transaction (review sheet on / off) | 1 / 1 / 0, 1 / 0 / 0 |
+| Sign a message | 1 / 0 / 0 |
+
+### What is stored, and reloads
+
+Embedded mode keeps its data under `lazorkit:embedded:<rpId>:` in
+localStorage, and never writes the portal's keys:
+
+- `:store` and `:wallet` hold the connected wallet, so a reload is connected at
+  once with no prompt (the store reads it synchronously when the provider
+  first renders). A record from another rpId, mode or cluster is never
+  restored.
+- `:known` holds up to 10 credential ids of this app's passkeys seen here, for
+  `excludeCredentials`.
+- `:pending:<id>` holds a passkey whose wallet has not landed yet.
+
+`disconnect()` deletes the wallet record and the session key (unless
+`keepSessionKeys`), but keeps the known ids and pending passkeys.
+`forgetEmbeddedDevice(rpId)` deletes those too. None of it is a secret.
+
+**Sessions on the chooser (D10).** A wallet with a live session is not used
+without asking, unless the session's key is one this device holds, bound to
+that wallet. That only happens when the key was kept at sign-out
+(`disconnect({ keepSessionKeys: true })`). A plain `disconnect()` deletes it.
+
+### Sending
+
+`signAndSend` (the same function as `signAndSendTransaction`):
+
+1. Shows the **review sheet**, unless the provider or the call passes
+   `confirm: false`. The sheet decodes each instruction: SOL transfers, SPL
+   Token and Token-2022 transfers, with the recipient token account's owner
+   and a warning when it is not a token account of that mint. It also shows
+   approvals, authority changes and closes that hand over the vault or its
+   tokens (in red), associated token accounts, compute budget and memos.
+   Anything else is shown as an unrecognized instruction with its program and
+   accounts. The sheet also shows a simulation on your cluster with the vault's
+   balance change, and that your app pays the fee. A failed simulation makes
+   **Cancel** the main button and **Approve anyway** the other.
+2. Prepares the passkey challenge only after the sheet is approved. A
+   challenge names a slot and expires about 150 slots later, so no challenge
+   waits on a person. What is signed is a copy of the instructions taken when
+   the sheet opened, so changing the instruction objects afterwards changes
+   nothing.
+3. Asks the passkey once, pinned to the connected credential, and sends.
+4. Calls `onSubmitted(signature)` as soon as the transaction is sent. The
+   promise resolves once it is confirmed.
+
+Cancelling the sheet or closing the passkey prompt rejects with
+`UserRejectedError`; nothing is signed or sent. Sends read the wallet's
+passkey authority directly (no `getProgramAccounts`), so any RPC works for
+them.
+
+The review sheet catches **your app's** mistakes: a wrong amount or recipient.
+It does not protect against a malicious app, because your page draws it. The
+passkey prompt itself shows nothing about the transaction.
+
+### Errors
+
+Every error has a kind, `errorKind(error)`, and words to show,
+`userMessage(error, 'connect' | 'send')`:
+
+| Kind | Class | `userMessage` |
+|---|---|---|
+| `rejected` | `UserRejectedError` (`PortalCancelledError` and `WalletConfirmationDeclinedError` are subclasses) | connect: `null` (show nothing); send: "Nothing signed, nothing sent." |
+| `other-passkey` | `PasskeyMismatchError` | "Another passkey answered. Nothing was created or sent." |
+| `key-recovery` | `KeyRecoveryError` | "Nothing was created; try again." |
+| `unavailable` | `PasskeyUnavailableError` | "Passkeys don't work in this browser view. Open this page in Safari or Chrome." |
+| `config` | `LazorkitConfigError` (`problem` says which) | The developer message |
+| `network` | `NetworkError`, `PaymasterError` without a program error | "Couldn't reach the network. Nothing was created." (or "sent") |
+| `wallet-mismatch` | `WalletVerificationError` | "The wallet that was created isn't this passkey's. Nothing was saved; try again." |
+| `tx-failed` | `TransactionFailedError` | "The transaction failed: …. Nothing else changed." |
+| `tx-expired` | `TransactionExpiredError` | "It didn't go through. It's safe to try again." |
+| `tx-unknown` | `TransactionOutcomeUnknownError`, `ConfirmationTimeoutError` | "Checking whether it went through. Don't send it again yet." |
+| `previous-pending` | `PreviousTransactionPendingError` | "Your previous transaction is still pending. Nothing was signed." |
+| `signature-reused` | `SignatureReusedError` | "Nothing was sent. Try again." |
+| `v1-retired` | `V1WalletRetiredError` | "This wallet's old version is retired. Move it to the new version to continue." |
+| `v1-migrated` | `V1WalletMigratedError` | "This wallet moved. Sign in again." |
+| `key-mismatch` | `KeyWalletMismatchError` | "This key belongs to another wallet. Nothing was signed." |
+
+A user rejection never sets the store's `error`, in either mode. `onFail`
+still runs for it.
+
+### Status
+
+`useWallet().status` is `'disconnected'`, `'connecting'`, `'connected'` or
+`'signing'`. It replaces `isConnecting`, `isSigning` and `isLoading`, which
+still work in 4.x and warn once when read. For a button of your own,
+`useWalletStatus()` from `@lazorkit/wallet/hooks` also gives the step that is
+running: `checking-passkey`, `no-passkey`, `creating-passkey`, `other-device`,
+`finding-wallet`, `choose-wallet`, `one-more-check`, `creating-wallet`,
+`reviewing`, `preparing`, `awaiting-passkey` or `submitted`.
+
+`<ConnectButton>` takes `label`, `autofill` (passkey autofill in a field under
+the button; off by default), `className`, `style`, `onConnect` and `onError`.
+It is themed, like the sheets, with CSS custom properties: `--lk-accent`,
+`--lk-bg`, `--lk-fg`, `--lk-radius`, `--lk-font`. Elements tests can target
+carry `data-lk` attributes:
+- the button: `connect`, `menu`, `copy`, `sign-out`;
+- the no-passkey sheet: `no-passkey`, `passkey-name`, `create`,
+  `other-device`, `not-now`, `retry-wallet`;
+- the chooser: `wallet-choice`, `use-wallet`, `none`;
+- the review sheet: `review`, `approve`, `cancel`.
+
+### Embedded security model
+
+Your domain holds your users' wallets. Read this before shipping:
+
+- **Anything that can call WebAuthn for your rpId can sign for every wallet:**
+  - your frontend and every script it loads, so its supply chain too;
+  - with a parent-domain rpId (`example.com`), every subdomain;
+  - origins your rpId lists in `/.well-known/webauthn` (Related Origins);
+  - Android and iOS apps your domain vouches for (`assetlinks.json`, Associated
+    Domains);
+  - whoever registers the domain if it ever lapses.
+
+  The program checks the rpId's hash, not the page. Serve wallet pages with a
+  strict Content-Security-Policy and Subresource Integrity, keep the domain's
+  registration and DNS locked, and use the page's own host as the rpId unless
+  you need a parent.
+- **The rpId is permanent.** Every passkey and every wallet is bound to it.
+  Changing domains means listing the new one through the old rpId's Related
+  Origins, never changing `rpId`.
+- **There is no recovery authority yet.** A wallet has one Owner, the passkey
+  on your rpId. Losing the domain loses every wallet until a second Owner
+  exists (planned: D15).
+- **The review sheet is not a security boundary** (see above).
+- **Wallets are not portable to portal apps** and back. Moving a portal user to
+  Embedded mode needs a new Owner added from the portal (planned: D12).
+
+## Entry points
+
+| Import | What | React |
+|---|---|---|
+| `@lazorkit/wallet` | Easy: `LazorkitProvider`, `ConnectButton`, `useWallet`, and everything in `/core` | yes (client module) |
+| `@lazorkit/wallet/hooks` | Advanced: `useWallet`, `useWalletStore`, `useLazorkitClient`, `useWalletStatus` | yes (client module) |
+| `@lazorkit/wallet/core` | No React: `createLazorkitClient`, the errors, `verifyWalletMessage`, the protocol helpers, the adapter | no |
+
+All three share one store and one client per page. The React entries start
+with `'use client'`. Server code, such as a route handler that checks a signed
+message, imports from `@lazorkit/wallet/core`. `react` and `react-dom` are
+optional peers for `/core` users.
+
+```ts
+import { createLazorkitClient } from '@lazorkit/wallet/core';
+
+const client = createLazorkitClient({ mode: 'embedded', rpId: location.hostname, appName: 'Example', cluster: 'devnet' });
+client.subscribe((state) => render(state.status, state.address));
+button.onclick = () => client.connect().catch(() => {});
+```
+
+A second `createLazorkitClient` call with an equal config returns the same
+client. One with a different mode, rpId, relayer, RPC, cluster, trusted keys
+or `confirm` throws `LazorkitConfigError('reconfigured')`, unless it passes
+`{ replace: true }`.
+
+## Upgrading from 3.x
+
+**Breaking:**
+
+1. **`mode` is required.** Add `mode="portal"` to keep your users' wallets:
+
+   ```bash
+   grep -rl '<LazorkitProvider' src | xargs sed -i '' 's/<LazorkitProvider\b/<LazorkitProvider mode="portal"/'
+   ```
+
+   (On Linux, `sed -i` without `''`.) Without it the app does not compile, and
+   throws `LazorkitConfigError('no-mode')` from JavaScript.
+2. **A user rejection no longer sets `error`.** This covers a closed portal or
+   sheet, and "None of these". The promise still rejects, and `onFail` still
+   runs. `PortalCancelledError` and `WalletConfirmationDeclinedError` are now
+   `UserRejectedError`s; branch on `errorKind(e) === 'rejected'`.
+3. **The root and `/hooks` entries are client modules** (`'use client'`).
+   Next.js server code imports helpers from `@lazorkit/wallet/core`.
+4. **The first render can already be connected**: the stored wallet is read
+   synchronously. `connect()` on mount still works; it returns the stored
+   wallet.
+5. **`@lazorkit/sdk-legacy` 1.3.1 or later.**
+
+**New:** `status`, `address`, `signAndSend`, `onSubmitted`, `ConnectButton`,
+`useWalletStatus`, `createLazorkitClient`, `errorKind`, `userMessage`, `onEvent`,
+`/core` and `/hooks`.
+
+**Deprecated:**
+- `isLoading`, `isConnecting` and `isSigning`: use `status`. They warn once,
+  and are removed in 5.0.
+- The session, authority and deferred functions on `useWallet`: they move to
+  hooks in `/hooks` in a later 4.x, with the same names and parameters. They
+  still work, with no warning yet.
+
+**Unchanged:**
+- portal mode's behaviour and its stored bytes;
+- the `signMessage` format (changed in 3.3);
+- `addAuthority`'s required `role`;
+- the wallet adapter and the Wallet Standard wallet, which stay portal-only in
+  4.0.
+
+**Not in the alpha:**
+- "remember this device" (the `session` prop is reserved);
+- the session, authority and deferred hooks;
+- Embedded mode for the adapter and the Wallet Standard;
+- the mobile adapter's Easy API;
+- a recovery Owner.
+
 ## API Reference
 
 ### `useWallet()`
+
+**Easy fields:** `status` (`'disconnected' | 'connecting' | 'connected' |
+'signing'`), `address` (the vault, base58, or `null`), `wallet`, `error`,
+`connect`, `disconnect`, `signAndSend`, `signMessage`. The 3.x fields are all
+still there.
 
 #### `connect(options?)`
 
@@ -739,9 +1105,11 @@ Signs a message with the passkey. The passkey signs
 `Promise<SignMessageResult>`: `{ signature, signedPayload, clientDataJsonBase64, authenticatorDataBase64 }`,
 all base64. Check it with `verifyWalletMessage`.
 
-#### `signAndSendTransaction(payload)`
+#### `signAndSend(payload)` / `signAndSendTransaction(payload)`
 
-Signs and sends transaction via Paymaster.
+Signs and sends transaction via Paymaster. The two names are the same
+function. In Embedded mode the review sheet comes first (see
+[Sending](#sending)).
 
 **Parameters**
 
@@ -752,7 +1120,9 @@ Signs and sends transaction via Paymaster.
 | `transactionOptions.feeToken` | `string` | Token address for gas fees (e.g. USDC). |
 | `transactionOptions.computeUnitLimit` | `number` | Max compute units. |
 | `transactionOptions.addressLookupTableAccounts` | `AddressLookupTableAccount[]` | Lookup tables for v0 txs (the portal preview uses them too). |
-| `transactionOptions.clusterSimulation` | `'devnet' \| 'mainnet'` | Network for simulation. |
+| `transactionOptions.clusterSimulation` | `'devnet' \| 'mainnet'` | Portal mode: network for the portal's simulation. Embedded mode simulates on the provider's cluster. |
+| `payload.onSubmitted` | `(signature: string) => void` | Called once, as soon as the transaction is sent, before it is confirmed. Never for one that was not sent. What it throws is logged. |
+| `payload.confirm` | `boolean` | Embedded mode: show the review sheet (default: the provider's `confirm`, `true`). |
 | `payload.onSuccess` | `(signature: string) => void` | Runs once `isSigning` is `false`, right before the promise resolves (see [Callbacks](#sending-transactions)). |
 | `payload.onFail` | `(error: Error) => void` | Runs with the error the promise rejects with. |
 
@@ -774,7 +1144,7 @@ See [Signing messages](#signing-messages).
 | `connection` | `Connection` | The cluster the wallet lives on. |
 | `wallet` | `string \| PublicKey` | The wallet the signer claims: its vault address or wallet PDA. |
 | `credentialId` | `string` | The passkey's credential id, base64. |
-| `rpId` | `string` | The passkey's relying party: the portal's hostname. |
+| `rpId` | `string` | The passkey's relying party: the portal's hostname (portal mode), or your `rpId` (Embedded mode). |
 | `cluster` | `'mainnet' \| 'devnet'` | Optional, for an RPC URL that does not say. |
 | `message`, `signature`, `clientDataJsonBase64`, `authenticatorDataBase64`, `signedPayload`, `origin` | | As for `verifySignedMessage`. |
 
