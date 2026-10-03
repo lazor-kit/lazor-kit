@@ -147,10 +147,21 @@ export interface SendTxPayload {
   transactionOptions?: {
     feeToken?: string;
     addressLookupTableAccounts?: AddressLookupTableAccount[];
+    /**
+     * Ignored by legacy and v0 sends. With `txVersion: 'v1'`: the compute-unit
+     * limit written into the transaction, 1 to 1,400,000. Default: measured.
+     */
     computeUnitLimit?: number;
     clusterSimulation?: 'devnet' | 'mainnet';
-    /** Wire format for the transaction. Defaults to 'v0'. */
-    txVersion?: 'legacy' | 'v0';
+    /**
+     * Wire format for the transaction. Defaults to 'v0'. 'v1' (SIMD-0385) is
+     * experimental and devnet only: used when the paymaster declares
+     * `acceptsTxV1` and the wallet is on the devnet v2 program, else the
+     * transaction goes out as v0. See `SignAndSendTransactionPayload`.
+     */
+    txVersion?: 'legacy' | 'v0' | 'v1';
+    /** `txVersion: 'v1'` only: loaded-accounts data size limit, 196,608 to 67,108,864 bytes. Default: measured. */
+    loadedAccountsDataSizeLimit?: number;
   };
 }
 

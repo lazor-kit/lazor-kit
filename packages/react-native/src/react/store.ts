@@ -13,6 +13,7 @@ import {
   WalletStateClient,
   WalletInfo,
   WalletConfig,
+  PaymasterConfig,
   ConnectOptions,
   DisconnectOptions,
   SignOptions,
@@ -101,6 +102,26 @@ const storage = {
     }
   },
 };
+
+/**
+ * A paymaster config as last run stored it, with this run's `acceptsTxV1`:
+ * the app turns v1 off by leaving it out or setting it false, and storage that
+ * answers late must not turn it back on. It is kept only for the paymaster
+ * this run declared it for.
+ */
+function withThisRunsAcceptsTxV1<P extends PaymasterConfig | undefined>(
+  stored: P,
+  thisRun: PaymasterConfig | undefined
+): P {
+  if (!stored) return stored;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { acceptsTxV1: lastRun, ...rest } = stored as PaymasterConfig;
+  return (
+    thisRun?.acceptsTxV1 !== undefined && thisRun.paymasterUrl === rest.paymasterUrl
+      ? { ...rest, acceptsTxV1: thisRun.acceptsTxV1 }
+      : rest
+  ) as P;
+}
 
 /** The config without what is only ever this run's (see `merge` below). */
 function persistableConfig(config: WalletConfig): WalletConfig {
@@ -216,15 +237,26 @@ export const useWalletStore = create<WalletStateClient>()(
        * Storage can answer after the provider has set this run's config, with
        * last run's. The wallet-confirmation settings are this run's only: a
        * stale `trustedAuthorities` would trust a key the app no longer does,
-       * and a handler function does not survive JSON anyway.
+       * and a handler function does not survive JSON anyway. So is the
+       * paymasters' `acceptsTxV1`, the app's switch for v1 transactions.
        */
       merge: (persisted, current) => {
         const saved = (persisted ?? {}) as Partial<WalletStateClient>;
+        const config = saved.config ?? current.config;
         return {
           ...current,
           ...saved,
           config: {
-            ...(saved.config ?? current.config),
+            ...config,
+            configPaymaster: withThisRunsAcceptsTxV1(config.configPaymaster, current.config.configPaymaster),
+            ...(config.v1ConfigPaymaster
+              ? {
+                  v1ConfigPaymaster: withThisRunsAcceptsTxV1(
+                    config.v1ConfigPaymaster,
+                    current.config.v1ConfigPaymaster
+                  ),
+                }
+              : {}),
             onConfirmWallet: current.config.onConfirmWallet,
             trustedAuthorities: current.config.trustedAuthorities,
             watchMints: current.config.watchMints,

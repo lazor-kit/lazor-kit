@@ -44,6 +44,13 @@ import { PaymasterError } from '../paymaster/paymaster';
 export interface SendAttempt {
     blockhash: string;
     lastValidBlockHeight: number;
+    /**
+     * Reads a landed transaction's logs, to tell LazorKit's 3006 from an inner
+     * program's. Set for v1 transactions, which web3.js's `getTransaction`
+     * cannot read; without it the logs come from
+     * `getTransaction(…, { maxSupportedTransactionVersion: 0 })`.
+     */
+    landedLogs?: (signature: string) => Promise<readonly string[] | null | undefined>;
 }
 
 /** A sent transaction, with what it takes to tell when it can no longer land. */
@@ -263,12 +270,21 @@ async function failure(
     signature: string,
     outcome: { slot: number; err: TransactionError },
     mapReused: boolean,
+    landedLogs?: SendAttempt['landedLogs'],
 ): Promise<Error> {
     const failed = new TransactionFailedError(signature, outcome.err, outcome.slot);
     if (!mapReused) return failed;
     let verdict = signatureReusedVerdict(outcome.err);
     let logs: string[] | undefined;
-    if (verdict === 'unknown') {
+    if (verdict === 'unknown' && landedLogs) {
+        try {
+            const read = await bounded(landedLogs(signature), Date.now() + REQUEST_TIMEOUT_MS);
+            logs = read ? [...read] : undefined;
+        } catch {
+            logs = undefined;
+        }
+        if (logs) verdict = signatureReusedVerdict({ err: outcome.err, logs });
+    } else if (verdict === 'unknown') {
         // An on-chain TransactionError has no logs, and an inner program's
         // 3006 looks the same as LazorKit's: the logs say which failed first.
         try {
@@ -298,7 +314,7 @@ async function outcomeResult(
         case 'landed':
             return outcome.slot;
         case 'failed':
-            throw await failure(connection, sent.signature, outcome, mapReused);
+            throw await failure(connection, sent.signature, outcome, mapReused, sent.landedLogs);
         case 'expired':
             throw new TransactionExpiredError(sent.signature);
         case 'unknown':
