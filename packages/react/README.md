@@ -320,6 +320,8 @@ happened.
 | `SignatureReusedError` | LazorKit rejected the passkey signature (3006): its counter was already used. Left for the same passkey signing somewhere else at the same moment, or a paymaster reading older state than the wallet. That signature can never be valid, so it is not resent, and no new prompt opens on its own: ask the user to sign again. An inner program's error with the same code (Anchor's `AccountNotMutable`) is told apart by the logs and reported as the failure it is. |
 | `PaymasterError` | The paymaster refused the transaction: `code` and `data` of its JSON-RPC error, or `httpStatus`. |
 | `DeferredExpiredError` | TX2 of a deferred execution (`authorizeAndExecute`, `executeDeferred`) came after its authorization expired (`DeferredAuthorizationExpired`, 3014), so nothing in it ran. `authorizeSignature` (TX1, when this call sent it), `deferredExecPda` (the account holding the paymaster's rent until the Authorize payer reclaims it) and `expiresAtSlot`. The passkey approval is spent: ask the user to approve again. An inner program's 3014 is not reported as this (see below). |
+| `UnlistedSolOutflowError` | A `signAndSendWithSession` or `signAndSendWithAuthority` transaction would have lowered the wallet's SOL balance (rent for a new account included), and the session's limits or the delegate's policy name no SOL (`ActionUnlistedSolOutflow`, 3037). Nothing in it ran, and it is not resent. Its message is "This session is not allowed to spend SOL" ("This key …" for a delegate); `signer` is `'session'` or `'authority'`, and `cause` the failure as it came. See [What a policy bounds](#what-a-policy-bounds). |
+| `UnlistedTokenOutflowError` | The same for a token whose mint the limits do not name (`ActionUnlistedTokenOutflow`, 3038): "This session is not allowed to spend this token". |
 
 Every status read and paymaster request is bounded in time, so one that never
 answers cannot hold a passkey's queue. The slot the passkey's last transaction
@@ -374,6 +376,13 @@ from either copy and wrapped the same way. The other error classes have no
 predicate: compare `error.name` (`'TransactionFailedError'`,
 `'PaymasterError'`, `'V1WalletMigratedError'`,
 `'WalletNeedsConfirmationError'`, …), which holds across copies too.
+
+`isUnlistedSolOutflowError` and `isUnlistedTokenOutflowError` are true for
+`UnlistedSolOutflowError` and `UnlistedTokenOutflowError` from either copy,
+wrapped the same way, and for a raw 3037 or 3038 (`0xbdd`, `0xbde`): one whose
+logs name another program as the first to fail is not LazorKit's, one with no
+logs is (no Anchor error uses these codes). `ERROR_NAMES` and `errorFromCode`
+name 3036 to 3038 and 4018 as well.
 
 The portal's transaction preview is compiled without lookup tables whenever it
 fits in a packet, so the portal sees every account the transaction touches.
@@ -577,7 +586,8 @@ logged. If IndexedDB only failed this time, the key is stored on its next use
 here, unless another tab has stored a newer key meanwhile.
 
 **What bounds a kept key** is what was registered on chain, not where the key
-is kept. A session is bounded by its `spendingLimits` and its expiry. An
+is kept. A session is bounded by its `spendingLimits` and its expiry (see
+[What a policy bounds](#what-a-policy-bounds)). An
 authority is bounded by the role you give it, which `addAuthority` requires
 (there is no default, and a missing or unknown role throws before the passkey
 prompt):
@@ -591,11 +601,17 @@ prompt):
 For a key your app holds, use `ROLE_SPENDER` with a `policy`:
 
 ```ts
-import { ROLE_SPENDER, serializeActions, Actions } from '@lazorkit/wallet';
+import { ROLE_SPENDER, serializeActions, Actions, PublicKey } from '@lazorkit/wallet';
+
+const USDC = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
 
 await addAuthority({
   role: ROLE_SPENDER,
-  policy: serializeActions([Actions.solMaxPerTx(100_000_000n)]),
+  // Up to 0.1 SOL and 5 USDC a transaction. No other token can leave the wallet.
+  policy: serializeActions([
+    Actions.solMaxPerTx(100_000_000n),
+    Actions.tokenMaxPerTx({ mint: USDC, max: 5_000_000n }),
+  ]),
 });
 ```
 
@@ -604,6 +620,79 @@ Node sign exactly as web3.js's `Keypair` does with the same seed (the package's
 tests check this byte for byte). Safari signs with a random nonce instead, so
 the same message gets a different signature each time. Each one is valid, and
 nothing in the SDK depends on the signature bytes.
+
+### What a policy bounds
+
+A session's `spendingLimits` and a delegate's `policy` name what may leave the
+wallet, and under LazorKit v2 nothing they do not name may (from the program
+release that adds errors 3037 and 3038: until then an asset they do not name
+is not bounded at all, see the end of this section):
+
+- **SOL** leaves only with a SOL limit (`solPerTxMax`, `solLifetimeCap` or
+  `solRecurring`; an `Actions.sol*` action in a policy). Without one, a
+  transaction that lowers the wallet's SOL balance is refused, rent the
+  wallet pays for a new account included (a recipient's token account, say):
+  `UnlistedSolOutflowError` (3037). The network fee is the fee payer's, not
+  the wallet's.
+- **A token** leaves only with a limit that names its mint: an entry in
+  `spendingLimits.tokens` (an `Actions.token*` action in a policy). Any other
+  mint is refused: `UnlistedTokenOutflowError` (3038). wSOL is a mint of its
+  own: the SOL limits do not cover it.
+- Limits are net over one transaction, and what comes in always passes. A
+  swap needs a limit for the mint it sells, and a SOL limit when the wallet
+  pays the rent of its output token account. A program whitelist names
+  programs, not assets.
+- The wallet's token accounts a transaction passes writable may change only
+  their balance: owner, delegate, close authority and state stay as they were
+  (`SessionTokenAuthorityChanged`, 3032).
+- A policy must fit in the transaction that registers it, beside the
+  passkey's response: at most 244 bytes of actions (and 16 actions). A SOL
+  limit takes 19 bytes (`solRecurring` 43), a token's `lifetimeCap` or
+  `perTxMax` 51 and its `recurring` 75. That is `solPerTxMax` with `perTxMax`
+  and `lifetimeCap` for 2 mints (223 bytes), or `solPerTxMax` with `perTxMax`
+  for 4 (223). The transaction holds 1232 bytes, and the passkey's
+  clientDataJSON, which the browser writes, takes up to about 300 of them.
+
+A session made with `unrestricted: true` has no policy, and none of these
+bounds: it can move anything the wallet holds until it expires.
+
+So name every mint the app's session may spend:
+
+```ts
+const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+await createSession({
+  spendingLimits: {
+    solPerTxMax: 10_000_000n, // 0.01 SOL a transaction, rent included
+    // 5 USDC a transaction, 100 USDC in all. Amounts in the mint's base units.
+    tokens: [{ mint: USDC, perTxMax: 5_000_000n, lifetimeCap: 100_000_000n }],
+  },
+});
+```
+
+Each `tokens` entry takes `mint` (a `PublicKey` or base58) and at least one of
+`lifetimeCap`, `perTxMax` and `recurring: { limit, windowSlots }`, as the SOL
+limits do. `createSession` checks the limits before anything is read or the
+passkey is asked: an entry with no limit, a mint named twice, an amount
+outside a u64, a window of 0 slots, or more than 244 bytes of actions throws.
+`addAuthority` does not check a `policy`'s size: keep it within the same 244
+bytes, or the transaction may not fit once the passkey has signed. Nothing is
+added that you did not ask for: SOL limits alone let the session spend no
+token, and token limits alone no SOL. `spendingLimitsToActions(limits)` gives
+the actions a `SpendingLimits` stands for, so
+`serializeActions(spendingLimitsToActions(limits))` is a delegate `policy`
+with the same limits.
+
+The program enforces this from the release that adds errors 3037 and 3038.
+Until that release an asset the limits do not name is not bounded at all: a
+session with token limits only can spend all the wallet's SOL, and one with
+SOL limits only any token. After it, a session or delegate made with SOL
+limits only, as every session this SDK made before `tokens`, can move no
+token: make a new one that names the mints it spends. A session key the SDK
+generates is new each time. For a `sessionKey` of your own that already has a
+session, `createSession` resolves with that session as it was made, whatever
+limits you pass: revoke it first (`revokeSession({ sessionPda })`), or
+register a new key.
 
 ## Signing messages
 

@@ -71,6 +71,12 @@ export interface SessionKeyInfo {
         readonly solLifetimeCap?: string;
         readonly solPerTxMax?: string;
         readonly solRecurring?: { readonly limit: string; readonly windowSlots: string };
+        readonly tokens?: readonly {
+            readonly mint: string;
+            readonly lifetimeCap?: string;
+            readonly perTxMax?: string;
+            readonly recurring?: { readonly limit: string; readonly windowSlots: string };
+        }[];
     };
     /**
      * `walletPda` is confirmed: the key was made for the wallet connected

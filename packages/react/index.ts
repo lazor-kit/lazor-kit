@@ -11,7 +11,7 @@ export { useWalletStore } from './react/store';
 // Type exports
 export type { WalletInfo, WalletConfig } from '././core/storage';
 export type { WalletHookInterface, ConnectHookOptions, DeferredTxPayload } from './react/useWallet';
-export type { SpendingLimits, ActionCallbacks, DisconnectOptions, RemoveAuthorityOptions, SignMessageOptions } from './core/types';
+export type { SpendingLimits, TokenSpendingLimit, ActionCallbacks, DisconnectOptions, RemoveAuthorityOptions, SignMessageOptions } from './core/types';
 // Signed messages: the challenge every signMessage signs (never the app's
 // bytes); the offline check for a message signature by a key; and the check
 // that a wallet signed one, with the key read from the chain.
@@ -122,6 +122,19 @@ export {
   MAX_DEFERRED_EXPIRY_SLOTS,
 } from './core/wallet/deferred';
 export type { DeferredFailureContext } from './core/wallet/deferred';
+// What a session or delegate key may spend: the actions a SpendingLimits
+// preset stands for, and the refusals for SOL (3037) or a token (3038) its
+// policy does not name.
+export {
+  spendingLimitsToActions,
+  UnlistedSolOutflowError,
+  UnlistedTokenOutflowError,
+  isUnlistedSolOutflowError,
+  isUnlistedTokenOutflowError,
+  UNLISTED_SOL_OUTFLOW_CODE,
+  UNLISTED_TOKEN_OUTFLOW_CODE,
+} from './core/wallet/policy';
+export type { PolicySigner } from './core/wallet/policy';
 // Which wallet is a passkey's own (the credential hash alone is public): what
 // connect asks the user when it will not adopt one on its own.
 export {
