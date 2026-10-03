@@ -425,14 +425,20 @@ not check the v1 limits below.
   be sent.
 - **Program limits.** The devnet LazorKit v2 program runs at most 16 inner
   instructions, and has 32,760 bytes of heap to run them. The heap a payload
-  needs grows with its accounts, and depends on the instruction that runs it:
-  a passkey Execute needs the most (16 inner instructions of 16 accounts each
-  are too many, and so is one of 128), an ExecuteDeferred (TX2) a little less,
-  and a session's or an Ed25519 authority's Execute much less (one of 128 runs,
-  one of 129 does not). Such a payload rejects with
-  `PayloadExceedsProgramLimitsError` before the prompt, whatever the format;
-  `heapBytes` is the heap it needs. A policy on the session or authority uses
-  more heap, which this does not count.
+  needs is a sum over its instructions and their accounts, and depends on the
+  instruction that runs it: a passkey Execute needs the most (16 inner
+  instructions of 41 accounts each run, 16 of 42 do not; one instruction may
+  name all 255 accounts), an ExecuteDeferred (TX2) a little less (16 of 42),
+  and a session's or an Ed25519 authority's Execute much less (16 of 148).
+  A signer with a policy (a session with actions, a Delegate) needs 64 bytes
+  more per action and 240 per token account of the vault: the wallet reads
+  the policy from the signer's account, once, for a request that goes out as
+  v1, and counts every account the payload writes but the vault and the fee
+  payer, since their keys do not say which are the vault's token accounts.
+  Such a payload rejects with `PayloadExceedsProgramLimitsError` before the
+  prompt, whatever the format; `heapBytes` is the heap it needs, and `policy`
+  what the signer's policy added. These are the figures of the program with
+  exact heap sizing (lazorkit-protocol#42).
 - **Limits.** Every v1 transaction carries a compute-unit limit and a
   loaded-accounts data size limit. By default they come from one simulation,
   bounded to 3 s (units × 1.2 + 5,000, at least 20,000; loaded bytes × 1.1 in
@@ -460,7 +466,7 @@ not check the v1 limits below.
 | Error | When |
 |---|---|
 | `TransactionTooLargeError` | Only for `'v1'`: the transaction is over the limit of the format it was measured in. `stage` (`'before-signing'` / `'after-signing'`), `format` (`'v1'` / `'v0'`), `transaction` (`'single'`, `'tx1'`, `'tx2'`), `bytes`, `byteLimit`, `addresses`, `addressLimit`, `instructions`, and `v1Unavailable` (the reason above) when it was measured as v0. Nothing was sent. |
-| `PayloadExceedsProgramLimitsError` | Only for `'v1'`: the payload is over the program's limits (`limit`: `'inner-instructions'` or `'heap'`; `innerInstructions`, `maxMetas`, `totalMetas`, `heapBytes`). Nothing was signed or sent. |
+| `PayloadExceedsProgramLimitsError` | Only for `'v1'`: the payload is over the program's limits (`limit`: `'inner-instructions'` or `'heap'`; `innerInstructions`, `maxMetas`, `totalMetas`, `heapBytes`, and `policy` when the signer's policy was counted). Nothing was signed or sent. |
 
 ## Session and authority keys
 

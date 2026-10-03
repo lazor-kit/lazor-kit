@@ -583,6 +583,8 @@ async function performPasskeyExecute(
             options: txOptions,
             payload: payload.instructions,
             execute: 'secp256r1',
+            // A Delegate's passkey carries a policy, which allocates beside the payload.
+            signer: { connection, account: new PublicKey(wallet!.walletDevice), walletPda },
             payer: feePayer,
             portalUrl: config.portalUrl,
             draft: (webAuthn) =>
@@ -860,7 +862,14 @@ export const signAndSendWithSessionAction = async (
         feeToken: payload.transactionOptions?.feeToken,
         extraSigners: [payload.sessionKeypair],
         ...(txOptions?.txVersion === 'v1'
-          ? { txVersion: 'v1' as const, v1: { ...limitsOf(txOptions), payload: payload.instructions } }
+          ? {
+              txVersion: 'v1' as const,
+              v1: {
+                ...limitsOf(txOptions),
+                payload: payload.instructions,
+                signer: { account: payload.sessionPda, walletPda },
+              },
+            }
           : {}),
       });
       return signature;

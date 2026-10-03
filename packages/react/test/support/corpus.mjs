@@ -170,25 +170,25 @@ export function makeCorpus({ web3, sdk, p256, programId = sdk.PROGRAM_ID_DEVNET 
       lookupTables: [],
     },
     /**
-     * One inner instruction with 128 metas (a repeated account): the deployed
-     * devnet program's heap runs out under a passkey Execute or an
-     * ExecuteDeferred; a session's Execute runs it.
+     * One inner instruction with 128 metas (a repeated account): the devnet
+     * program's heap ran out under a passkey Execute or an ExecuteDeferred
+     * before lazorkit-protocol#42; the exact sizing runs it on every path.
      */
     heap128: {
       describe: 'Noop ix with 128 metas over 4 accounts',
       instructions: () => [noopIx(metasFrom(Array.from({ length: 128 }, (_, i) => freshAccounts('heap', 4)[i % 4]), 1), 'payload/heap', 8)],
       lookupTables: [],
     },
-    /** One more meta: a session's Execute runs out of heap too. */
+    /** One more meta: a session's Execute ran out of heap too before #42. */
     heap129: {
       describe: 'Noop ix with 129 metas over 4 accounts',
       instructions: () => [noopIx(metasFrom(Array.from({ length: 129 }, (_, i) => freshAccounts('heap', 4)[i % 4]), 1), 'payload/heap', 8)],
       lookupTables: [],
     },
     /**
-     * 16 inner instructions of 16 metas: none wider than 64, yet the deployed
-     * devnet program's heap runs out under a passkey Execute or an
-     * ExecuteDeferred (the accounts-hash preimage doubles to 16,896 bytes).
+     * 16 inner instructions of 16 metas: none wider than 64, yet the devnet
+     * program's heap ran out under a passkey Execute or an ExecuteDeferred
+     * before #42 (the accounts-hash preimage doubled to 16,896 bytes).
      */
     heap16x16: {
       describe: '16 Noop ixs, each with 16 metas over 4 accounts',
@@ -196,6 +196,18 @@ export function makeCorpus({ web3, sdk, p256, programId = sdk.PROGRAM_ID_DEVNET 
         Array.from({ length: 16 }, () => noopIx(metasFrom(Array.from({ length: 16 }, (_, i) => freshAccounts('heap', 4)[i % 4]), 1), 'payload/heap', 8)),
       lookupTables: [],
     },
+    /**
+     * `k` inner instructions of `n` metas over 4 accounts (the first meta
+     * writable), 8 B of data each. On #42's exact sizing, 16 of 41 is the most
+     * a passkey Execute runs, 16 of 42 an ExecuteDeferred, 16 of 148 a
+     * session's or an Ed25519 authority's Execute without a policy.
+     */
+    heap: (k, n) => ({
+      describe: `${k} Noop ixs, each with ${n} metas over 4 accounts`,
+      instructions: () =>
+        Array.from({ length: k }, () => noopIx(metasFrom(Array.from({ length: n }, (_, i) => freshAccounts('heap', 4)[i % 4]), 1), 'payload/heap', 8)),
+      lookupTables: [],
+    }),
     /** v1 near its byte limit: 20 accounts and `dataLength` bytes of data. */
     sized: (dataLength) => ({
       describe: `transfer + Noop ix with 20 fresh accounts and ${dataLength} B data`,

@@ -35,6 +35,7 @@ import {
     PROGRAM_ID_DEVNET_V1,
     PROGRAM_ID_MAINNET,
     PROGRAM_ID_MAINNET_V1,
+    findVaultPda,
 } from '../program/utils';
 import { Logger } from '../../utils/logger';
 import { type AuthorityTurn, sendAndConfirm } from './sequence';
@@ -42,6 +43,7 @@ import {
     TX_V1_CEILING_CONFIG,
     TransactionTooLargeError,
     type LazorKitExecutePath,
+    type LazorKitPolicyHeap,
     assertTxV1LimitOptions,
     assertV1Instructions,
     checkProgramCeilings,
@@ -50,6 +52,7 @@ import {
     measureV0,
     placeholderWebAuthn,
     signTransactionV1Async,
+    signerPolicyHeap,
     type TxV1Config,
     type TxV1LimitOptions,
     type TxV1LimitsSource,
@@ -220,9 +223,9 @@ export function innerInstructionsOf(
  *   ignores them, as for a 'v0' request);
  * - `PayloadExceedsProgramLimitsError` for an inner payload the devnet v2
  *   program cannot run (more than 16 instructions, or more heap than it has,
- *   by what `execute` allocates), whether or not v1 is available. A request
- *   for another LazorKit program (mainnet, protocol v1) is not held to them:
- *   that program decides, as for a 'v0' request;
+ *   by what `execute` and the signer's `policy` allocate), whether or not v1
+ *   is available. A request for another LazorKit program (mainnet, protocol
+ *   v1) is not held to them: that program decides, as for a 'v0' request;
  * - `TransactionTooLargeError` (stage 'before-signing') for a transaction
  *   that does not fit the chosen format: v1 when the gate passes, measured
  *   with the longest WebAuthn response, so the user is never asked to approve
@@ -239,6 +242,11 @@ export function planTxV1(params: {
     inner: readonly TransactionInstruction[];
     /** The LazorKit instruction that runs `inner`, which decides what it allocates. */
     execute: LazorKitExecutePath;
+    /**
+     * What the signer's policy allocates beside `inner` (`signerPolicyForTxV1`),
+     * or nothing for a signer without one.
+     */
+    policy?: LazorKitPolicyHeap;
     /** Every transaction of the request, in send order. */
     drafts: readonly TxV1Draft[];
     options?: TxV1RequestOptions;
@@ -252,9 +260,45 @@ export function planTxV1(params: {
           }
         : {};
     assertTxV1LimitOptions(limits);
-    if (targetsDevnetV2(instructions)) checkProgramCeilings(params.inner, params.execute);
+    if (targetsDevnetV2(instructions)) checkProgramCeilings(params.inner, params.execute, params.policy);
     for (const draft of params.drafts) assertFits(decision, params.feePayer, draft, 'before-signing');
     return { decision, limits };
+}
+
+/**
+ * What a policy-bound signer (a session with actions, a Delegate) adds to the
+ * heap check of a 'v1' request (`planTxV1`'s `policy`), from its session or
+ * authority account: its actions, counted as the program counts them, and,
+ * since the keys alone do not say which accounts are the vault's token
+ * accounts, every account the payload writes but the vault and the fee payer
+ * (`signerPolicyHeap`). Undefined when the signer carries no policy.
+ *
+ * One `getAccountInfo`, made only when the request goes out as v1 (the gate
+ * passes on `instructions`). A request that goes out as v0 reads what a 'v0'
+ * one does, and its payload is held to the ceilings without the policy: no
+ * stricter than a 'v0' request, which is held to none.
+ */
+export async function signerPolicyForTxV1(params: {
+    connection: Connection;
+    paymaster: Paymaster;
+    /** The transaction the gate decides on (a draft is enough). */
+    instructions: readonly TransactionInstruction[];
+    /** The signer's session or authority account. */
+    signer: PublicKey;
+    walletPda: PublicKey;
+    feePayer: PublicKey;
+    /** The payload's inner instructions. */
+    inner: readonly TransactionInstruction[];
+}): Promise<LazorKitPolicyHeap | undefined> {
+    if (!gateTxV1({ paymaster: params.paymaster, instructions: params.instructions }).v1) return undefined;
+    const info = await params.connection.getAccountInfo(params.signer);
+    if (!info) throw new Error(`LazorKit account ${params.signer.toBase58()} does not exist`);
+    const [vault] = findVaultPda(params.walletPda, PROGRAM_ID_DEVNET);
+    return signerPolicyHeap({
+        signerAccountData: info.data,
+        innerInstructions: params.inner,
+        notTokenAccounts: [vault, params.feePayer],
+    });
 }
 
 /**

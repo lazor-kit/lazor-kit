@@ -61,6 +61,7 @@ import {
     planTxV1,
     sendPlannedTxV1,
     shortestForPrompt,
+    signerPolicyForTxV1,
 } from './txv1-send';
 
 export function randomBytes(size: number): Uint8Array {
@@ -222,23 +223,38 @@ function buildAndSendTxV1(params: Parameters<typeof buildAndSendTx>[0]): Promise
 
 /**
  * A 'v1' request that a local key signs (a session, an Ed25519 authority):
- * planned on its real instructions, which is exact, before the key signs.
- * Undefined for any other `txVersion`.
+ * planned on its real instructions, which is exact, before the key signs,
+ * with what the signer's policy allocates when it carries one (read from
+ * `signer`, its session or authority account, when the request goes out as
+ * v1). Undefined for any other `txVersion`.
  */
-function planLocallySignedTxV1(params: {
+async function planLocallySignedTxV1(params: {
+    connection: Connection;
     paymaster: Paymaster;
     feePayer: PublicKey;
+    walletPda: PublicKey;
+    signer: PublicKey;
     instructions: TransactionInstruction[];
     payload: SignAndSendTransactionPayload;
-}): TxV1Send | undefined {
+}): Promise<TxV1Send | undefined> {
     const options = params.payload.transactionOptions;
     if (options?.txVersion !== 'v1') return undefined;
+    const policy = await signerPolicyForTxV1({
+        connection: params.connection,
+        paymaster: params.paymaster,
+        instructions: params.instructions,
+        signer: params.signer,
+        walletPda: params.walletPda,
+        feePayer: params.feePayer,
+        inner: params.payload.instructions,
+    });
     const plan = planTxV1({
         paymaster: params.paymaster,
         feePayer: params.feePayer,
         inner: params.payload.instructions,
         // A session's or an Ed25519 authority's Execute.
         execute: 'ed25519',
+        policy,
         drafts: [
             {
                 transaction: 'single',
@@ -505,27 +521,36 @@ export const signAndSendTransactionAction = async (
                 instructions: payload.instructions,
             });
             // 'v1' only: whatever would refuse it refuses now, before the
-            // prompt, on a draft as large as the signed transaction can be.
-            const v1Plan =
-                payload.transactionOptions?.txVersion === 'v1'
-                    ? planTxV1({
-                          paymaster,
-                          feePayer,
-                          inner: payload.instructions,
-                          execute: 'secp256r1',
-                          drafts: [
-                              {
-                                  transaction: 'single',
-                                  instructions: client.finalizeExecute(prepared, placeholderForPrompt(config.portalUrl))
-                                      .instructions,
-                                  shortest: client.finalizeExecute(prepared, shortestForPrompt(config.portalUrl))
-                                      .instructions,
-                                  addressLookupTables: payload.transactionOptions.addressLookupTableAccounts,
-                              },
-                          ],
-                          options: payload.transactionOptions,
-                      })
-                    : undefined;
+            // prompt, on a draft as large as the signed transaction can be,
+            // with what the passkey's policy allocates if it is a Delegate's.
+            let v1Plan: TxV1Plan | undefined;
+            if (payload.transactionOptions?.txVersion === 'v1') {
+                const draft = client.finalizeExecute(prepared, placeholderForPrompt(config.portalUrl)).instructions;
+                v1Plan = planTxV1({
+                    paymaster,
+                    feePayer,
+                    inner: payload.instructions,
+                    execute: 'secp256r1',
+                    policy: await signerPolicyForTxV1({
+                        connection,
+                        paymaster,
+                        instructions: draft,
+                        signer: authorityPda,
+                        walletPda,
+                        feePayer,
+                        inner: payload.instructions,
+                    }),
+                    drafts: [
+                        {
+                            transaction: 'single',
+                            instructions: draft,
+                            shortest: client.finalizeExecute(prepared, shortestForPrompt(config.portalUrl)).instructions,
+                            addressLookupTables: payload.transactionOptions.addressLookupTableAccounts,
+                        },
+                    ],
+                    options: payload.transactionOptions,
+                });
+            }
             const encodedChallenge = toBase64Url(prepared.challenge);
 
             // A display-only v0 transaction so the portal can render the ixs,
@@ -910,7 +935,15 @@ export const signAndSendWithSessionAction = async (
             signers: [sessionKey],
             addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
             txVersion: payload.transactionOptions?.txVersion,
-            v1: planLocallySignedTxV1({ paymaster, feePayer, instructions, payload }),
+            v1: await planLocallySignedTxV1({
+                connection,
+                paymaster,
+                feePayer,
+                walletPda,
+                signer: sessionPda,
+                instructions,
+                payload,
+            }),
         });
         return txSignature;
     } catch (error) {
@@ -1423,7 +1456,15 @@ export const signAndSendWithAuthorityAction = async (
             signers: [authorityKey],
             addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
             txVersion: payload.transactionOptions?.txVersion,
-            v1: planLocallySignedTxV1({ paymaster, feePayer, instructions, payload }),
+            v1: await planLocallySignedTxV1({
+                connection,
+                paymaster,
+                feePayer,
+                walletPda,
+                signer: authorityPda,
+                instructions,
+                payload,
+            }),
         });
         return txSignature;
     } catch (error) {

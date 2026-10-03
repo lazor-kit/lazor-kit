@@ -47,7 +47,13 @@ import {
   PublicKey,
   type TransactionInstruction,
 } from '@solana/web3.js';
-import { PROGRAM_ID_DEVNET, PROGRAM_ID_DEVNET_V1, PROGRAM_ID_MAINNET, PROGRAM_ID_MAINNET_V1 } from '../../program';
+import {
+  PROGRAM_ID_DEVNET,
+  PROGRAM_ID_DEVNET_V1,
+  PROGRAM_ID_MAINNET,
+  PROGRAM_ID_MAINNET_V1,
+  findVaultPda,
+} from '../../program';
 import { logger } from '../logger';
 import { PaymasterError, signAndExecuteTransaction } from '../paymaster';
 import { type AuthorityTurn, sendAndConfirm } from './sequence';
@@ -62,8 +68,10 @@ import {
   measureV0,
   placeholderWebAuthn,
   signTransactionV1,
+  signerPolicyHeap,
   type CompiledTransactionV1,
   type LazorKitExecutePath,
+  type LazorKitPolicyHeap,
   type TxV1Config,
   type TxV1LimitOptions,
   type TxV1LimitsSource,
@@ -140,8 +148,20 @@ export interface TxV1Request extends TxV1LimitOptions {
    * ceilings (as a session's Execute runs them) when no plan was made.
    */
   readonly payload?: readonly TransactionInstruction[];
+  /** The session that signs `payload`, read for its policy when the send goes out as v1. */
+  readonly signer?: TxV1Signer;
   /** The passkey lane's floor: the simulation is read from a node at or past it. */
   readonly minContextSlot?: number;
+}
+
+/**
+ * The account that authorizes a payload, a session or an authority, and its
+ * wallet: what a policy-bound signer (a session with actions, a Delegate)
+ * allocates beside the payload is read from it (`readSignerPolicy`).
+ */
+export interface TxV1Signer {
+  readonly account: PublicKey;
+  readonly walletPda: PublicKey;
 }
 
 /** A 'v1' send, as `sendInstructionsViaPaymaster` hands it over. */
@@ -277,9 +297,10 @@ function originOf(url: string): string {
  *   (the limits are its config; v0 ignores them, as for a 'v0' request);
  * - PayloadExceedsProgramLimitsError when the payload is over the devnet v2
  *   program's ceilings (16 inner instructions, its heap, by what `execute`
- *   allocates), whether or not v1 is available. A request for another
- *   LazorKit program (mainnet, protocol v1) is not held to them: that
- *   program decides, as for a 'v0' request;
+ *   allocates, and the signer's policy when the request goes out as v1),
+ *   whether or not v1 is available. A request for another LazorKit program
+ *   (mainnet, protocol v1) is not held to them: that program decides, as for
+ *   a 'v0' request;
  * - TransactionTooLargeError (stage 'before-signing') when the transaction,
  *   or a deferred pair's TX2, cannot be sent in the format decided.
  *
@@ -301,6 +322,12 @@ export async function planTxV1BeforePrompt(params: {
   payload: readonly TransactionInstruction[];
   /** The LazorKit instruction that runs `payload`, which decides what it allocates. */
   execute: LazorKitExecutePath;
+  /**
+   * The passkey's authority, read for its policy when the request goes out as
+   * v1 (`readSignerPolicy`). None for ExecuteDeferred, which a policy-bound
+   * signer cannot reach.
+   */
+  signer?: TxV1Signer & { readonly connection: Connection };
   payer: PublicKey;
   portalUrl: string;
   draft: (webAuthn: WebAuthnPlaceholder) => readonly TransactionInstruction[];
@@ -323,7 +350,13 @@ export async function planTxV1BeforePrompt(params: {
       loadedAccountsDataSizeLimit: params.options.loadedAccountsDataSizeLimit,
     });
   }
-  if (targetsDevnetV2(draft)) checkProgramCeilings(params.payload, params.execute);
+  if (targetsDevnetV2(draft)) {
+    const policy =
+      decision.v1 && params.signer
+        ? await readSignerPolicy(params.signer.connection, params.signer, params.payload, params.payer)
+        : undefined;
+    checkProgramCeilings(params.payload, params.execute, policy);
+  }
   const measured = {
     decision,
     payer: params.payer,
@@ -348,6 +381,35 @@ export async function planTxV1BeforePrompt(params: {
     });
   }
   return decision;
+}
+
+/**
+ * What a policy-bound signer (a session with actions, a Delegate) adds to the
+ * heap check, from its session or authority account: its actions, counted as
+ * the program counts them, and, since the keys alone do not say which
+ * accounts are the vault's token accounts, every account the payload writes
+ * but the vault and the fee payer (`signerPolicyHeap`). Undefined when the
+ * signer carries no policy.
+ *
+ * One `getAccountInfo`, and only for a request that goes out as v1: one that
+ * goes out as v0 reads what a 'v0' one does, and its payload is held to the
+ * ceilings without the policy, no stricter than a 'v0' request, which is held
+ * to none.
+ */
+async function readSignerPolicy(
+  connection: Connection,
+  signer: TxV1Signer,
+  payload: readonly TransactionInstruction[],
+  feePayer: PublicKey,
+): Promise<LazorKitPolicyHeap | undefined> {
+  const info = await connection.getAccountInfo(signer.account);
+  if (!info) throw new Error(`LazorKit account ${signer.account.toBase58()} does not exist`);
+  const [vault] = findVaultPda(signer.walletPda, PROGRAM_ID_DEVNET);
+  return signerPolicyHeap({
+    signerAccountData: info.data,
+    innerInstructions: payload,
+    notTokenAccounts: [vault, feePayer],
+  });
 }
 
 function fitsV0(
@@ -434,7 +496,13 @@ export async function sendViaPaymasterTxV1(
     decision = gateTxV1({ paymaster: params.paymaster, instructions: params.instructions, feeToken: params.feeToken });
     // The limits are the v1 config's: a request that goes out as v0 ignores them, as a 'v0' request does.
     if (decision.v1) assertTxV1LimitOptions(callerLimits(request, stripComputeBudget(params.instructions)));
-    if (request.payload && targetsDevnetV2(params.instructions)) checkProgramCeilings(request.payload, 'ed25519');
+    if (request.payload && targetsDevnetV2(params.instructions)) {
+      const policy =
+        decision.v1 && request.signer
+          ? await readSignerPolicy(params.connection, request.signer, request.payload, params.feePayer)
+          : undefined;
+      checkProgramCeilings(request.payload, 'ed25519', policy);
+    }
   }
   // TX2 of a pair decided v0 before the prompt was not built then: it is left
   // to the v0 path, as a 'v0' request's TX2 is.

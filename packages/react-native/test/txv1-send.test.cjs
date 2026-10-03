@@ -271,10 +271,10 @@ test('over the program ceilings: PayloadExceedsProgramLimitsError before the por
   assert.ok(a.error instanceof M.PayloadExceedsProgramLimitsError, `${a.error?.name}: ${a.error?.message}`);
   assert.equal(a.error.limit, 'inner-instructions');
   assert.equal(a.error.innerInstructions, 17);
-  // The heap rule counts account metas, not addresses: the same 65 accounts twice.
-  const b = await execute(w, [w.noop(65, 0, 'x'), w.noop(64, 0, 'x')], { txVersion: 'v1' });
+  // The heap counts account metas, not addresses: 16 instructions of 42 metas over 4 accounts.
+  const b = await execute(w, Array.from({ length: 16 }, () => repeated(42)), { txVersion: 'v1' });
   assert.ok(b.error instanceof M.PayloadExceedsProgramLimitsError);
-  assert.deepEqual({ limit: b.error.limit, maxMetas: b.error.maxMetas, totalMetas: b.error.totalMetas }, { limit: 'heap', maxMetas: 65, totalMetas: 131 });
+  assert.deepEqual({ limit: b.error.limit, maxMetas: b.error.maxMetas, totalMetas: b.error.totalMetas }, { limit: 'heap', maxMetas: 42, totalMetas: 688 });
   // The program rejects these in any format: also when the gate sends v0.
   const c = await execute(w, many, { txVersion: 'v1' }, null);
   assert.ok(c.error instanceof M.PayloadExceedsProgramLimitsError);
@@ -619,45 +619,120 @@ const repeated = (metas) =>
     keys: Array.from({ length: metas }, (_, i) => ({ pubkey: new PublicKey(Buffer.alloc(32, 1 + (i % 4))), isSigner: false, isWritable: false })),
     data: Buffer.alloc(8, 7),
   });
-const sixteenBySixteen = () => Array.from({ length: 16 }, () => repeated(16));
+/** `k` instructions of `n` repeated metas. */
+const kByN = (k, n) => Array.from({ length: k }, () => repeated(n));
+const sessionSend = (s, instructions) =>
+  captureConsole(() =>
+    use(s, { acceptsTxV1: true }).signAndSendWithSession(
+      { sessionKeypair: s.sessionKey, sessionPda: s.sessionPda, instructions, transactionOptions: { txVersion: 'v1' } },
+      {},
+    ),
+  );
 
 test("the program's heap: what the instruction that runs the payload allocates decides, before the portal opens", async () => {
-  // A passkey Execute of 16 x 16: none wider than 64, yet out of memory on the deployed program.
+  // lazorkit-protocol#42's exact sizing, 8 bytes of data each: a passkey
+  // Execute runs 16 x 41 and not 16 x 42.
   const w = world();
-  const a = await execute(w, sixteenBySixteen(), { txVersion: 'v1' });
+  const a = await execute(w, kByN(16, 42), { txVersion: 'v1' });
   assert.ok(a.error instanceof M.PayloadExceedsProgramLimitsError, `${a.error?.name}: ${a.error?.message}`);
   assert.equal(a.error.limit, 'heap');
   assert.ok(a.error.heapBytes > 32_760, String(a.error.heapBytes));
-  // The deferred pair: TX2 (ExecuteDeferred) would run out, so TX1 is never sent.
+  // The deferred pair: TX2 (ExecuteDeferred) runs 16 x 42 and not 16 x 43, so TX1 is never sent.
   for (const flow of ['authorizeAndExecute', 'authorizeDeferred']) {
     const S = use(w, { acceptsTxV1: true });
-    const b = await captureConsole(() => S[flow]({ instructions: sixteenBySixteen(), transactionOptions: { txVersion: 'v1' } }, SIGN));
+    const b = await captureConsole(() => S[flow]({ instructions: kByN(16, 43), transactionOptions: { txVersion: 'v1' } }, SIGN));
     assert.ok(b.error instanceof M.PayloadExceedsProgramLimitsError, `${flow}: ${b.error?.name}: ${b.error?.message}`);
     assert.equal(b.error.limit, 'heap');
   }
   assertNothingSent(w);
+  for (const [flow, instructions] of [
+    ['signAndExecuteTransaction', kByN(16, 41)],
+    ['authorizeAndExecute', kByN(16, 42)],
+  ]) {
+    const ok = world();
+    const S = use(ok, { acceptsTxV1: true });
+    const r = await captureConsole(() => S[flow]({ instructions, transactionOptions: { txVersion: 'v1' } }, SIGN));
+    assert.equal(r.error, undefined, `${flow}: ${r.error?.message}`);
+    assert.ok(ok.sent().every((send) => send.version === 1), flow);
+  }
 
-  // A session's Execute allocates less (no accounts hash): it runs 16 x 16
-  // and one instruction of 128, and not one of 129.
+  // A session's Execute allocates less (no accounts hash): it runs 16 x 148
+  // and not 16 x 149; and, as every path now, what the build before #42 ran
+  // out of memory on (16 x 16, one instruction of 128 or 129).
   for (const [instructions, runs] of [
-    [sixteenBySixteen(), true],
+    [kByN(16, 16), true],
     [[repeated(128)], true],
-    [[repeated(129)], false],
+    [[repeated(129)], true],
+    [kByN(16, 148), true],
+    [kByN(16, 149), false],
   ]) {
     const s = world();
-    const S = use(s, { acceptsTxV1: true });
-    const r = await captureConsole(() =>
-      S.signAndSendWithSession({ sessionKeypair: s.sessionKey, sessionPda: s.sessionPda, instructions, transactionOptions: { txVersion: 'v1' } }, {}),
-    );
+    const r = await sessionSend(s, instructions);
     if (runs) {
       assert.equal(r.error, undefined, r.error?.message);
       assert.equal(s.sent()[0].version, 1);
     } else {
       assert.ok(r.error instanceof M.PayloadExceedsProgramLimitsError, `${r.error?.name}: ${r.error?.message}`);
       assert.equal(r.error.limit, 'heap');
+      assert.equal(r.error.policy, undefined);
       assert.equal(sends(s).length, 0);
     }
   }
+});
+
+/** Give `account` `actions` SolLimit actions: a session's, or an authority made a Delegate. */
+function withPolicy(w, account, actions) {
+  const entry = w.ledger.accounts.get(account.toBase58());
+  const policy = Buffer.concat(
+    Array.from({ length: actions }, () => Buffer.concat([Buffer.from([1, 8, 0]), Buffer.alloc(8), Buffer.alloc(8, 1)])),
+  );
+  const data = Buffer.concat([entry.data, policy]);
+  if (data[0] === sdk.ACCOUNT_DISCRIMINATOR.AUTHORITY) {
+    data[2] = 2; // Delegate: the only rank that carries a policy
+    data.writeUInt16LE(policy.length, 12);
+  }
+  entry.data = data;
+}
+
+test("a policy-bound signer's policy is counted: what runs without one is refused before the signature or the portal", async () => {
+  // A session with two actions: 16 x 148 (32,668 bytes) no longer fits beside
+  // them (32,800; the payload writes no account, so no token account is counted).
+  const s = world();
+  withPolicy(s, s.sessionPda, 2);
+  const r = await sessionSend(s, kByN(16, 148));
+  assert.ok(r.error instanceof M.PayloadExceedsProgramLimitsError, `${r.error?.name}: ${r.error?.message}`);
+  assert.deepEqual({ heapBytes: r.error.heapBytes, policy: r.error.policy }, { heapBytes: 32_800, policy: { actions: 2, vaultTokenAccounts: 0 } });
+  assert.equal(sends(s).length, 0);
+  // 16 x 146 does, after one read of the session for its policy.
+  const t = world();
+  withPolicy(t, t.sessionPda, 2);
+  const ok = await sessionSend(t, kByN(16, 146));
+  assert.equal(ok.error, undefined, ok.error?.message);
+  assert.equal(t.sent()[0].version, 1);
+  const reads = t.rec.rpc.filter((q) => q.method === 'getAccountInfo' && q.params[0] === t.sessionPda.toBase58());
+  assert.equal(reads.length, 2, "the flow's own read, and the policy's");
+
+  // A passkey Delegate: 16 x 41 runs on an Owner's passkey Execute, not beside a policy.
+  const d = world();
+  withPolicy(d, d.authorityPda, 1);
+  const p = await execute(d, kByN(16, 41), { txVersion: 'v1' });
+  assert.ok(p.error instanceof M.PayloadExceedsProgramLimitsError, `${p.error?.name}: ${p.error?.message}`);
+  assert.deepEqual(p.error.policy, { actions: 1, vaultTokenAccounts: 0 });
+  assertNothingSent(d);
+
+  // A request that goes out as v0 reads what a 'v0' one does: no read for the policy.
+  const v = world();
+  withPolicy(v, v.sessionPda, 2);
+  const v0 = await captureConsole(() =>
+    use(v, { acceptsTxV1: false }).signAndSendWithSession(
+      { sessionKeypair: v.sessionKey, sessionPda: v.sessionPda, instructions: [v.transfer()], transactionOptions: { txVersion: 'v1' } },
+      {},
+    ),
+  );
+  assert.equal(v0.error, undefined, v0.error?.message);
+  assert.equal(v.sent()[0].version, 0);
+  const v0Reads = v.rec.rpc.filter((q) => q.method === 'getAccountInfo' && q.params[0] === v.sessionPda.toBase58());
+  assert.equal(v0Reads.length, 1, "the flow's own read only");
 });
 
 test("a 'v1' request that goes out as v0 does not check the v1 limits, nor the devnet program's ceilings off devnet", async () => {
@@ -674,7 +749,7 @@ test("a 'v1' request that goes out as v0 does not check the v1 limits, nor the d
   }
   // Another LazorKit program decides what it can run, as for a 'v0' request.
   const m = world({ cluster: 'mainnet' });
-  const r = await execute(m, [repeated(128)], { txVersion: 'v1' });
+  const r = await execute(m, Array.from({ length: 17 }, (_, i) => m.transfer(1000 + i)), { txVersion: 'v1' });
   assert.equal(r.error, undefined, `${r.error?.name}: ${r.error?.message}`);
   assert.equal(m.sent()[0].version, 0);
 });

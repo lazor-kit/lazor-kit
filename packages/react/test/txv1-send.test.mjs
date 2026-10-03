@@ -390,46 +390,123 @@ test("U5: a 'v1' request that goes out as v0 does not check the v1 limits: they 
 
 test("U5: the program ceilings are the devnet v2 program's: a 'v1' request for another LazorKit program is sent as a 'v0' one would be", async () => {
   await withCase({ programId: sdk.PROGRAM_ID_MAINNET, cluster: 'mainnet', paymasterConfig: ACCEPTS }, async (c) => {
-    await c.S().signAndSendTransaction(request(c, 'heap128', V1));
+    await c.S().signAndSendTransaction(request(c, 'inner17', V1));
     assert.equal(landed(c)[0].version, 0);
   });
   // On devnet v2 they hold whether or not v1 is available: that program cannot run it in any format.
-  await withCase({}, async (c) => {
-    const error = await rejects(c.S().signAndSendTransaction(request(c, 'heap128', V1)));
-    assert.ok(error instanceof W.PayloadExceedsProgramLimitsError, `${error.name}: ${error.message}`);
-    assertRefusedBeforeAnything(c, error);
-  });
-});
-
-test('U5: payloads over the program ceilings (17 instructions; its heap) are refused before the prompt or the local signature', async () => {
-  for (const [flow, name, limit] of [
-    ['signAndSendTransaction', 'inner17', 'inner-instructions'],
-    ['signAndSendTransaction', 'heap128', 'heap'],
-    // No instruction wider than 64 accounts: the rule before passed it.
-    ['signAndSendTransaction', 'heap16x16', 'heap'],
-    ['signAndSendWithSession', 'inner17', 'inner-instructions'],
-    ['signAndSendWithSession', 'heap129', 'heap'],
-    // TX2 (ExecuteDeferred) would run out: the pair is refused, TX1 never sent.
-    ['authorizeAndExecute', 'heap16x16', 'heap'],
-    ['authorizeDeferred', 'heap128', 'heap'],
-  ]) {
-    await withCase({ paymasterConfig: ACCEPTS }, async (c) => {
-      const error = await rejects(c.S()[flow](request(c, name, V1)));
-      assert.ok(error instanceof W.PayloadExceedsProgramLimitsError, `${name} ${flow}: ${error.name}: ${error.message}`);
-      assert.equal(error.limit, limit);
-      if (name === 'inner17') assert.equal(error.innerInstructions, 17);
-      else assert.ok(error.heapBytes > 32_760, `${name} ${flow}: ${error.heapBytes}`);
-      if (name === 'heap128') assert.deepEqual([error.maxMetas, error.totalMetas], [128, 129]);
+  for (const heap of [null, [16, 42]]) {
+    await withCase({}, async (c) => {
+      const payload = heap ? c.corpus.payloads.heap(...heap) : 'inner17';
+      const error = await rejects(c.S().signAndSendTransaction(request(c, payload, V1)));
+      assert.ok(error instanceof W.PayloadExceedsProgramLimitsError, `${error.name}: ${error.message}`);
       assertRefusedBeforeAnything(c, error);
     });
   }
-  // A session's Execute allocates less (no accounts hash): it runs these.
-  for (const name of ['heap128', 'heap16x16']) {
+});
+
+test('U5: payloads over the program ceilings (17 instructions; its heap) are refused before the prompt or the local signature', async () => {
+  // The most each instruction runs on #42's exact sizing, plus one meta: 16 × 41 on a
+  // passkey Execute, 16 × 42 on ExecuteDeferred, 16 × 148 on a session's Execute.
+  for (const [flow, name, limit] of [
+    ['signAndSendTransaction', 'inner17', 'inner-instructions'],
+    ['signAndSendTransaction', [16, 42], 'heap'],
+    ['signAndSendWithSession', 'inner17', 'inner-instructions'],
+    ['signAndSendWithSession', [16, 149], 'heap'],
+    ['signAndSendWithAuthority', [16, 149], 'heap'],
+    // TX2 (ExecuteDeferred) would run out: the pair is refused, TX1 never sent.
+    ['authorizeAndExecute', [16, 43], 'heap'],
+    ['authorizeDeferred', [16, 43], 'heap'],
+  ]) {
     await withCase({ paymasterConfig: ACCEPTS }, async (c) => {
-      await c.S().signAndSendWithSession(request(c, name, V1));
-      assertV1(landed(c)[0], [LAZORKIT]);
+      const payload = typeof name === 'string' ? name : c.corpus.payloads.heap(...name);
+      const error = await rejects(c.S()[flow](request(c, payload, V1)));
+      assert.ok(error instanceof W.PayloadExceedsProgramLimitsError, `${name} ${flow}: ${error.name}: ${error.message}`);
+      assert.equal(error.limit, limit);
+      if (name === 'inner17') assert.equal(error.innerInstructions, 17);
+      else {
+        assert.ok(error.heapBytes > 32_760, `${name} ${flow}: ${error.heapBytes}`);
+        assert.deepEqual([error.maxMetas, error.totalMetas], [name[1], name[0] * (name[1] + 1)]);
+        assert.equal(error.policy, undefined, 'none of these signers carries a policy');
+      }
+      assertRefusedBeforeAnything(c, error);
     });
   }
+  // One meta fewer runs, as v1.
+  for (const [flow, [k, n], programs] of [
+    ['signAndSendTransaction', [16, 41], [SECP256R1, LAZORKIT]],
+    ['signAndSendWithSession', [16, 148], [LAZORKIT]],
+    ['signAndSendWithAuthority', [16, 148], [LAZORKIT]],
+    ['authorizeAndExecute', [16, 42], [LAZORKIT]],
+  ]) {
+    await withCase({ paymasterConfig: ACCEPTS }, async (c) => {
+      await c.S()[flow](request(c, c.corpus.payloads.heap(k, n), V1));
+      assertV1(landed(c).at(-1), programs);
+    });
+  }
+});
+
+test('U5: what the check refused for the program before its exact sizing (#42) now goes out as v1 on every path', async () => {
+  for (const flow of ['signAndSendTransaction', 'signAndSendWithSession', 'authorizeAndExecute']) {
+    for (const name of ['heap128', 'heap129', 'heap16x16']) {
+      await withCase({ paymasterConfig: ACCEPTS }, async (c) => {
+        await c.S()[flow](request(c, name, V1));
+        assert.ok(landed(c).length > 0 && landed(c).every((tx) => tx.version === 1), `${flow} ${name}`);
+      });
+    }
+  }
+});
+
+/** A v2 session's or authority's policy: `actions` SolLimit actions (11-byte header, 8 bytes of data). */
+const solLimits = (actions) =>
+  Buffer.concat(Array.from({ length: actions }, () => Buffer.concat([Buffer.from([1, 8, 0]), Buffer.alloc(8), Buffer.alloc(8, 1)])));
+/** Give the ledger's session `actions`, or make an authority a Delegate carrying them. */
+function withPolicy(c, account, actions) {
+  const entry = c.chain.ledger.accounts.get(account.toBase58());
+  const data = Buffer.concat([entry.data, solLimits(actions)]);
+  if (data[0] === sdk.ACCOUNT_DISCRIMINATOR.AUTHORITY) {
+    data[2] = 2; // Delegate: the only rank that carries a policy
+    data.writeUInt16LE(data.length - entry.data.length, 12);
+  }
+  entry.data = data;
+}
+const accountReads = (c, account) =>
+  c.chain.rec.rpc.filter((r) => r.method === 'getAccountInfo' && r.params[0] === account.toBase58()).length;
+
+test("U5: a policy-bound signer's policy is counted: what its payload runs without one is refused before the signature", async () => {
+  // 16 × 148 runs on a session's or an Ed25519 authority's Execute without a
+  // policy (32,668 bytes); two actions and the one account the payload writes
+  // add 64 × 2 + 240, and the last flags' alignment 4: 33,040.
+  for (const [flow, account] of [
+    ['signAndSendWithSession', (c) => c.corpus.sessionPda],
+    ['signAndSendWithAuthority', (c) => c.corpus.edAuthorityPda],
+  ]) {
+    await withCase({ paymasterConfig: ACCEPTS }, async (c) => {
+      withPolicy(c, account(c), 2);
+      const error = await rejects(c.S()[flow](request(c, c.corpus.payloads.heap(16, 148), V1)));
+      assert.ok(error instanceof W.PayloadExceedsProgramLimitsError, `${flow}: ${error.name}: ${error.message}`);
+      assert.equal(error.limit, 'heap');
+      assert.deepEqual(error.policy, { actions: 2, vaultTokenAccounts: 1 });
+      assert.equal(error.heapBytes, 33_040);
+      assert.match(error.message, /beside a policy of 2 actions and 1 vault token accounts needs 33040 bytes/);
+      assertRefusedBeforeAnything(c, error);
+    });
+    // A payload the policy leaves room for goes out, after one read of the signer's account.
+    await withCase({ paymasterConfig: ACCEPTS }, async (c) => {
+      withPolicy(c, account(c), 2);
+      const before = accountReads(c, account(c));
+      await c.S()[flow](request(c, c.corpus.payloads.heap(16, 146), V1));
+      assertV1(landed(c)[0], [LAZORKIT]);
+      assert.equal(accountReads(c, account(c)) - before, 2, 'the flow\'s own read, and the policy\'s');
+    });
+  }
+  // A passkey Delegate: 16 × 41 runs on an Owner's passkey Execute, not beside a policy.
+  await withCase({ paymasterConfig: ACCEPTS }, async (c) => {
+    withPolicy(c, c.corpus.authorityPda, 1);
+    const error = await rejects(c.S().signAndSendTransaction(request(c, c.corpus.payloads.heap(16, 41), V1)));
+    assert.ok(error instanceof W.PayloadExceedsProgramLimitsError, `${error.name}: ${error.message}`);
+    assert.deepEqual(error.policy, { actions: 1, vaultTokenAccounts: 1 });
+    assertRefusedBeforeAnything(c, error);
+  });
 });
 
 test('U5: authorizeAndExecute: TX1 and TX2 both go out as v1; TX2 runs the authorization and closes it', async () => {
