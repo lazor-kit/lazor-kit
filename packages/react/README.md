@@ -426,10 +426,11 @@ not check the v1 limits below.
 - **Program limits.** The devnet LazorKit v2 program runs at most 16 inner
   instructions, and has 32,760 bytes of heap to run them. The heap a payload
   needs is a sum over its instructions and their accounts, and depends on the
-  instruction that runs it: a passkey Execute needs the most (16 inner
-  instructions of 41 accounts each run, 16 of 42 do not; one instruction may
-  name all 255 accounts), an ExecuteDeferred (TX2) a little less (16 of 42),
-  and a session's or an Ed25519 authority's Execute much less (16 of 148).
+  instruction that runs it. With 16 inner instructions of a System transfer's
+  12 bytes of data each, the most accounts each may name is 40 on a passkey
+  Execute, which needs the most (41 with 8 bytes of data each; one
+  instruction alone may name all 255), 42 on an ExecuteDeferred (TX2), and
+  148 on a session's or an Ed25519 authority's Execute.
   A signer with a policy (a session with actions, a Delegate) needs 64 bytes
   more per action and 240 per token account of the vault: the wallet reads
   the policy from the signer's account, once, for a request that goes out as
