@@ -95,6 +95,9 @@ export const LAZORKIT_HEAP_USABLE_BYTES = LAZORKIT_HEAP_BYTES - 8;
  * against the allocator's cursor on 112 payloads, and every payload it put
  * over 32,760 ran out of memory), so a margin would only refuse payloads that
  * run. Raise it here, and only here, if the program and the sum ever part.
+ * Not counted: a FeeRecord the fee path creates inline, before Execute's own
+ * buffers (60 bytes, 64 aligned). The wallet's SDK prepends RegisterPayer
+ * when the fee payer has no FeeRecord, so its Executes do not take that path.
  */
 export const LAZORKIT_HEAP_MARGIN_BYTES = 0;
 /** The most heap a payload may need to pass `checkProgramCeilings`. */
@@ -627,10 +630,11 @@ export function checkProgramCeilings(
  * nothing. ExecuteDeferred has no policy terms: a policy-bound signer cannot
  * reach it, and a policy with `deferred` throws a TypeError.
  *
- * Builds before #42 (devnet's 57bTNW… ran efea949f… on 2026-10-04) grew the
- * preimage and the reused buffers by doubling and allocate more than this for
- * many payloads (one inner instruction of 128 accounts, 70 + 70, 16 × 16):
- * the check is exact for a cluster that runs #42, not for one that does not.
+ * Builds before #42 (devnet's 57bTNW… ran them until slot 507,081,509, when
+ * it was upgraded to d95e5c2b…) grew the preimage and the reused buffers by
+ * doubling and allocate more than this for many payloads (one inner
+ * instruction of 128 accounts, 70 + 70, 16 × 16): the check is exact for a
+ * cluster that runs #42, not for one that does not.
  */
 export function lazorkitHeapBytes(
   innerInstructions: readonly TransactionInstruction[],
