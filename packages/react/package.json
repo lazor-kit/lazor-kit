@@ -47,7 +47,7 @@
     "dev": "rollup -c -w",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/deferred.test.mjs test/errors.test.mjs test/callbacks.test.mjs test/landed-key.test.mjs test/keys.test.mjs test/keys-e2e.test.mjs test/portal.test.mjs test/types.test.mjs test/sign-message.test.mjs test/challenge-domains.test.mjs",
+    "test": "node --test test/deferred.test.mjs test/errors.test.mjs test/callbacks.test.mjs test/landed-key.test.mjs test/keys.test.mjs test/keys-e2e.test.mjs test/portal.test.mjs test/types.test.mjs test/sign-message.test.mjs test/challenge-domains.test.mjs test/txv1.test.mjs",
     "prepublishOnly": "npm run clean && npm run build"
   },
   "publishConfig": {
