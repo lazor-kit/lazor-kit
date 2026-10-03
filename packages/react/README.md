@@ -246,7 +246,11 @@ LazorkitWalletAdapter({ onConfirmWallet, trustedAuthorities, watchMints, ...
 while one is running waits for it rather than opening another portal.
 `adapter.disconnect()` deletes the session key the SDK keeps, as the store's
 `disconnect()` does; `adapter.disconnect({ keepSessionKeys: true })` keeps it
-(see [Session and authority keys](#session-and-authority-keys)).
+(see [Session and authority keys](#session-and-authority-keys)). It
+disconnects the store too, since both connect the same stored wallet:
+`useWallet()` shows no wallet, a `connect` the store is running is abandoned,
+and a kept key signs only once its wallet is connected again. So does the
+Wallet Standard `standard:disconnect`.
 
 `registerLazorkitWallet({ ... })` (the Wallet Standard wallet) takes the same
 options except `onConfirmWallet: 'throw'`, which it rejects: `standard:connect`
@@ -366,7 +370,8 @@ whose it is: a 3006 with no logs counts as LazorKit's, a 3014 with no logs
 does not, and a 4018 counts when the logs name the v1 program or `version` is
 1. `isKeyWalletMismatchError` is true for a `KeyWalletMismatchError` (a
 kept session or authority key that was not used because its wallet is not the
-connected one, see [Session and authority keys](#session-and-authority-keys)),
+connected one, or was disconnected during the send, see
+[Session and authority keys](#session-and-authority-keys)),
 from either copy and wrapped the same way. The other error classes have no
 predicate: compare `error.name` (`'TransactionFailedError'`,
 `'PaymasterError'`, `'V1WalletMigratedError'`,
@@ -428,9 +433,22 @@ wallet is connected. With no wallet connected, or another one, they reject
 with `KeyWalletMismatchError` before anything is signed or sent: `reason` is
 `'no-wallet'` or `'other-wallet'`, `keyWallet` the wallet PDA the key signs
 for, `connectedWallet` the connected one. The key itself checks again when it
-signs, so a wallet that disconnects or switches while a send is being built
-stops it too. Connect `keyWallet` again and the key signs, or create a session
-(add an authority) for the connected wallet, which replaces it.
+signs, and again right before each attempt to send what it signed, so a
+wallet that disconnects or switches while a send is being built stops it too.
+Connect `keyWallet` again and the key signs, or create a session (add an
+authority) for the connected wallet, which replaces it.
+
+A send that loaded its key before a disconnect neither signs nor sends after
+it, whichever way the wallet was disconnected: `disconnect()`,
+`LazorkitWalletAdapter.disconnect()` or the Wallet Standard
+`standard:disconnect`. It rejects with `KeyWalletMismatchError`, `reason`
+`'no-wallet'`, or `'disconnected'` when the same wallet is connected again by
+then (with `keepSessionKeys` the key is kept, but a send started before the
+sign-out is not finished after it): send again. A refusal after the key
+signed says the transaction it signed was not sent. If an earlier attempt to
+send it got no answer, it may still land: the send rejects with
+`TransactionOutcomeUnknownError` instead, and the transaction is not sent
+again.
 
 The stored wallet is checked on every use, not taken on trust: the session
 or authority PDA in the record must derive from that wallet and the key (no
@@ -545,8 +563,11 @@ function SignOutButton() {
   the same way: from IndexedDB, this page's memory and any plaintext, whatever
   `keyStorage` the provider uses. `adapter.disconnect({ keepSessionKeys: true
   })` keeps it; `standard:disconnect` takes no options, so it always deletes
-  it. They keep the authority key, as `disconnect()` does. (Earlier releases
-  left the session key in place on these two paths.)
+  it. They keep the authority key, as `disconnect()` does, and disconnect the
+  store too, so it signs only once its wallet is connected again. (Earlier
+  releases left the session key in place on these two paths, and up to 3.3.1
+  left the store connected, where the authority key, and a session key kept
+  with `keepSessionKeys`, went on signing.)
 - `disconnect` keeps the authority key. Like a kept session key, it signs only
   once the wallet it was registered for is connected again (see above). On a
   shared computer, call `forgetStoredKeys()` at sign-out.
@@ -790,8 +811,11 @@ Connects the stored wallet, or finds the passkey's own (see
 
 Disconnects the wallet. `options.onSuccess` / `options.onFail` run once it is
 over, as every action's do. An action still running is not abandoned: it keeps
-`isSigning` until it ends, but a session or authority send among them no
-longer signs. The session key the SDK keeps is deleted, unless
+`isSigning` until it ends, but a session or authority send among them neither
+signs nor sends after the disconnect, even if its wallet is connected again by
+then. `LazorkitWalletAdapter.disconnect()` and the Wallet Standard
+`standard:disconnect` disconnect the store the same way. The session key the
+SDK keeps is deleted, unless
 `options.keepSessionKeys` is `true`, and so is the key of a `createSession`
 that lands after the disconnect; the authority key is kept. A kept key signs
 only once its wallet is connected again. This tab only: another tab of the

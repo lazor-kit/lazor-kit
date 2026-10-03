@@ -14,7 +14,10 @@
 // back once deleted, a stored record that names another wallet is not
 // trusted, and addAuthority's role is checked before anything is read. The
 // wallet-adapter's and the Wallet Standard's disconnect delete the session key
-// as the store's does. Run with `pnpm test`.
+// as the store's does, and disconnect the store. A disconnect, whichever way
+// it came, while a kept-key send is in flight stops that send before its key
+// signs, before what it signed is sent, and before a retry. Run with
+// `pnpm test`.
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import { test, beforeEach, after } from 'node:test';
@@ -104,14 +107,21 @@ const account = ({ owner, data = Buffer.alloc(0) }) => ({
 
 /** RPC and paymaster requests made, of any kind. */
 let requests = 0;
+/** Runs inside the next `getLatestBlockhash`, before it is answered; then cleared. */
+let onBlockhash = null;
 
 async function rpc(init) {
     requests++;
     const { id, method, params } = JSON.parse(init.body);
     const reply = (result) => new Response(JSON.stringify({ jsonrpc: '2.0', id, result }), { status: 200 });
     switch (method) {
-        case 'getLatestBlockhash':
+        case 'getLatestBlockhash': {
+            // Once: a send that loaded its kept key builds its transaction now.
+            const run = onBlockhash;
+            onBlockhash = null;
+            await run?.();
             return reply({ context: { slot: 5000 }, value: { blockhash: Keypair.generate().publicKey.toBase58(), lastValidBlockHeight: 1e9 } });
+        }
         case 'getSlot':
             return reply(1000);
         case 'getAccountInfo': {
@@ -262,6 +272,7 @@ beforeEach(async () => {
     approvals.length = 0;
     clientDataBytes = undefined;
     warnings.length = 0;
+    onBlockhash = null;
 });
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -910,6 +921,263 @@ test('the Wallet Standard standard:disconnect deletes the session key', async ()
     assert.equal(await storedRecord('session'), undefined, 'deleted from IndexedDB');
     await assert.rejects(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /No session key found/);
     assertNoPlaintext();
+});
+
+// ─── A disconnect while a kept-key send is in flight ────────────────────────
+
+/** A kept key of `kind` (`'session'` or `'authority'`) for WALLET, the store connected to WALLET; its public key. */
+async function keptKey(W, kind) {
+    if (kind === 'session') return (await keptSession(W)).sessionPublicKey;
+    connect(W);
+    const { authorityPda, authorityPublicKey } = await W.useWalletStore.getState().addAuthority({ role: W.ROLE_ADMIN });
+    landed(authorityPda);
+    return authorityPublicKey;
+}
+
+const article = (word) => (/^[aeiou]/.test(word) ? 'an' : 'a');
+
+const sendWithKept = (W, kind, callbacks = {}) =>
+    W.useWalletStore.getState()[kind === 'session' ? 'signAndSendWithSession' : 'signAndSendWithAuthority']({ instructions: transfer(), ...callbacks });
+
+/**
+ * Counts the transactions a kept (WebCrypto Ed25519) key signs, until
+ * `restore()`; a key's 32-byte probe is not one. `whileSigning` runs inside
+ * the first one, before its signature is returned.
+ */
+function spyKeySignatures(whileSigning) {
+    const subtle = crypto.subtle;
+    const original = subtle.sign;
+    const spy = { count: 0, restore: () => delete subtle.sign };
+    subtle.sign = async function (algorithm, key, data) {
+        const signature = await original.call(this, algorithm, key, data);
+        if ((algorithm?.name ?? algorithm) === 'Ed25519' && data.byteLength > 32) {
+            spy.count++;
+            if (spy.count === 1) await whileSigning?.();
+        }
+        return signature;
+    };
+    return spy;
+}
+
+/** Each way to disconnect: the store's, the wallet-adapter's, the Wallet Standard's. Set up before the send. */
+async function disconnectPath(W, path) {
+    if (path === 'store') return (options) => W.useWalletStore.getState().disconnect(options);
+    if (path === 'adapter') {
+        const adapter = await connectedAdapter(W);
+        return (options) => adapter.disconnect(options);
+    }
+    await W.StorageManager.saveWallet(walletRecord(W, WALLET));
+    const wallet = registeredStandardWallet(W);
+    await wallet.features['standard:connect'].connect();
+    return () => wallet.features['standard:disconnect'].disconnect();
+}
+
+for (const kind of ['session', 'authority']) {
+    for (const path of ['adapter', 'standard', 'store']) {
+        test(`${kind}: ${article(path)} ${path} disconnect while ${article(kind)} ${kind} send is being built: the key signs nothing, nothing is sent, and the send rejects`, async () => {
+            const W = await load();
+            const publicKey = await keptKey(W, kind);
+            const disconnect = await disconnectPath(W, path);
+            const sends = sent.length;
+            const prompts = approvals.length;
+            const spy = spyKeySignatures();
+            const calls = [];
+            let error;
+            try {
+                // The send has loaded its key: the disconnect runs to its end before the key signs.
+                onBlockhash = () => disconnect();
+                error = await rejection(sendWithKept(W, kind, { onSuccess: () => calls.push('onSuccess'), onFail: (e) => calls.push(e) }));
+            } finally {
+                spy.restore();
+            }
+            assert.equal(onBlockhash, null, 'the disconnect ran during the send');
+            assert.ok(W.isKeyWalletMismatchError(error), String(error));
+            assert.equal(error.reason, 'no-wallet');
+            assert.equal(error.slot, kind);
+            assert.equal(error.keyWallet, WALLET.toBase58());
+            assert.match(error.message, /Nothing was signed or sent\.$/);
+            assert.deepEqual(calls, [error]);
+            assert.equal(spy.count, 0, 'the key signed nothing');
+            assert.equal(sent.length, sends, 'nothing sent');
+            assert.equal(approvals.length, prompts, 'no passkey prompt');
+            assert.equal(W.useWalletStore.getState().wallet, null, 'the store is disconnected');
+            assert.equal(W.useWalletStore.getState().isSigning, false);
+            if (kind === 'session') assert.equal(await storedRecord('session'), undefined, 'the session key is deleted');
+            else assert.equal((await storedRecord('authority')).publicKey, publicKey, 'the authority key is kept');
+            assertNoPlaintext();
+        });
+    }
+}
+
+test('adapter.disconnect({ keepSessionKeys: true }) while a session send is being built: the send is refused, the key is kept, and signs once its wallet is connected again', async () => {
+    const W = await load();
+    const sessionPublicKey = await keptKey(W, 'session');
+    const adapter = await connectedAdapter(W);
+    const sends = sent.length;
+    onBlockhash = () => adapter.disconnect({ keepSessionKeys: true });
+    const error = await rejection(sendWithKept(W, 'session'));
+    assert.ok(W.isKeyWalletMismatchError(error), String(error));
+    assert.equal(error.reason, 'no-wallet');
+    assert.equal(sent.length, sends, 'nothing sent');
+    assert.equal((await storedRecord('session')).publicKey, sessionPublicKey, 'kept');
+
+    await reconnect(W, WALLET);
+    await sendWithKept(W, 'session');
+    assertSignedBy(sent.at(-1), new PublicKey(sessionPublicKey));
+});
+
+for (const kind of ['session', 'authority']) {
+    for (const path of ['store', 'adapter']) {
+        test(`${kind}: ${article(path)} ${path} disconnect and a connect of the same wallet again while ${article(kind)} ${kind} send is being built: the send is refused ('disconnected'), and the next one signs`, async () => {
+            const W = await load();
+            const publicKey = await keptKey(W, kind);
+            const disconnect = await disconnectPath(W, path);
+            const sends = sent.length;
+            const spy = spyKeySignatures();
+            let error;
+            try {
+                onBlockhash = async () => {
+                    await disconnect({ keepSessionKeys: true });
+                    await reconnect(W, WALLET);
+                };
+                error = await rejection(sendWithKept(W, kind));
+            } finally {
+                spy.restore();
+            }
+            assert.ok(W.isKeyWalletMismatchError(error), String(error));
+            assert.equal(error.reason, 'disconnected');
+            assert.equal(error.keyWallet, WALLET.toBase58());
+            assert.equal(error.connectedWallet, WALLET.toBase58());
+            assert.match(error.message, /^The wallet was disconnected while this send was in progress, .* Send it again\. Nothing was signed or sent\.$/);
+            assert.equal(spy.count, 0, 'the key signed nothing');
+            assert.equal(sent.length, sends, 'nothing sent');
+
+            // A send started after the reconnect signs.
+            await sendWithKept(W, kind);
+            assertSignedBy(sent.at(-1), new PublicKey(publicKey));
+        });
+    }
+}
+
+for (const kind of ['session', 'authority']) {
+    test(`${kind}: an adapter disconnect while the key is signing: what it signed is not sent`, async () => {
+        const W = await load();
+        await keptKey(W, kind);
+        const adapter = await connectedAdapter(W);
+        const sends = sent.length;
+        const spy = spyKeySignatures(() => adapter.disconnect());
+        let error;
+        try {
+            error = await rejection(sendWithKept(W, kind));
+        } finally {
+            spy.restore();
+        }
+        assert.equal(spy.count, 1, 'the key signed, and the disconnect ran while it did');
+        assert.ok(W.isKeyWalletMismatchError(error), String(error));
+        assert.equal(error.reason, 'no-wallet');
+        assert.match(error.message, /The transaction it had signed was not sent\.$/);
+        assert.equal(sent.length, sends, 'nothing sent');
+    });
+}
+
+/**
+ * The paymaster answers the next `signAndSendTransaction` with `status` (and
+ * nothing sent), then `whileRetrying` runs, during the wait before the retry.
+ * Counts the attempts.
+ */
+function failFirstSend(status, whileRetrying) {
+    const realFetch = globalThis.fetch;
+    const hook = { attempts: 0, restore: () => (globalThis.fetch = realFetch) };
+    globalThis.fetch = async (url, init) => {
+        if (String(url) === PAYMASTER && JSON.parse(init.body).method === 'signAndSendTransaction') {
+            if (++hook.attempts === 1) {
+                setTimeout(() => void whileRetrying(), 0);
+                return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: `refused (${status})` } }), { status });
+            }
+        }
+        return realFetch(url, init);
+    };
+    return hook;
+}
+
+test('an adapter disconnect while the paymaster send waits to be retried: it is not sent again, and the send rejects', async () => {
+    const W = await load();
+    await keptKey(W, 'session');
+    const adapter = await connectedAdapter(W);
+    const sends = sent.length;
+    // A 429 is a refusal: nothing was sent.
+    let disconnected;
+    const hook = failFirstSend(429, () => (disconnected = adapter.disconnect()));
+    let error;
+    try {
+        error = await rejection(sendWithKept(W, 'session'));
+        await disconnected;
+    } finally {
+        hook.restore();
+    }
+    assert.equal(hook.attempts, 1, 'not sent again');
+    assert.ok(W.isKeyWalletMismatchError(error), String(error));
+    assert.equal(error.reason, 'no-wallet');
+    assert.match(error.message, /The transaction it had signed was not sent\.$/);
+    assert.equal(sent.length, sends);
+});
+
+test('an adapter disconnect while the paymaster send waits to be retried, after an attempt whose answer was lost: not sent again, and its outcome is unknown', async () => {
+    const W = await load();
+    await keptKey(W, 'authority');
+    const adapter = await connectedAdapter(W);
+    // A 503 may come after the paymaster sent it.
+    let disconnected;
+    const hook = failFirstSend(503, () => (disconnected = adapter.disconnect()));
+    let error;
+    try {
+        error = await rejection(sendWithKept(W, 'authority'));
+        await disconnected;
+    } finally {
+        hook.restore();
+    }
+    assert.equal(hook.attempts, 1, 'not sent again');
+    assert.equal(error.name, 'TransactionOutcomeUnknownError', String(error));
+    assert.match(error.message, /may have sent this transaction/);
+    assert.match(error.message, /not sent again: The stored authority key signs only for wallet/);
+    assert.equal(W.isKeyWalletMismatchError(error), false, 'it may have been sent: not a refusal');
+});
+
+// ─── The wallet-adapter's disconnect disconnects the store ──────────────────
+
+for (const path of ['adapter', 'standard']) {
+    test(`the ${path} disconnect disconnects the store too: the authority key is refused until its wallet is connected again, also after a reload`, async () => {
+        let W = await load();
+        const authorityPublicKey = await keptKey(W, 'authority');
+        const disconnect = await disconnectPath(W, path);
+        await disconnect();
+        assert.equal(W.useWalletStore.getState().wallet, null);
+        await assertRefused(W, 'signAndSendWithAuthority', 'no-wallet');
+
+        W = await load();
+        assert.equal(W.useWalletStore.getState().wallet, null, 'not connected after a reload either');
+        await assertRefused(W, 'signAndSendWithAuthority', 'no-wallet');
+        await reconnect(W, WALLET);
+        await sendWithKept(W, 'authority');
+        assertSignedBy(sent.at(-1), new PublicKey(authorityPublicKey));
+    });
+}
+
+test("the adapter's disconnect abandons a connect the store is running: it rejects with PortalCancelledError and connects nothing", async () => {
+    const W = await load();
+    const adapter = new W.LazorkitWalletAdapter(adapterConfig);
+    // No stored wallet: the store's connect opens the portal, which does not answer here.
+    const connecting = W.useWalletStore.getState().connect().then(
+        () => 'connected',
+        (error) => error,
+    );
+    await until(() => document.getElementById('lazorkit-iframe')?.src, 'the portal to open');
+    assert.equal(W.useWalletStore.getState().isConnecting, true);
+    await adapter.disconnect();
+    const outcome = await Promise.race([connecting, new Promise((resolve) => setTimeout(() => resolve('still connecting'), 1000))]);
+    assert.ok(outcome instanceof W.PortalCancelledError, String(outcome));
+    assert.equal(W.useWalletStore.getState().isConnecting, false);
+    assert.equal(W.useWalletStore.getState().wallet, null);
 });
 
 // ─── A session or authority still landing at sign-out ───────────────────────

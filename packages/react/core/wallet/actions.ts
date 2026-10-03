@@ -49,6 +49,7 @@ import { buildPreviewTransactionBase64 } from './preview';
 import { deferredExpiryOffset, executeBeforeExpiry } from './deferred';
 import { type KeySigner, type KeyStorage, forgetKey, generateKey, saveKey, wipeKey, wipeMark } from '../keys';
 import { keyForConnectedWallet } from './keyBinding';
+import { noteDisconnect } from './disconnects';
 import type { SignMessageResult } from '../message/signedMessage';
 
 export function randomBytes(size: number): Uint8Array {
@@ -89,12 +90,23 @@ function walletVersion(get: () => WalletState): ProtocolVersion | undefined {
 
 /**
  * The paymaster for a wallet's protocol. v1 wallets keep the relayer the app
- * used before v2 (`v1PaymasterConfig`, defaulting to the main one).
+ * used before v2 (`v1PaymasterConfig`, defaulting to the main one). A new one
+ * for each action.
+ *
+ * `beforeAttempt`: a session or authority send passes its kept key's
+ * `assertSendable`. The paymaster runs it right before each attempt to send,
+ * whichever of its send methods the transaction goes out by, so nothing a
+ * kept key signed goes out once the wallet has been disconnected (see
+ * ./keyBinding).
  */
-function paymasterFor(config: WalletConfig, version: ProtocolVersion): Paymaster {
+function paymasterFor(
+    config: WalletConfig,
+    version: ProtocolVersion,
+    options: { beforeAttempt?: () => void } = {},
+): Paymaster {
     return new Paymaster(
         version === 1 ? (config.v1PaymasterConfig ?? config.paymasterConfig) : config.paymasterConfig,
-        { protocolVersion: version },
+        { protocolVersion: version, beforeAttempt: options.beforeAttempt },
     );
 }
 
@@ -176,6 +188,15 @@ async function buildAndSendTx(params: {
  * page, as is this.)
  */
 let connectInFlight: AbortController | null = null;
+
+/**
+ * Abandons the store's connect in flight, if any (see `connectInFlight`):
+ * at the store's `disconnect`, and at the adapter's (see react/store).
+ */
+export function abandonConnect(): void {
+    connectInFlight?.abort();
+    connectInFlight = null;
+}
 
 /**
  * Connect wallet action
@@ -293,8 +314,9 @@ function namesWallet(wallet: WalletInfo, address: string): boolean {
  * on mobile: an action already running is not abandoned (its passkey prompt
  * may still be open), and clearing its flag here would let a second one start
  * beside it, whose flag the first would then clear when it ends. (A session
- * or authority send still running does not sign once the wallet is gone: see
- * ./keyBinding.)
+ * or authority send still running neither signs nor sends after this, even
+ * if its wallet is connected again by then: see ./keyBinding and
+ * ./disconnects.)
  *
  * The session key the SDK keeps is deleted, unless `keepSessionKeys`: the
  * one in the slot, whichever wallet it is for, and one a `createSession`
@@ -309,12 +331,12 @@ export const disconnectAction = async (
     set: (state: Partial<WalletState>) => void,
     options?: DisconnectOptions,
 ): Promise<void> => {
-
+    // First: a kept key loaded before this signs and sends nothing from here on.
+    noteDisconnect();
     try {
         // A connect still running is abandoned (see connectInFlight), so
         // resetting `isConnecting` below cannot let two run side by side.
-        connectInFlight?.abort();
-        connectInFlight = null;
+        abandonConnect();
         clearPendingConfirmation();
         await StorageManager.clearWallet();
         set({ wallet: null, error: null, isConnecting: false, isLoading: false });
@@ -692,7 +714,8 @@ export const signAndSendWithSessionAction = async (
         // A stored session may predate v2; its owner says which program it is.
         const version = await versionOfAccount(connection, sessionPda);
         flowVersion = version;
-        const paymaster = paymasterFor(config, version);
+        // Every attempt to send checks the key again (see paymasterFor).
+        const paymaster = paymasterFor(config, version, { beforeAttempt: stored.assertSendable });
         const client = clientFor(version, connection);
         const feePayer = await paymaster.getPayer();
 
@@ -1161,7 +1184,8 @@ export const signAndSendWithAuthorityAction = async (
 
         const version = await versionOfAccount(connection, authorityPda);
         flowVersion = version;
-        const paymaster = paymasterFor(config, version);
+        // Every attempt to send checks the key again (see paymasterFor).
+        const paymaster = paymasterFor(config, version, { beforeAttempt: stored.assertSendable });
         const client = clientFor(version, connection);
         const feePayer = await paymaster.getPayer();
 
