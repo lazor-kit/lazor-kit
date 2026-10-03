@@ -89,6 +89,18 @@ export const LAZORKIT_MAX_INNER_INSTRUCTIONS = 16;
  */
 export const LAZORKIT_HEAP_BYTES = 32 * 1024;
 export const LAZORKIT_HEAP_USABLE_BYTES = LAZORKIT_HEAP_BYTES - 8;
+/**
+ * What the guard keeps free of the usable heap: nothing. `lazorkitHeapBytes`
+ * is the program's own sum, to the byte (lazorkit-protocol#42 checked it
+ * against the allocator's cursor on 112 payloads, and every payload it put
+ * over 32,760 ran out of memory), so a margin would only refuse payloads that
+ * run. Raise it here, and only here, if the program and the sum ever part.
+ */
+export const LAZORKIT_HEAP_MARGIN_BYTES = 0;
+/** The most heap a payload may need to pass `checkProgramCeilings`. */
+export const LAZORKIT_HEAP_LIMIT_BYTES = LAZORKIT_HEAP_USABLE_BYTES - LAZORKIT_HEAP_MARGIN_BYTES;
+/** `state::action::MAX_ACTIONS`: the most actions a policy holds. */
+export const LAZORKIT_MAX_POLICY_ACTIONS = 16;
 
 const COMPUTE_BUDGET_PROGRAM_ID = new PublicKey('ComputeBudget111111111111111111111111111111');
 const SECP256R1_PROGRAM_ID = new PublicKey('Secp256r1SigVerify1111111111111111111111111');
@@ -102,6 +114,16 @@ const MASK_PRIORITY_FEE = 0b00011;
 const MASK_COMPUTE_UNIT_LIMIT = 0b00100;
 const MASK_LOADED_ACCOUNTS_DATA_SIZE_LIMIT = 0b01000;
 const CONFIG_FIELDS = ['computeUnitLimit', 'loadedAccountsDataSizeLimit', 'priorityFeeLamports'];
+
+// Where a v2 session's or authority's policy starts (program/src/state):
+// AccountDiscriminator, SESSION_HEADER_SIZE, AUTHORITY_*_FIXED_LEN, and
+// ACTION_HEADER_SIZE (type u8, data length u16, expiry u64).
+const AUTHORITY_DISCRIMINATOR = 0x22;
+const SESSION_DISCRIMINATOR = 0x23;
+const SESSION_HEADER_BYTES = 80;
+const AUTHORITY_ED25519_FIXED_BYTES = 48 + 32;
+const AUTHORITY_SECP256R1_FIXED_BYTES = 48 + 32 + 33 + 32;
+const ACTION_HEADER_BYTES = 11;
 
 // ─── Writer ─────────────────────────────────────────────────────────────────
 
@@ -504,6 +526,24 @@ export function measureV0(params: {
  */
 export type LazorKitExecutePath = 'secp256r1' | 'ed25519' | 'deferred';
 
+/**
+ * What a policy-bound signer adds to an Execute's heap: a session with
+ * actions, or a Delegate authority carrying a policy (an Owner or Admin never
+ * carries one). A signer without a policy is checked with none.
+ */
+export interface LazorKitPolicyHeap {
+  /** The actions in the signer's policy, 1 to 16 (`lazorkitPolicyActions`). */
+  readonly actions: number;
+  /**
+   * The unique writable vault-owned token accounts in the Execute's account
+   * list: SPL Token or Token-2022 accounts, initialized, whose owner field is
+   * the vault and which the transaction locks writable, each counted once
+   * however often it is listed. The keys alone do not say which accounts
+   * those are; `vaultTokenAccountsBound` bounds the count from the payload.
+   */
+  readonly vaultTokenAccounts: number;
+}
+
 export interface ProgramCeilingMeasurement {
   readonly innerInstructions: number;
   /** The largest account-meta count of one inner instruction. */
@@ -512,20 +552,27 @@ export interface ProgramCeilingMeasurement {
   readonly totalMetas: number;
   /** The heap the program allocates to run the payload (`lazorkitHeapBytes`). */
   readonly heapBytes: number;
+  /** The policy terms counted in `heapBytes`, when the signer carries a policy. */
+  readonly policy?: LazorKitPolicyHeap;
 }
 
 /**
  * Checks an Execute payload (the inner instructions) against the LazorKit
  * program's ceilings, which only a transaction over 1232 bytes can reach in
  * practice: at most 16 inner instructions, and the heap the program needs to
- * run them (`lazorkitHeapBytes`) within its 32,760 bytes. The program rejects
- * these payloads in any format. Throws PayloadExceedsProgramLimitsError.
+ * run them (`lazorkitHeapBytes`) within its 32,760 bytes, less
+ * `LAZORKIT_HEAP_MARGIN_BYTES`. The program rejects these payloads in any
+ * format. Throws PayloadExceedsProgramLimitsError.
  *
- * `path` defaults to `secp256r1`, which allocates the most.
+ * `path` defaults to `secp256r1`, which allocates the most. Pass `policy` for
+ * a signer that carries one (`signerPolicyHeap`): without it the check is not
+ * safe for that signer, since the policy allocates 64 bytes per action and
+ * 240 per vault token account beside the payload.
  */
 export function checkProgramCeilings(
   innerInstructions: readonly TransactionInstruction[],
-  path: LazorKitExecutePath = 'secp256r1'
+  path: LazorKitExecutePath = 'secp256r1',
+  policy?: LazorKitPolicyHeap
 ): ProgramCeilingMeasurement {
   let maxMetas = 0;
   let totalMetas = 0;
@@ -537,12 +584,15 @@ export function checkProgramCeilings(
     innerInstructions: innerInstructions.length,
     maxMetas,
     totalMetas,
-    heapBytes: lazorkitHeapBytes(innerInstructions, path),
+    heapBytes: lazorkitHeapBytes(innerInstructions, path, policy),
+    ...(policy
+      ? { policy: { actions: policy.actions, vaultTokenAccounts: policy.vaultTokenAccounts } }
+      : {}),
   };
   if (measured.innerInstructions > LAZORKIT_MAX_INNER_INSTRUCTIONS) {
     throw new PayloadExceedsProgramLimitsError({ limit: 'inner-instructions', ...measured });
   }
-  if (measured.heapBytes > LAZORKIT_HEAP_USABLE_BYTES) {
+  if (measured.heapBytes > LAZORKIT_HEAP_LIMIT_BYTES) {
     throw new PayloadExceedsProgramLimitsError({ limit: 'heap', ...measured });
   }
   return measured;
@@ -550,89 +600,184 @@ export function checkProgramCeilings(
 
 /**
  * The heap, in bytes, the LazorKit v2 program allocates to run these inner
- * instructions, alignment included: what the devnet build at 57bTNW…
- * (3584aec7…, lazorkit-protocol develop 5fb8d46) does, without a policy, in
- * its order. The allocator never frees, so a buffer that grows leaves every
- * smaller copy behind.
+ * instructions, alignment included: the exact sum of lazorkit-protocol#42
+ * (develop 3979196; docs/Architecture.md, "Compact instruction format"), the
+ * devnet release artifact d95e5c2b… and the mainnet one 67d47162…. Every
+ * buffer that scales with the payload is allocated once at its final size, on
+ * a heap that never frees, in this order, for `k` inner instructions of
+ * `n₁ … n_k` accounts (`M` in all, `w` in the widest) in `C` compact bytes:
  *
- * 1. The parsed instructions: 40 bytes each.
- * 2. `secp256r1` and `deferred`: the accounts-hash preimage, 33 bytes for
- *    each instruction's program and each of its accounts, in a buffer that
- *    starts at 132 bytes per instruction and doubles when it is full.
- * 3. `secp256r1`: the signed payload (the compact instructions and 32 bytes)
- *    and the challenge in base64 (44 bytes).
- * 4. The account metas (16 bytes each) and CPI accounts (56 bytes each),
- *    reused across the inner instructions: room for 32 of each, doubled when
- *    an instruction has more.
- * 5. For each inner instruction, its accounts (8 bytes each) and their signer
- *    flags (1 byte each).
+ * 1. the parsed instructions, 40 bytes each: `40k`;
+ * 2. `secp256r1` and `deferred`: the accounts-hash preimage, 33 bytes for each
+ *    instruction's program and each of its accounts: `33(k + M)`;
+ * 3. `secp256r1`: the signed payload (`C + 32`) and the challenge in base64
+ *    (44), so with 2 one piece of `⌈33(k + M) + C + 76⌉₈`;
+ * 4. a policy: its actions (32 bytes each), and a 192-byte copy of each vault
+ *    token account: `32a + 192t`;
+ * 5. the account metas (16 bytes each) and CPI accounts (56), sized to the
+ *    widest instruction and reused: `72w`;
+ * 6. for each inner instruction, its accounts (8 bytes each) and their signer
+ *    flags (1 byte each): `8nᵢ + nᵢ`;
+ * 7. a policy: the mint list (48 bytes per vault token account) and its
+ *    actions parsed again: `48t + 32a`.
  *
- * Checked against that build on a local validator, on all three paths and on
- * both sides of the limit; on the passkey path to the byte (a payload that
- * needs 32,760 bytes runs, one that needs 32,765 runs out of memory). A policy
- * on the authority or session allocates more, and is not counted here. A
- * build that sizes these buffers exactly (lazorkit-protocol#42) allocates
- * less for any payload, so the check stays safe there, if stricter than it
- * needs to be.
+ * Each allocation is aligned down from the one before (8 bytes but for the
+ * byte buffers), so a byte buffer is rounded up to 8 by whatever follows it,
+ * and the last allocation of all is not rounded. A zero count allocates
+ * nothing. ExecuteDeferred has no policy terms: a policy-bound signer cannot
+ * reach it, and a policy with `deferred` throws a TypeError.
+ *
+ * Builds before #42 (devnet's 57bTNW… ran efea949f… on 2026-10-04) grew the
+ * preimage and the reused buffers by doubling and allocate more than this for
+ * many payloads (one inner instruction of 128 accounts, 70 + 70, 16 × 16):
+ * the check is exact for a cluster that runs #42, not for one that does not.
  */
 export function lazorkitHeapBytes(
   innerInstructions: readonly TransactionInstruction[],
-  path: LazorKitExecutePath
+  path: LazorKitExecutePath,
+  policy?: LazorKitPolicyHeap
 ): number {
+  if (policy !== undefined) assertPolicyHeap(policy, path);
   // Offset from the start of the heap; allocations go down from the top.
   let top = LAZORKIT_HEAP_BYTES;
   const alloc = (bytes: number, align: number) => {
     if (bytes > 0) top = Math.floor((top - bytes) / align) * align;
   };
-  // Rust's Vec growth: double, or what is needed if more, and never under 8
-  // one-byte or 4 larger elements. Each growth is a new allocation.
-  const reserve = (
-    vec: { cap: number; len: number },
-    more: number,
-    size: number,
-    align: number
-  ) => {
-    if (vec.cap - vec.len >= more) return;
-    vec.cap = Math.max(vec.cap * 2, vec.len + more, size === 1 ? 8 : 4);
-    alloc(vec.cap * size, align);
-  };
   const k = innerInstructions.length;
-  alloc(40 * k, 8);
-  if (path !== 'ed25519') {
-    const preimage = { cap: 132 * k, len: 0 };
-    alloc(preimage.cap, 1);
-    for (const ix of innerInstructions) {
-      for (let account = 0; account <= ix.keys.length; account++) {
-        reserve(preimage, 32, 1, 1);
-        preimage.len += 32;
-        reserve(preimage, 1, 1, 1);
-        preimage.len += 1;
-      }
-    }
+  let accounts = 0;
+  let widest = 0;
+  let compact = 1;
+  for (const ix of innerInstructions) {
+    accounts += ix.keys.length;
+    widest = Math.max(widest, ix.keys.length);
+    compact += 4 + ix.keys.length + ix.data.length;
   }
+  alloc(40 * k, 8);
+  if (path !== 'ed25519') alloc(33 * (k + accounts), 1);
   if (path === 'secp256r1') {
-    let compact = 1;
-    for (const ix of innerInstructions) compact += 4 + ix.keys.length + ix.data.length;
     alloc(compact + 32, 1);
     alloc(44, 1);
   }
-  const metas = { cap: 32, len: 0 };
-  const cpiAccounts = { cap: 32, len: 0 };
-  alloc(16 * metas.cap, 8);
-  alloc(56 * cpiAccounts.cap, 8);
+  if (policy) {
+    alloc(32 * policy.actions, 8);
+    alloc(192 * policy.vaultTokenAccounts, 8);
+  }
+  alloc(16 * widest, 8);
+  alloc(56 * widest, 8);
   for (const ix of innerInstructions) {
     alloc(8 * ix.keys.length, 8);
     alloc(ix.keys.length, 1);
-    metas.len = 0;
-    cpiAccounts.len = 0;
-    for (let account = 0; account < ix.keys.length; account++) {
-      reserve(metas, 1, 16, 8);
-      metas.len++;
-      reserve(cpiAccounts, 1, 56, 8);
-      cpiAccounts.len++;
-    }
+  }
+  if (policy) {
+    alloc(48 * policy.vaultTokenAccounts, 8);
+    alloc(32 * policy.actions, 8);
   }
   return LAZORKIT_HEAP_BYTES - top;
+}
+
+/**
+ * The actions in a session's or an authority's policy, read from its account
+ * data as the program reads it (`PolicyLocation`, `count_action_headers`): the
+ * policy is whatever follows a session's 80-byte header, or an authority's
+ * key material (80 bytes for Ed25519, 145 for a passkey), as 11-byte action
+ * headers (type, data length u16, expiry u64), each followed by its data.
+ * 0 when the account carries none, or is neither a v2 session nor a v2
+ * authority. A count over 16 is returned as it is; the program refuses such a
+ * policy, and so does `lazorkitHeapBytes`.
+ */
+export function lazorkitPolicyActions(accountData: Uint8Array): number {
+  let offset: number;
+  if (accountData[0] === SESSION_DISCRIMINATOR) {
+    offset = SESSION_HEADER_BYTES;
+  } else if (accountData[0] === AUTHORITY_DISCRIMINATOR && accountData[1] === 0) {
+    offset = AUTHORITY_ED25519_FIXED_BYTES;
+  } else if (accountData[0] === AUTHORITY_DISCRIMINATOR && accountData[1] === 1) {
+    offset = AUTHORITY_SECP256R1_FIXED_BYTES;
+  } else {
+    return 0;
+  }
+  let count = 0;
+  let cursor = offset;
+  while (
+    count <= LAZORKIT_MAX_POLICY_ACTIONS &&
+    cursor + ACTION_HEADER_BYTES <= accountData.length
+  ) {
+    cursor += ACTION_HEADER_BYTES + (accountData[cursor + 1] | (accountData[cursor + 2] << 8));
+    count++;
+  }
+  return count;
+}
+
+/**
+ * An upper bound on a policy's `vaultTokenAccounts` from the payload alone:
+ * every unique account an inner instruction marks writable, less
+ * `notTokenAccounts` (the vault, a System account with no data, and the fee
+ * payer, which the runtime only accepts System-owned).
+ *
+ * It bounds the program's count when the wallet builds the transaction: the
+ * Execute's account list is the payload's accounts, each with the union of
+ * its flags, beside the wallet's own (fee payer, wallet, the signer's
+ * authority or session, vault, session key or Instructions sysvar, fee
+ * accounts), none of them a token account, and the transaction's other
+ * instructions lock no other account writable. It is exact when every
+ * writable account the payload names is a vault token account, and otherwise
+ * counts 240 bytes for each one that is not.
+ */
+export function vaultTokenAccountsBound(
+  innerInstructions: readonly TransactionInstruction[],
+  notTokenAccounts: readonly PublicKey[] = []
+): number {
+  const excluded = new Set(notTokenAccounts.map((key) => key.toBase58()));
+  const writable = new Set<string>();
+  for (const ix of innerInstructions) {
+    for (const meta of ix.keys) {
+      const key = meta.pubkey.toBase58();
+      if (meta.isWritable && !excluded.has(key)) writable.add(key);
+    }
+  }
+  return writable.size;
+}
+
+/**
+ * The policy terms to check a payload with (`checkProgramCeilings`), for the
+ * signer whose session or authority account data is `signerAccountData`:
+ * its actions as the program counts them, and the payload's bound on vault
+ * token accounts. Undefined when the signer carries no policy.
+ */
+export function signerPolicyHeap(params: {
+  signerAccountData: Uint8Array;
+  innerInstructions: readonly TransactionInstruction[];
+  /** Accounts that cannot be token accounts: the vault and the fee payer. */
+  notTokenAccounts: readonly PublicKey[];
+}): LazorKitPolicyHeap | undefined {
+  const actions = lazorkitPolicyActions(params.signerAccountData);
+  if (actions === 0) return undefined;
+  return {
+    actions,
+    vaultTokenAccounts: vaultTokenAccountsBound(params.innerInstructions, params.notTokenAccounts),
+  };
+}
+
+function assertPolicyHeap(policy: LazorKitPolicyHeap, path: LazorKitExecutePath): void {
+  if (path === 'deferred') {
+    throw new TypeError(
+      'txv1: ExecuteDeferred has no policy terms: a policy-bound signer cannot authorize one'
+    );
+  }
+  if (
+    typeof policy !== 'object' ||
+    policy === null ||
+    !Number.isSafeInteger(policy.actions) ||
+    policy.actions < 1 ||
+    policy.actions > LAZORKIT_MAX_POLICY_ACTIONS ||
+    !Number.isSafeInteger(policy.vaultTokenAccounts) ||
+    policy.vaultTokenAccounts < 0
+  ) {
+    throw new RangeError(
+      `txv1: a policy holds 1 to ${LAZORKIT_MAX_POLICY_ACTIONS} actions and a count of vault token accounts ` +
+        `(a signer without actions has no policy: pass none), not ${JSON.stringify(policy)}`
+    );
+  }
 }
 
 // ─── Limits ─────────────────────────────────────────────────────────────────
@@ -877,6 +1022,8 @@ export class PayloadExceedsProgramLimitsError extends Error {
   readonly totalMetas: number;
   /** The heap the program would need, in bytes; it has 32,760. */
   readonly heapBytes: number;
+  /** The policy terms counted in `heapBytes`, when the signer carries a policy. */
+  readonly policy?: LazorKitPolicyHeap;
 
   constructor(details: {
     limit: 'inner-instructions' | 'heap';
@@ -884,13 +1031,22 @@ export class PayloadExceedsProgramLimitsError extends Error {
     maxMetas: number;
     totalMetas: number;
     heapBytes: number;
+    policy?: LazorKitPolicyHeap;
   }) {
+    const policy = details.policy
+      ? ` beside a policy of ${details.policy.actions} actions and ` +
+        `${details.policy.vaultTokenAccounts} vault token accounts`
+      : '';
+    const margin =
+      LAZORKIT_HEAP_MARGIN_BYTES > 0
+        ? `, of which the wallet keeps ${LAZORKIT_HEAP_MARGIN_BYTES} free`
+        : '';
     super(
       (details.limit === 'inner-instructions'
         ? `The payload has ${details.innerInstructions} instructions; the LazorKit program runs at most ${LAZORKIT_MAX_INNER_INSTRUCTIONS}.`
         : `The payload is too large for the LazorKit program's heap: running its ${details.innerInstructions} ` +
-          `instructions (${details.totalMetas - details.innerInstructions} accounts in all, at most ${details.maxMetas} in one) ` +
-          `needs ${details.heapBytes} bytes, and the program has ${LAZORKIT_HEAP_USABLE_BYTES}.`) +
+          `instructions (${details.totalMetas - details.innerInstructions} accounts in all, at most ${details.maxMetas} in one)` +
+          `${policy} needs ${details.heapBytes} bytes, and the program has ${LAZORKIT_HEAP_USABLE_BYTES}${margin}.`) +
         ' Nothing was signed or sent.'
     );
     this.name = 'PayloadExceedsProgramLimitsError';
@@ -899,6 +1055,7 @@ export class PayloadExceedsProgramLimitsError extends Error {
     this.maxMetas = details.maxMetas;
     this.totalMetas = details.totalMetas;
     this.heapBytes = details.heapBytes;
+    if (details.policy !== undefined) this.policy = details.policy;
   }
 }
 

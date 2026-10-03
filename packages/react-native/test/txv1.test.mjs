@@ -634,7 +634,7 @@ test('U6: 16 inner instructions pass, 17 fail', () => {
     innerInstructions: 16,
     maxMetas: 1,
     totalMetas: 32,
-    heapBytes: 5_465,
+    heapBytes: 2_177,
   });
   assert.throws(
     () => T.checkProgramCeilings(inner(...Array(17).fill(1))),
@@ -642,13 +642,21 @@ test('U6: 16 inner instructions pass, 17 fail', () => {
   );
 });
 
+test('U6: the limit is the 32 KiB heap less its 8-byte cursor, with no margin kept', () => {
+  assert.equal(T.LAZORKIT_HEAP_BYTES, 32_768);
+  assert.equal(T.LAZORKIT_HEAP_USABLE_BYTES, 32_760);
+  assert.equal(T.LAZORKIT_HEAP_MARGIN_BYTES, 0);
+  assert.equal(T.LAZORKIT_HEAP_LIMIT_BYTES, 32_760);
+  assert.equal(T.LAZORKIT_MAX_POLICY_ACTIONS, 16);
+});
+
 /**
  * A payload in the shorthand of the measurements below: "KxM" is K inner
  * instructions of M accounts, "A,B,…" one of A accounts, one of B, …; each
- * has 12 bytes of data (a System transfer's), and "+N" adds N bytes to the
- * last one's.
+ * has `data` bytes of data (12, a System transfer's, unless given), and "+N"
+ * adds N bytes to the last one's.
  */
-function heapShape(text) {
+function heapShape(text, data = 12) {
   const [shape, extra = '0'] = text.split('+');
   const counts = shape.includes('x')
     ? Array(Number(shape.split('x')[0])).fill(Number(shape.split('x')[1]))
@@ -657,72 +665,228 @@ function heapShape(text) {
     ix(
       address('program-a'),
       Array(m).fill(meta(address('account-0'))),
-      12 + (i === counts.length - 1 ? Number(extra) : 0)
+      data + (i === counts.length - 1 ? Number(extra) : 0)
     )
   );
 }
 
-// What the devnet v2 build at 57bTNW… (3584aec7…) did with these payloads on a
-// local validator (System transfers of 0 lamports, simulated as v1): ran, or
-// ran out of memory ("memory allocation failed, out of memory"). The passkey
-// pairs at the limit pin the model to the byte; the program has 32,760.
-const HEAP_ON_CHAIN = {
+const fits = (shape, path, policy) =>
+  T.lazorkitHeapBytes(shape, path, policy) <= T.LAZORKIT_HEAP_USABLE_BYTES;
+
+function assertRefused(shape, path, policy, label) {
+  assert.throws(
+    () => T.checkProgramCeilings(shape, path, policy),
+    (e) =>
+      e instanceof T.PayloadExceedsProgramLimitsError &&
+      e.limit === 'heap' &&
+      e.heapBytes > T.LAZORKIT_HEAP_USABLE_BYTES &&
+      e.heapBytes === T.lazorkitHeapBytes(shape, path, policy) &&
+      e.innerInstructions === shape.length &&
+      e.maxMetas === Math.max(...shape.map((i) => i.keys.length)) &&
+      e.totalMetas === shape.reduce((n, i) => n + 1 + i.keys.length, 0) &&
+      JSON.stringify(e.policy) === JSON.stringify(policy),
+    label
+  );
+}
+
+// lazorkit-protocol program/tests/heap_capacity_tests.rs (#42, develop
+// 3979196), against the build with exact sizing: SPL Memo v1 instructions
+// with 8 bytes of data ("lazorkit"), run in litesvm. Landed, or ran out of
+// memory; and the sums its comments give for three of them.
+const PROGRAM_MEMO_DATA = 8;
+const HEAP_IN_THE_PROGRAM_TESTS = {
   secp256r1: {
-    runs: [
-      '16x12',
-      '1x127',
-      '2x64',
-      '100,20',
-      '80,8,8,8,8,8',
-      '60,60,10',
-      '30,30,30,30,30',
-      '83,7',
+    lands: [
+      '127',
+      '64,64',
+      '128',
+      '70,70',
+      '100,30',
+      '100,100',
+      '128,64,32',
+      '16x16',
+      '8x32',
+      '16x24',
+      '8x64',
+      '16x8',
     ],
-    outOfMemory: ['16x16', '8x32', '16x24', '1x128', '2x70', '100,30', '80,80', '1x200'],
-    atTheLimit: [
-      ['13x29+102', 32_757, true],
-      ['13x29+103', 32_765, false],
-      ['13x24+791', 32_760, true],
-      ['13x24+792', 32_768, false],
-      ['5x63+1876', 32_759, true],
-      ['5x63+1877', 32_767, false],
+    outOfMemory: ['16x64'],
+    bytes: [
+      ['128', 14_888],
+      ['70,70', 11_310],
+      ['100,30', 13_046],
     ],
   },
-  ed25519: {
-    runs: ['16x16', '8x32', '16x24', '1x128', '128,128', '13x128', '14x127', '16x110', '2x70'],
-    outOfMemory: ['1x129', '1x200', '14x128', '16x120'],
-  },
-  deferred: {
-    runs: ['16x12', '14x16', '1x127', '2x64'],
-    outOfMemory: ['16x16', '14x17', '1x128', '2x70'],
-  },
+  deferred: { lands: ['128', '70,70', '16x16'], outOfMemory: [] },
+  ed25519: { lands: ['2x128', '16x128'], outOfMemory: [] },
 };
 
-test('U6: the heap model runs what the deployed program ran, and refuses what ran out of memory', () => {
-  for (const [path, measured] of Object.entries(HEAP_ON_CHAIN)) {
-    for (const text of measured.runs) {
-      const result = T.checkProgramCeilings(heapShape(text), path);
+test('U6: what the program’s heap tests landed passes, and what ran out of memory is refused', () => {
+  for (const [path, measured] of Object.entries(HEAP_IN_THE_PROGRAM_TESTS)) {
+    for (const text of measured.lands) {
+      const result = T.checkProgramCeilings(heapShape(text, PROGRAM_MEMO_DATA), path);
       assert.ok(result.heapBytes <= T.LAZORKIT_HEAP_USABLE_BYTES, `${path} ${text}`);
     }
     for (const text of measured.outOfMemory) {
-      const shape = heapShape(text);
-      assert.throws(
-        () => T.checkProgramCeilings(shape, path),
-        (e) =>
-          e instanceof T.PayloadExceedsProgramLimitsError &&
-          e.limit === 'heap' &&
-          e.heapBytes > T.LAZORKIT_HEAP_USABLE_BYTES &&
-          e.heapBytes === T.lazorkitHeapBytes(shape, path) &&
-          e.innerInstructions === shape.length &&
-          e.maxMetas === Math.max(...shape.map((i) => i.keys.length)) &&
-          e.totalMetas === shape.reduce((n, i) => n + 1 + i.keys.length, 0),
-        `${path} ${text}`
+      assertRefused(heapShape(text, PROGRAM_MEMO_DATA), path, undefined, `${path} ${text}`);
+    }
+    for (const [text, bytes] of measured.bytes ?? []) {
+      const shape = heapShape(text, PROGRAM_MEMO_DATA);
+      assert.equal(T.lazorkitHeapBytes(shape, path), bytes, `${path} ${text}`);
+    }
+  }
+});
+
+// docs/Architecture.md, "Transaction v1": for k equal inner instructions with
+// 12 bytes of data each, the most accounts each can have on the exact build
+// (255 is the format's maximum); and lazorkit-protocol#42's table at 8 bytes,
+// where only the passkey path moves (data is part of what it signs).
+const LARGEST_EQUAL = {
+  12: {
+    secp256r1: { 1: 255, 2: 205, 4: 132, 8: 76, 12: 53, 16: 40 },
+    deferred: { 1: 255, 2: 208, 4: 135, 8: 78, 12: 55, 16: 42 },
+    ed25519: { 1: 255, 2: 255, 4: 255, 8: 224, 12: 179, 16: 148 },
+  },
+  8: {
+    secp256r1: { 1: 255, 2: 205, 4: 132, 8: 76, 16: 41 },
+    deferred: { 1: 255, 2: 208, 4: 135, 8: 78, 16: 42 },
+    ed25519: { 1: 255, 2: 255, 4: 255, 8: 224, 16: 148 },
+  },
+};
+
+test('U6: the largest equal payloads on each path are the program’s tables, one account more is refused', () => {
+  for (const [data, paths] of Object.entries(LARGEST_EQUAL)) {
+    for (const [path, row] of Object.entries(paths)) {
+      for (const [k, most] of Object.entries(row)) {
+        const label = `${path}, ${k} × ${most}, ${data} B of data`;
+        T.checkProgramCeilings(heapShape(`${k}x${most}`, Number(data)), path);
+        if (most < 255) {
+          assertRefused(heapShape(`${k}x${most + 1}`, Number(data)), path, undefined, label);
+        }
+      }
+    }
+  }
+});
+
+// The policy path (heap_capacity_tests.rs, "The policy path"): a signer whose
+// policy holds sixteen actions, `t` vault token accounts, one listed SPL
+// Transfer (3 accounts, 9 bytes) and then System transfers (12 bytes) of the
+// given widths.
+const SPL_TOKEN = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+const SYSTEM = new PublicKey('11111111111111111111111111111111');
+function policyShape(widths) {
+  const vault = meta(address('vault'), false, true);
+  const vaultToken = meta(address('vault-token-0'), false, true);
+  const transfer = [vaultToken, meta(address('destination'), false, true), meta(address('vault'))];
+  return [
+    ix(SPL_TOKEN, transfer, 9),
+    ...widths.map((n) => ix(SYSTEM, [vault, vault, ...Array(n - 2).fill(vaultToken)], 12)),
+  ];
+}
+const sixteen = (t) => ({ actions: 16, vaultTokenAccounts: t });
+
+test('U6: on the policy path, the program’s boundary shapes are accepted and refused where it ran and ran out', () => {
+  // policy_session_at_the_v1_address_cap: 52 vault token accounts.
+  T.checkProgramCeilings(policyShape(Array(15).fill(89)), 'ed25519', sixteen(52));
+  assertRefused(policyShape(Array(15).fill(90)), 'ed25519', sixteen(52), 'session, 15 × 90');
+  // policy_passkey_delegate_at_the_v1_address_cap: 51.
+  T.checkProgramCeilings(policyShape(Array(15).fill(24)), 'secp256r1', sixteen(51));
+  assertRefused(policyShape(Array(15).fill(25)), 'secp256r1', sixteen(51), 'Delegate, 15 × 25');
+  // policy_passkey_delegate_past_a_check_without_the_policy_terms: 49, to the byte.
+  const [twelveOf31, twelveOf32] = [31, 32].map((n) => policyShape(Array(12).fill(n)));
+  assert.equal(T.lazorkitHeapBytes(twelveOf31, 'secp256r1', sixteen(49)), 32_392);
+  assert.equal(T.lazorkitHeapBytes(twelveOf32, 'secp256r1', sixteen(49)), 32_968);
+  assertRefused(twelveOf32, 'secp256r1', sixteen(49), 'passkey Delegate, 12 × 32');
+  // ...which a check without the policy terms passes.
+  assert.ok(T.checkProgramCeilings(twelveOf32, 'secp256r1').heapBytes < 32_760);
+  // policy_session_at_the_legacy_size_cap: 19, the listed transfer alone.
+  T.checkProgramCeilings(policyShape([]), 'ed25519', sixteen(19));
+});
+
+test('U6: on the policy path, the largest equal payloads at the v1 address cap are Architecture.md’s table', () => {
+  const table = {
+    session: { path: 'ed25519', t: 52, most: { 2: 236, 4: 192, 8: 139, 16: 89 } },
+    delegate: { path: 'secp256r1', t: 51, most: { 2: 166, 4: 94, 8: 49, 16: 24 } },
+  };
+  for (const [signer, { path, t, most }] of Object.entries(table)) {
+    for (const [k, n] of Object.entries(most)) {
+      const widths = (m) => Array(Number(k) - 1).fill(m);
+      T.checkProgramCeilings(policyShape(widths(n)), path, sixteen(t));
+      assertRefused(policyShape(widths(n + 1)), path, sixteen(t), `${signer}, k = ${k}, ${n + 1}`);
+    }
+  }
+  // What a legacy transaction can carry needs at most 24,848 bytes beside a
+  // session (3 vault token accounts, two instructions of 255 after the
+  // transfer) and 30,976 beside a passkey Delegate (1, one of 255).
+  assert.equal(T.lazorkitHeapBytes(policyShape([255, 255]), 'ed25519', sixteen(3)), 24_848);
+  assert.equal(T.lazorkitHeapBytes(policyShape([255]), 'secp256r1', sixteen(1)), 30_976);
+});
+
+test('U6: the policy adds 32 bytes per action twice, and 192 + 48 per vault token account', () => {
+  // Shapes whose last allocation already ends on 8 bytes, so only the terms differ.
+  for (const [shape, path] of [
+    [heapShape('2x64'), 'ed25519'],
+    [heapShape('3x40'), 'secp256r1'],
+  ]) {
+    const none = T.lazorkitHeapBytes(shape, path);
+    for (const [a, t] of [[1, 0], [16, 0], [1, 1], [5, 7], [16, 52]]) {
+      assert.equal(
+        T.lazorkitHeapBytes(shape, path, { actions: a, vaultTokenAccounts: t }),
+        none + 64 * a + 240 * t,
+        `${path} a=${a} t=${t}`
       );
     }
-    for (const [text, bytes, runs] of measured.atTheLimit ?? []) {
-      assert.equal(T.lazorkitHeapBytes(heapShape(text), path), bytes, `${path} ${text}`);
-      assert.equal(bytes <= T.LAZORKIT_HEAP_USABLE_BYTES, runs, `${path} ${text}`);
+  }
+});
+
+test('U6: a policy is 1 to 16 actions, and never on ExecuteDeferred', () => {
+  const shape = heapShape('2x8');
+  assert.throws(() => T.lazorkitHeapBytes(shape, 'deferred', sixteen(1)), TypeError);
+  assert.throws(() => T.checkProgramCeilings(shape, 'deferred', sixteen(1)), TypeError);
+  for (const policy of [
+    { actions: 0, vaultTokenAccounts: 0 },
+    { actions: 17, vaultTokenAccounts: 0 },
+    { actions: 1.5, vaultTokenAccounts: 0 },
+    { actions: 1, vaultTokenAccounts: -1 },
+    { actions: 1 },
+    null,
+  ]) {
+    assert.throws(
+      () => T.checkProgramCeilings(shape, 'ed25519', policy),
+      RangeError,
+      JSON.stringify(policy)
+    );
+  }
+  assert.deepEqual(T.checkProgramCeilings(shape, 'ed25519', sixteen(2)).policy, sixteen(2));
+});
+
+// What the devnet build before the exact sizing (3584aec7…, the same heap as
+// efea949f…) did with these payloads on a local validator, for the shapes it
+// ran out of memory on, and the route replays the old check measured.
+const OUT_OF_MEMORY_BEFORE_THE_EXACT_SIZING = {
+  secp256r1: ['16x16', '8x32', '16x24', '1x128', '2x70', '100,30', '80,80', '1x200'],
+  ed25519: ['1x129', '1x200', '14x128', '16x120'],
+  deferred: ['16x16', '14x17', '1x128', '2x70'],
+};
+const ROUTE_REPLAYS = {
+  // [accounts, data bytes] per inner instruction, as docs/Architecture.md measured them.
+  'SOL→USDC': [[[7, 1], [3, 12], [2, 1], [7, 1], [26, 36], [4, 1]], 4_596],
+  'JUP→POPCAT': [[[7, 1], [57, 61]], 7_153],
+  'BONK→WIF': [[[7, 1], [83, 71]], 10_155],
+};
+
+test('U6: what the old check refused for the build before the exact sizing now passes, as the program runs it', () => {
+  for (const [path, shapes] of Object.entries(OUT_OF_MEMORY_BEFORE_THE_EXACT_SIZING)) {
+    for (const text of shapes) {
+      const { heapBytes } = T.checkProgramCeilings(heapShape(text), path);
+      assert.ok(heapBytes <= 32_760, `${path} ${text}`);
     }
+  }
+  for (const [route, [shape, bytes]] of Object.entries(ROUTE_REPLAYS)) {
+    const payload = shape.map(([m, d]) =>
+      ix(address('program-a'), Array(m).fill(meta(address('account-0'))), d)
+    );
+    assert.equal(T.checkProgramCeilings(payload).heapBytes, bytes, route);
   }
 });
 
@@ -738,13 +902,95 @@ test('U6: the passkey path allocates the most, and is the default', () => {
     ['secp256r1', 'deferred', 'ed25519'].map((path) =>
       T.lazorkitHeapBytes(heapShape('16x12'), path)
     ),
-    [20_044, 19_516, 4_732]
+    [10_684, 10_156, 3_292]
   );
   assert.throws(
-    () => T.checkProgramCeilings(heapShape('16x16')),
+    () => T.checkProgramCeilings(heapShape('16x41')),
     T.PayloadExceedsProgramLimitsError
   );
-  assert.equal(T.checkProgramCeilings(heapShape('16x16'), 'ed25519').heapBytes, 5_248);
+  assert.equal(T.checkProgramCeilings(heapShape('16x41'), 'ed25519').heapBytes, 9_601);
+});
+
+// ─── U6: what a policy-bound signer brings ──────────────────────────────────
+
+/** A v2 session or authority account: its fixed part, then `actions` as [type, data length]. */
+function policyAccount(kind, actions) {
+  const fixed = { session: [0x23, 0, 80], ed25519: [0x22, 0, 80], secp256r1: [0x22, 1, 145] }[kind];
+  const parts = [Buffer.alloc(fixed[2])];
+  parts[0][0] = fixed[0];
+  parts[0][1] = fixed[1];
+  for (const [type, length] of actions) {
+    const header = Buffer.alloc(11);
+    header[0] = type;
+    header.writeUInt16LE(length, 1);
+    header.writeBigUInt64LE(0n, 3);
+    parts.push(header, Buffer.alloc(length, 0xab));
+  }
+  return new Uint8Array(Buffer.concat(parts));
+}
+// SolLimit 8, TokenLimit 40, TokenRecurringLimit 64, ProgramWhitelist 32 (state/action.rs).
+const SOME_ACTIONS = [[1, 8], [4, 40], [5, 64], [10, 32]];
+
+test('lazorkitPolicyActions: a session’s or authority’s actions, counted as the program counts them', () => {
+  for (const kind of ['session', 'ed25519', 'secp256r1']) {
+    assert.equal(T.lazorkitPolicyActions(policyAccount(kind, [])), 0, `${kind}, none`);
+    assert.equal(T.lazorkitPolicyActions(policyAccount(kind, SOME_ACTIONS)), 4, kind);
+    const sixteenActions = Array.from({ length: 16 }, (_, i) => SOME_ACTIONS[i % 4]);
+    assert.equal(T.lazorkitPolicyActions(policyAccount(kind, sixteenActions)), 16, `${kind}, 16`);
+    // The program counts one more and then refuses the policy; so does the check.
+    const eighteen = policyAccount(kind, [...sixteenActions, [1, 8], [1, 8]]);
+    const seventeen = T.lazorkitPolicyActions(eighteen);
+    assert.equal(seventeen, 17, `${kind}, 18`);
+    assert.throws(
+      () => T.checkProgramCeilings([], 'ed25519', { actions: seventeen, vaultTokenAccounts: 0 }),
+      RangeError
+    );
+  }
+  // A passkey authority's key material is 145 bytes: an Ed25519 offset would read it as actions.
+  assert.equal(T.lazorkitPolicyActions(policyAccount('secp256r1', [])), 0);
+  assert.equal(T.lazorkitPolicyActions(policyAccount('ed25519', []).subarray(0, 48)), 0);
+  // Another account kind, a v1 account, an unknown authority type, nothing: no policy.
+  const other = policyAccount('session', SOME_ACTIONS);
+  for (const disc of [0x21, 0x24, 0x02, 0x03]) {
+    other[0] = disc;
+    assert.equal(T.lazorkitPolicyActions(other), 0, `discriminator ${disc}`);
+  }
+  const unknownType = policyAccount('ed25519', SOME_ACTIONS);
+  unknownType[1] = 9;
+  assert.equal(T.lazorkitPolicyActions(unknownType), 0);
+  assert.equal(T.lazorkitPolicyActions(new Uint8Array(0)), 0);
+});
+
+test('vaultTokenAccountsBound: the unique accounts the payload writes, less the vault and the fee payer', () => {
+  const vault = address('vault');
+  const feePayer = address('fee-payer');
+  const [a, b, c] = ['token-a', 'token-b', 'token-c'].map(address);
+  const payload = [
+    ix(SPL_TOKEN, [meta(a, false, true), meta(b, false, true), meta(vault, true, false)], 9),
+    ix(SYSTEM, [meta(vault, true, true), meta(feePayer, false, true)], 12),
+    // token-a again, and token-c read-only here but writable below: each once.
+    ix(address('program-a'), [meta(a, false, true), meta(c), meta(address('mint'))], 1),
+    ix(address('program-b'), [meta(c, false, true)], 1),
+  ];
+  assert.equal(T.vaultTokenAccountsBound(payload, [vault, feePayer]), 3);
+  assert.equal(T.vaultTokenAccountsBound(payload, [vault]), 4);
+  assert.equal(T.vaultTokenAccountsBound(payload), 5);
+  assert.equal(T.vaultTokenAccountsBound([], [vault]), 0);
+});
+
+test('signerPolicyHeap: nothing for a signer without actions, else its actions and the payload’s bound', () => {
+  const vault = address('vault');
+  const payload = policyShape([4, 4]);
+  const policyOf = (signerAccountData) =>
+    T.signerPolicyHeap({ signerAccountData, innerInstructions: payload, notTokenAccounts: [vault] });
+  for (const kind of ['session', 'ed25519', 'secp256r1']) {
+    assert.equal(policyOf(policyAccount(kind, [])), undefined, kind);
+    assert.deepEqual(
+      policyOf(policyAccount(kind, SOME_ACTIONS)),
+      { actions: 4, vaultTokenAccounts: 2 },
+      kind
+    );
+  }
 });
 
 // ─── Limits (the pure part of U7) ───────────────────────────────────────────
@@ -1003,4 +1249,19 @@ test('PayloadExceedsProgramLimitsError carries its counts', () => {
     /140 accounts in all, at most 70 in one\) needs 34358 bytes, and the program has 32760/
   );
   assert.match(e.message, /Nothing was signed or sent/);
+  assert.equal(e.policy, undefined);
+
+  const withPolicy = new T.PayloadExceedsProgramLimitsError({
+    limit: 'heap',
+    innerInstructions: 13,
+    maxMetas: 32,
+    totalMetas: 400,
+    heapBytes: 32_968,
+    policy: { actions: 16, vaultTokenAccounts: 49 },
+  });
+  assert.deepEqual(withPolicy.policy, { actions: 16, vaultTokenAccounts: 49 });
+  assert.match(
+    withPolicy.message,
+    /at most 32 in one\) beside a policy of 16 actions and 49 vault token accounts needs 32968 bytes, and the program has 32760\./
+  );
 });
