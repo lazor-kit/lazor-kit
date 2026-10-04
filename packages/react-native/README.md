@@ -397,6 +397,10 @@ the program's limits (see below). It does not check the v1 limits.
   That call rejects with `PaymasterError` (`code: -32051`). It is not retried,
   and it is not sent again as v0. Later `'v1'` requests to that paymaster go out
   as v0 until the app restarts.
+- **A session's actions.** A v1 `signAndSendWithSession` the program refuses
+  with 3037 or 3038 rejects with `UnlistedSolOutflowError` or
+  `UnlistedTokenOutflowError`, as a v0 one does (see
+  [What a session's actions bound](#what-a-sessions-actions-bound)).
 - **The portal** still shows the payload as a v0 transaction, as before;
   for a v1 request, without lookup tables.
 
