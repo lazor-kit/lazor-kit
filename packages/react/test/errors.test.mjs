@@ -376,6 +376,8 @@ test("a retired v1 program's 4018 whose logs are only in the paymaster's data re
 const SENDS = {
     signAndSend: (paymaster, retries, delay) => paymaster.signAndSend(legacyTx(), retries, delay),
     signAndSendVersionedTransaction: (paymaster, retries, delay) => paymaster.signAndSendVersionedTransaction(v0Tx(), retries, delay),
+    // Already-encoded bytes: how a txVersion 'v1' transaction goes out (any version is accepted).
+    signAndSendRaw: (paymaster, retries, delay) => paymaster.signAndSendRaw(v0Tx().serialize(), feePayer, retries, delay),
 };
 
 test('every send method of the paymaster is in SENDS, so the beforeAttempt tests below cover it', () => {

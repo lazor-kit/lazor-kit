@@ -10,7 +10,12 @@
 //   before anything is read for another wallet, and refused at signing when
 //   the wallet disconnects or switches while the send is being built;
 // - once the wallet-adapter's disconnect has deleted the session key, a v1
-//   session send has none to sign with, as a v0 one.
+//   session send has none to sign with, as a v0 one;
+// - a disconnect while a v1 send is in flight (#115) stops it as a v0 one:
+//   one with a reconnect of the same wallet while it is being built is
+//   refused ('disconnected'), one while the key signs the v1 message is not
+//   sent, and one while the paymaster send waits to be retried is not sent
+//   again (its outcome unknown when the first attempt's answer was lost).
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import { test, beforeEach, after } from 'node:test';
@@ -502,4 +507,168 @@ test("after the wallet-adapter's disconnect, which deletes the session key (3.3.
     assert.equal(sent.length, sends, 'nothing sent');
     assert.ok(!rpcCalls.includes('simulateTransaction'), 'nothing simulated');
     assert.ok(!rpcCalls.includes('getLatestBlockhash'), 'nothing built');
+});
+
+// ─── A disconnect while a 'v1' kept-key send is in flight (#115) ────────────
+
+/** A `LazorkitWalletAdapter` connected to WALLET, saved as connect saves it, with the v1 paymaster. */
+async function connectedAdapter(W) {
+    await W.StorageManager.saveWallet(walletInfo(W, WALLET));
+    const adapter = new W.LazorkitWalletAdapter({
+        rpcUrl: RPC,
+        portalUrl: PORTAL,
+        paymasterConfig: { paymasterUrl: PAYMASTER, acceptsTxV1: true },
+        cluster: 'devnet',
+    });
+    await adapter.connect();
+    assert.equal(adapter.connected, true);
+    return adapter;
+}
+
+/**
+ * Counts the messages a kept (WebCrypto Ed25519) key signs, until
+ * `restore()`; a key's 32-byte probe is not one. `whileSigning` runs inside
+ * the first one, before its signature is returned.
+ */
+function signingHook(whileSigning) {
+    const subtle = crypto.subtle;
+    const original = subtle.sign;
+    const hook = { count: 0, restore: () => delete subtle.sign };
+    subtle.sign = async function (algorithm, key, data) {
+        const signature = await original.call(this, algorithm, key, data);
+        if ((algorithm?.name ?? algorithm) === 'Ed25519' && data.byteLength > 32) {
+            hook.count++;
+            if (hook.count === 1) await whileSigning?.();
+        }
+        return signature;
+    };
+    return hook;
+}
+
+/**
+ * The paymaster answers the next `signAndSendTransaction` with HTTP `status`
+ * (nothing sent), then `whileRetrying` runs, during the wait before the
+ * retry. Counts the attempts.
+ */
+function failFirstSend(status, whileRetrying) {
+    const realFetch = globalThis.fetch;
+    const hook = { attempts: 0, restore: () => (globalThis.fetch = realFetch) };
+    globalThis.fetch = async (url, init) => {
+        if (String(url) === PAYMASTER && JSON.parse(init.body).method === 'signAndSendTransaction') {
+            if (++hook.attempts === 1) {
+                hook.first = Buffer.from(JSON.parse(init.body).params.transaction, 'base64');
+                setTimeout(() => void whileRetrying(), 0);
+                return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: `refused (${status})` } }), { status });
+            }
+        }
+        return realFetch(url, init);
+    };
+    return hook;
+}
+
+for (const kind of ['session', 'authority']) {
+    for (const path of ['store', 'adapter']) {
+        test(`${kind}: ${path === 'adapter' ? 'an' : 'a'} ${path} disconnect and a connect of the same wallet again while a 'v1' send is being built: refused ('disconnected'), and the next one signs`, async () => {
+            const { W, publicKey } = await keptKey(kind);
+            const adapter = path === 'adapter' ? await connectedAdapter(W) : undefined;
+            connect(W);
+            const disconnect = (options) => (adapter ? adapter.disconnect(options) : W.useWalletStore.getState().disconnect(options));
+            const sends = sent.length;
+            const spy = spySubtleSign();
+            let ran = false;
+            let error;
+            try {
+                // Built and simulated for its limits, not signed yet.
+                onSimulate = async () => {
+                    onSimulate = null;
+                    ran = true;
+                    await disconnect({ keepSessionKeys: true });
+                    assert.equal(W.useWalletStore.getState().wallet, null, 'the store is disconnected');
+                    connect(W);
+                };
+                error = await rejection(send(W, kind));
+            } finally {
+                onSimulate = null;
+                spy.restore();
+            }
+            assert.ok(ran, 'the disconnect ran while the v1 send was being built');
+            assert.equal(error.name, 'KeyWalletMismatchError', error.message);
+            assert.equal(error.reason, 'disconnected');
+            assert.equal(error.keyWallet, WALLET.toBase58());
+            assert.equal(error.connectedWallet, WALLET.toBase58());
+            assert.match(error.message, /^The wallet was disconnected while this send was in progress, .* Send it again\. Nothing was signed or sent\.$/);
+            assert.equal(spy.calls.filter((call) => call.algorithm === 'Ed25519').length, 0, 'the key signed nothing');
+            assert.equal(sent.length, sends, 'nothing sent');
+
+            // A send started after the reconnect signs, as v1.
+            await send(W, kind);
+            assertV1SignedBy(sent.at(-1), publicKey);
+        });
+    }
+
+    test(`${kind}: an adapter disconnect while the key signs the v1 message: what it signed is not sent`, async () => {
+        const { W } = await keptKey(kind);
+        const adapter = await connectedAdapter(W);
+        connect(W);
+        const sends = sent.length;
+        rpcCalls.length = 0;
+        const hook = signingHook(() => adapter.disconnect());
+        let error;
+        try {
+            error = await rejection(send(W, kind));
+        } finally {
+            hook.restore();
+        }
+        assert.equal(hook.count, 1, 'the key signed, and the disconnect ran while it did');
+        assert.equal(error.name, 'KeyWalletMismatchError', error.message);
+        assert.equal(error.reason, 'no-wallet');
+        assert.match(error.message, /The transaction it had signed was not sent\.$/);
+        assert.equal(sent.length, sends, 'nothing sent');
+        assert.ok(rpcCalls.includes('simulateTransaction'), 'built as v1: its limits were simulated');
+    });
+}
+
+test("an adapter disconnect while a 'v1' paymaster send waits to be retried: it is not sent again, and the send rejects", async () => {
+    const { W } = await keptKey('session');
+    const adapter = await connectedAdapter(W);
+    connect(W);
+    const sends = sent.length;
+    // A 429 is a refusal: nothing was sent.
+    let disconnected;
+    const hook = failFirstSend(429, () => (disconnected = adapter.disconnect()));
+    let error;
+    try {
+        error = await rejection(send(W, 'session'));
+        await disconnected;
+    } finally {
+        hook.restore();
+    }
+    assert.equal(hook.attempts, 1, 'not sent again');
+    assert.equal(hook.first[0], 0x81, 'the attempt was a v1 transaction');
+    assert.equal(error.name, 'KeyWalletMismatchError', error.message);
+    assert.equal(error.reason, 'no-wallet');
+    assert.match(error.message, /The transaction it had signed was not sent\.$/);
+    assert.equal(sent.length, sends);
+});
+
+test("an adapter disconnect while a 'v1' paymaster send waits to be retried, after an attempt whose answer was lost: not sent again, and its outcome is unknown", async () => {
+    const { W } = await keptKey('authority');
+    const adapter = await connectedAdapter(W);
+    connect(W);
+    // A 503 may come after the paymaster sent it.
+    let disconnected;
+    const hook = failFirstSend(503, () => (disconnected = adapter.disconnect()));
+    let error;
+    try {
+        error = await rejection(send(W, 'authority'));
+        await disconnected;
+    } finally {
+        hook.restore();
+    }
+    assert.equal(hook.attempts, 1, 'not sent again');
+    assert.equal(hook.first[0], 0x81, 'the attempt was a v1 transaction');
+    assert.equal(error.name, 'TransactionOutcomeUnknownError', error.message);
+    assert.match(error.message, /may have sent this transaction/);
+    assert.match(error.message, /not sent again: The stored authority key signs only for wallet/);
+    assert.equal(W.isKeyWalletMismatchError(error), false, 'it may have been sent: not a refusal');
 });

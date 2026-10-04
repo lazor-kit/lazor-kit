@@ -11,8 +11,9 @@
 //        answer within 3 s), the lane's floor in the simulation;
 //   U9   the ComputeBudget strip;
 //   U10  the logs of a landed v1 transaction, read raw;
-//   and the paymaster's -32051 refusal: one request, not retried, not resent
-//   as v0, remembered for later requests.
+//   the paymaster's -32051 refusal: one request, not retried, not resent
+//   as v0, remembered for later requests; and a v1 session send's 3037 /
+//   3038, reported as a v0 one's.
 //
 // The gate and the strip are also tested on the source, with their imports
 // stubbed, and so is executeWallet (internal; entered after the passkey
@@ -436,6 +437,32 @@ test('a session send goes out as v1, signed by the session key over the final co
   assert.equal(send.config.computeUnitLimit, 40_000);
   assert.ok(!programsOf(send).includes(COMPUTE_BUDGET));
 });
+
+for (const [code, expected] of [
+  [3037, 'UnlistedSolOutflowError'],
+  [3038, 'UnlistedTokenOutflowError'],
+]) {
+  test(`a session send refused with ${code} reports ${expected} as v1, as v0 does, after one request`, async () => {
+    const seen = {};
+    for (const txVersion of ['v0', 'v1']) {
+      const w = world();
+      w.script.send = () => ({ error: { code: -32602, message: `Invalid transaction: Transaction simulation failed: InstructionError(0, Custom(${code}))` } });
+      const S = use(w, { acceptsTxV1: true });
+      const { error } = await captureConsole(() =>
+        S.signAndSendWithSession(
+          { sessionKeypair: w.sessionKey, sessionPda: w.sessionPda, instructions: [w.transfer()], transactionOptions: { txVersion } },
+          {},
+        ),
+      );
+      assert.equal(sends(w).length, 1, `${txVersion}: one request`);
+      assert.equal(w.sent()[0].version, txVersion === 'v1' ? 1 : 0);
+      seen[txVersion] = { name: error?.name, signer: error?.signer, cause: error?.cause?.name, code: error?.cause?.code };
+    }
+    assert.equal(seen.v1.name, expected, JSON.stringify(seen.v1));
+    assert.deepEqual({ signer: seen.v1.signer, cause: seen.v1.cause, code: seen.v1.code }, { signer: 'session', cause: 'PaymasterError', code: -32602 });
+    assert.deepEqual(seen.v1, seen.v0);
+  });
+}
 
 test('a session send too large for v1 is refused before the session key signs', async () => {
   const w = world();

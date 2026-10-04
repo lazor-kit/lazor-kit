@@ -9,8 +9,10 @@
 //       request, the formula, the ceilings on any simulation problem, the
 //       caller's values, the 3 s bound;
 //   U8  Paymaster.signAndSendRaw: the retry and error table of
-//       signAndSendVersionedTransaction on the same bytes, -32051 not retried,
-//       and the page's memo of a paymaster that refused v1;
+//       signAndSendVersionedTransaction on the same bytes (3037 / 3038 not
+//       retried included), -32051 not retried, the page's memo of a
+//       paymaster that refused v1, and a 'v1' session or authority send's
+//       3037 / 3038 reported as a 'v0' one's;
 //   U10 the logs of a landed v1 transaction, read with a raw getTransaction
 //       (maxSupportedTransactionVersion 1) on a recorded devnet response, to
 //       tell LazorKit's 3006 from an inner program's.
@@ -711,6 +713,8 @@ test("U7: the caller's limits: both skip the simulation; one is kept and the oth
 
 const KORA_3006 = { code: -32602, message: 'Invalid transaction: Transaction simulation failed: InstructionError(1, Custom(3006))' };
 const KORA_3014 = { code: -32602, message: 'Invalid transaction: Transaction simulation failed: InstructionError(0, Custom(3014))' };
+const KORA_3037 = { code: -32602, message: 'Invalid transaction: Transaction simulation failed: InstructionError(0, Custom(3037))' };
+const KORA_3038 = { code: -32602, message: 'Invalid transaction: Transaction simulation failed: InstructionError(0, Custom(3038))' };
 const INTERNAL = { code: -32603, message: 'Internal error: upstream RPC unavailable' };
 const REFUSED_V1 = { code: -32051, message: 'transaction version 1 is not enabled on this paymaster' };
 const SIGNATURE = '5'.repeat(88);
@@ -754,6 +758,9 @@ test("U8: signAndSendRaw has signAndSendVersionedTransaction's retries and error
     'answered at once': [{ signature: SIGNATURE }],
     '3006 (SignatureReused)': [{ error: KORA_3006 }],
     '3014 (DeferredAuthorizationExpired)': [{ error: KORA_3014 }],
+    '3037 (ActionUnlistedSolOutflow)': [{ error: KORA_3037 }],
+    '3038 (ActionUnlistedTokenOutflow)': [{ error: KORA_3038 }],
+    'a 502 then 3037 (the 502 may have been sent)': [{ http: 502 }, { error: KORA_3037 }],
     'already processed': [{ error: { code: -32002, message: 'Transaction simulation failed: This transaction has already been processed' } }],
     'sent, then failed (signature in the error)': [{ error: { code: -32002, message: 'Transaction failed', data: { signature: SIGNATURE } } }],
     'internal error every time': [{ error: INTERNAL }],
@@ -768,6 +775,11 @@ test("U8: signAndSendRaw has signAndSendVersionedTransaction's retries and error
     assert.deepEqual(b, a, row);
     assert.deepEqual(viaRaw, viaVersioned, `${row}: the same requests`);
     assert.ok(viaRaw.every((body) => body === viaRaw[0]), `${row}: a retry resends the same bytes`);
+    // 3037 / 3038 with nothing sent before: the same bytes move the same assets, so no retry.
+    if (/^303[78] /.test(row)) {
+      assert.equal(viaRaw.length, 1, `${row}: not retried`);
+      assert.deepEqual(b.error, { name: 'PaymasterError', code: -32602, maybeSent: false, signature: undefined }, row);
+    }
   }
 });
 
@@ -799,6 +811,38 @@ test("U8: a -32051 from signAndSendRaw moves that paymaster's later 'v1' request
     await c.S().signAndSendWithSession(request(c, 'transfer1', V1));
     assert.equal(landed(c)[0].version, 0);
   });
+});
+
+// ── 3037 / 3038 on a 'v1' session or authority send ─────────────────────
+
+test("U8: a 'v1' session or authority send refused with 3037 / 3038 rejects as the same send in 'v0' does, after one request", async () => {
+  // Kora's text has no logs: a session's (or a record with no role's) is
+  // the typed error; an Admin key's (the corpus authority, role 1) has no
+  // policy, so it is LazorKit's only when the logs say so, and stays the
+  // PaymasterError.
+  const rows = [
+    ['signAndSendWithSession', KORA_3037, 'UnlistedSolOutflowError', 'session'],
+    ['signAndSendWithSession', KORA_3038, 'UnlistedTokenOutflowError', 'session'],
+    ['signAndSendWithAuthority', KORA_3037, 'PaymasterError'],
+    ['signAndSendWithAuthority', KORA_3038, 'PaymasterError'],
+  ];
+  for (const [flow, answer, expected, signer] of rows) {
+    const seen = {};
+    for (const txVersion of ['v0', 'v1']) {
+      await withCase({ paymasterConfig: ACCEPTS, fault: { always: { error: answer } } }, async (c) => {
+        const error = await rejects(c.S()[flow](request(c, 'transfer1', { txVersion })));
+        const requests = sendRequests(c);
+        assert.equal(requests.length, 1, `${flow} ${txVersion} ${answer.message}: not retried`);
+        assert.equal(wire(requests[0])[0] === 0x81, txVersion === 'v1', `${flow} ${txVersion}: sent in its format`);
+        assert.equal(landed(c).length, 0);
+        assert.equal(c.S().error, error);
+        seen[txVersion] = { name: error.name, signer: error.signer, code: error.code ?? error.cause?.code, maybeSent: error.maybeSent ?? error.cause?.maybeSent };
+      });
+    }
+    assert.equal(seen.v1.name, expected, `${flow}: ${answer.message}`);
+    if (signer) assert.equal(seen.v1.signer, signer);
+    assert.deepEqual(seen.v1, seen.v0, `${flow}: 'v1' rejects as 'v0' does`);
+  }
 });
 
 // ── U10: logs of a landed v1 transaction ────────────────────────────────
