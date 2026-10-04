@@ -17,6 +17,7 @@ import {
     type ProtocolVersion,
 } from '../program/protocol';
 import { hasDeferredExpiredCode } from '../wallet/deferred';
+import { hasUnlistedOutflowCode } from '../wallet/policy';
 export interface PaymasterConfig {
     paymasterUrl: string;
     apiKey?: string;
@@ -77,6 +78,7 @@ export class Paymaster {
     private endpoint: string;
     private apiKey?: string;
     private protocolVersion?: ProtocolVersion;
+    private readonly beforeAttempt?: () => void;
     private logger = new Logger('Paymaster');
 
     /**
@@ -86,8 +88,19 @@ export class Paymaster {
      *   transactions this paymaster signs. With `1`, a 4018 that names no
      *   program (Kora's `Custom(4018)`) is the retired v1 program's, and is
      *   thrown as `V1WalletRetiredError` (see `isRetiredDeploymentError`).
+     * @param options.beforeAttempt Runs right before each attempt to send, of
+     *   every send this paymaster makes, retries included; what it throws
+     *   stops the send (see `sendWithRetries`). The SDK makes a paymaster for
+     *   each action, and gives a session or authority send its kept key's
+     *   check: nothing is sent once the wallet has been disconnected. It is
+     *   the paymaster's, not each send method's, so that every way of
+     *   sending (each transaction version) runs it.
      */
-    constructor(config: PaymasterConfig, options: { protocolVersion?: ProtocolVersion } = {}) {
+    constructor(
+        config: PaymasterConfig,
+        options: { protocolVersion?: ProtocolVersion; beforeAttempt?: () => void } = {},
+    ) {
+        this.beforeAttempt = options.beforeAttempt;
         this.endpoint = config.paymasterUrl;
         this.apiKey = config.apiKey;
         this.protocolVersion = options.protocolVersion;
@@ -267,6 +280,12 @@ export class Paymaster {
      * the paymaster answers, which may be before the transaction has executed:
      * callers that need its outcome confirm it themselves.
      *
+     * Each attempt, retries included, first runs this paymaster's
+     * `beforeAttempt` (see the constructor). When that throws, nothing more is
+     * sent: what it threw is thrown when no earlier attempt may have been sent
+     * (nothing was); otherwise the last attempt's `PaymasterError` with
+     * `maybeSent`, its message saying why the bytes were not sent again.
+     *
      * A retry sends the same bytes, so a transaction can land at most once.
      * It stops, and throws, when:
      * - the paymaster reports the transaction's signature with its error:
@@ -280,6 +299,10 @@ export class Paymaster {
      *   authorization expired, or an inner program's error with that code)
      *   and no earlier attempt may have been sent: the `PaymasterError`.
      *   Whose 3014 it was is told by the caller (`executeBeforeExpiry`).
+     * - the simulation failed with 3037 or 3038 (a session or delegate moving
+     *   an asset its policy does not name, or an inner program's error with
+     *   that code) and no earlier attempt may have been sent: the
+     *   `PaymasterError`. The same bytes move the same assets.
      * - the paymaster answered with a 4018 (`RetiredDeployment`: a retired
      *   v1 program answers every attempt with it, or an inner program's error
      *   with that code), on its first answer: `V1WalletRetiredError` when it
@@ -295,7 +318,20 @@ export class Paymaster {
         baseDelay: number,
     ): Promise<string> {
         let maybeSent = false;
+        let last: PaymasterError | undefined;
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            if (this.beforeAttempt) {
+                try {
+                    this.beforeAttempt();
+                } catch (refusal) {
+                    if (!maybeSent || !last) throw refusal;
+                    // An earlier attempt may still land: its outcome is unknown, not refused.
+                    throw new PaymasterError(
+                        `${last.message} (not sent again: ${(refusal as Error)?.message ?? String(refusal)})`,
+                        { code: last.code, data: last.data, httpStatus: last.httpStatus, maybeSent: true, cause: last },
+                    );
+                }
+            }
             try {
                 return await attemptSend();
             } catch (caught) {
@@ -304,6 +340,7 @@ export class Paymaster {
                         ? caught
                         : new PaymasterError((caught as Error)?.message ?? String(caught), { cause: caught });
                 this.logger.error(`Attempt ${attempt} failed:`, error);
+                last = error;
                 if (error.signature) throw error;
                 if (isAlreadyProcessed(error)) {
                     error.maybeSent = true;
@@ -314,6 +351,8 @@ export class Paymaster {
                 // DeferredAuthorizationExpired (3014): the slot only moves on,
                 // so the same bytes can never pass again.
                 if (!maybeSent && hasDeferredExpiredCode(error)) throw error;
+                // ActionUnlistedSolOutflow / ActionUnlistedTokenOutflow (3037 / 3038).
+                if (!maybeSent && hasUnlistedOutflowCode(error)) throw error;
                 // RetiredDeployment (4018): the next attempt gets the same answer.
                 if (hasRetiredDeploymentCode(error)) {
                     if (!maybeSent) throw this.retiredDeploymentFailure(error);

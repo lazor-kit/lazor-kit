@@ -2,8 +2,9 @@
 // first): the SDK's own errors, the same errors from a second copy of the
 // package, errors wrapped as an app receives them, and raw RPC / paymaster
 // shapes. Then a retired v1 wallet's 4018 through the paymaster and the
-// store, against a scripted RPC and paymaster, no network. Run with
-// `pnpm test`.
+// store, against a scripted RPC and paymaster, no network, and the
+// paymaster's `beforeAttempt` before each attempt of every way it sends. Run
+// with `pnpm test`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -362,3 +363,101 @@ test("a retired v1 program's 4018 whose logs are only in the paymaster's data re
     assert.equal(error.cause.name, 'PaymasterError');
     assert.equal(paymasterRequests, 1);
 });
+
+// ─── beforeAttempt: every send of the paymaster checks first ────────
+//
+// A session or authority send makes its paymaster with the kept key's check
+// as `beforeAttempt` (core/wallet/actions `paymasterFor`), so that nothing it
+// signed goes out once the wallet has been disconnected. The paymaster runs
+// it right before each attempt, retries included, whichever of its send
+// methods the transaction goes out by.
+
+/** Each way the paymaster sends a transaction, with `retries` attempts and a `delay` ms backoff. */
+const SENDS = {
+    signAndSend: (paymaster, retries, delay) => paymaster.signAndSend(legacyTx(), retries, delay),
+    signAndSendVersionedTransaction: (paymaster, retries, delay) => paymaster.signAndSendVersionedTransaction(v0Tx(), retries, delay),
+};
+
+test('every send method of the paymaster is in SENDS, so the beforeAttempt tests below cover it', () => {
+    const methods = Object.getOwnPropertyNames(W.Paymaster.prototype).filter((name) => /^signAndSend/.test(name));
+    assert.deepEqual(
+        methods.sort(),
+        Object.keys(SENDS).sort(),
+        'A send method is missing from SENDS: add it, with arguments for one transaction. A kept key\'s send must not ' +
+            'go out after a disconnect by any of them (it goes through sendWithRetries, which runs beforeAttempt).',
+    );
+});
+
+/** A paymaster whose `beforeAttempt` logs 'check' and throws `refuse(n)` when that returns an error; the paymaster logs 'send'. */
+function checkedPaymaster(log, refuse = () => undefined) {
+    let checks = 0;
+    return new W.Paymaster(
+        { paymasterUrl: PAYMASTER },
+        {
+            beforeAttempt: () => {
+                log.push('check');
+                const refusal = refuse(++checks);
+                if (refusal) throw refusal;
+            },
+        },
+    );
+}
+
+/** The paymaster answers the first attempt with HTTP `status`, then with a signature. */
+const failFirst = (log, status) => (n, answer) => {
+    log.push('send');
+    return n === 1 ? answer({ error: { code: -32000, message: `refused (${status})` } }, status) : answer({ result: { signature: SIG } });
+};
+
+for (const [name, send] of Object.entries(SENDS)) {
+    test(`${name}: beforeAttempt runs right before each attempt, the retry included`, async (t) => {
+        quietPaymaster(t);
+        const log = [];
+        paymasterAnswer = failFirst(log, 429);
+        paymasterRequests = 0;
+        assert.equal(await send(checkedPaymaster(log), 3, 1), SIG);
+        assert.deepEqual(log, ['check', 'send', 'check', 'send']);
+    });
+
+    test(`${name}: what beforeAttempt throws before the first attempt is thrown, and nothing is sent`, async (t) => {
+        quietPaymaster(t);
+        const log = [];
+        const refusal = new Error('refused before sending');
+        paymasterAnswer = failFirst(log, 429);
+        paymasterRequests = 0;
+        await assert.rejects(send(checkedPaymaster(log, () => refusal), 3, 1), (error) => error === refusal);
+        assert.deepEqual(log, ['check']);
+        assert.equal(paymasterRequests, 0);
+    });
+
+    test(`${name}: what beforeAttempt throws before a retry, after a refusal (nothing sent), is thrown, and the retry is not sent`, async (t) => {
+        quietPaymaster(t);
+        const log = [];
+        const refusal = new Error('refused before the retry');
+        paymasterAnswer = failFirst(log, 429);
+        paymasterRequests = 0;
+        await assert.rejects(send(checkedPaymaster(log, (n) => n === 2 && refusal), 3, 1), (error) => error === refusal);
+        assert.deepEqual(log, ['check', 'send', 'check']);
+        assert.equal(paymasterRequests, 1);
+    });
+
+    test(`${name}: beforeAttempt throwing before a retry, after an attempt whose answer was lost: not sent again, and that attempt may have been sent`, async (t) => {
+        quietPaymaster(t);
+        const log = [];
+        paymasterAnswer = failFirst(log, 503);
+        paymasterRequests = 0;
+        const refusal = new Error('refused before the retry');
+        const error = await send(checkedPaymaster(log, (n) => n === 2 && refusal), 3, 1).then(
+            () => assert.fail('the send resolved'),
+            (caught) => caught,
+        );
+        assert.deepEqual(log, ['check', 'send', 'check']);
+        assert.equal(paymasterRequests, 1);
+        // Not the refusal: that would say nothing was sent.
+        assert.equal(error.name, 'PaymasterError');
+        assert.equal(error.maybeSent, true);
+        assert.equal(error.httpStatus, 503);
+        assert.match(error.message, /\(not sent again: refused before the retry\)$/);
+        assert.equal(error.cause.name, 'PaymasterError');
+    });
+}

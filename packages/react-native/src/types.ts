@@ -375,7 +375,22 @@ export interface CreateSessionPayload {
   readonly sessionKey: PublicKey;
   /** Absolute slot at which the session expires. */
   readonly expiresAtSlot: bigint;
-  /** Optional permission actions (spending limits, program whitelist, etc.). */
+  /**
+   * Permission actions (spending limits, program whitelist, etc.). An asset
+   * they do not name cannot leave the wallet: with no `Actions.sol*` action
+   * the session spends no SOL (rent the wallet pays for a new account
+   * included), and it spends a token only with an `Actions.token*` action
+   * for its mint. wSOL is a mint of its own. The program enforces this from
+   * the release that adds errors 3037 and 3038; until then an asset they do
+   * not name is not bounded at all, so token actions alone leave the
+   * wallet's SOL unbounded.
+   *
+   * At most 16 actions, and within 244 bytes (`serializeActions(actions)`),
+   * which is what fits in the transaction beside the passkey's response:
+   * a `sol*` action takes 19 bytes (`solRecurringLimit` 43), `tokenMaxPerTx`
+   * and `tokenLimit` 51, `tokenRecurringLimit` 75. Not checked before the
+   * portal opens.
+   */
   readonly actions?: SessionAction[];
   /**
    * Create a session with no spending limits, which can spend the whole vault
@@ -413,8 +428,13 @@ export interface AddAuthorityPayload {
   /**
    * Spending policy, required when the role is ROLE_SPENDER (Delegate).
    * Build it with `serializeActions([...])`. Protocol v2 rejects a Delegate
-   * without one (3033) and a policy on any other rank (3035). v1 wallets have
-   * no policies: passing one for a v1 wallet throws.
+   * without one (3033) and a policy on any other rank (3035). An asset the
+   * policy does not name cannot leave the wallet (from the program release
+   * that adds errors 3037 and 3038): name SOL with an `Actions.sol*` action
+   * (rent the wallet pays counts) and each mint the key may spend with an
+   * `Actions.token*` action. Keep it within 244 bytes, as a session's
+   * `actions`. v1 wallets have no policies: passing one for a v1 wallet
+   * throws.
    */
   readonly policy?: Uint8Array;
   /**
