@@ -123,7 +123,7 @@ export function makeCorpus({ web3, sdk, p256 }) {
     /**
      * A 2.2 KB inner payload (40 accounts x 32 B + 900 B data + a transfer),
      * with the caller's two lookup tables: over 1,232 B as v0 even with them.
-     * The flag-off golden is the failure 3.3.1 / 2.3.1 report for it (as 3.2.1 / 2.2.1 did).
+     * The flag-off golden is the failure 3.4.0 / 2.4.0 report for it (as 3.3.1 / 2.3.1 and 3.2.1 / 2.2.1 did).
      */
     payload2k2: {
       describe: 'transfer + Noop ix with 40 accounts (24 from table A, 16 from table B; 4 writable) and 900 B data; lookup tables A and B',
@@ -288,7 +288,7 @@ export function makeCorpus({ web3, sdk, p256 }) {
 
 // ── the case matrix ───────────────────────────────────────────────────
 
-/** Transaction options per variant (flag off: no 'v1' anywhere). 2.3.1 (as 2.2.1) has no `txVersion`: 'v0' is passed and ignored. */
+/** Transaction options per variant (flag off: no 'v1' anywhere). 2.4.0 (as 2.2.1) has no `txVersion`: 'v0' is passed and ignored. */
 export const MOBILE_VARIANTS = {
   omit: {},
   v0: { txVersion: 'v0' },

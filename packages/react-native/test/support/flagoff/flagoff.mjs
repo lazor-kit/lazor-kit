@@ -1,6 +1,6 @@
 /**
  * The flag-off check (U4 of the txv1 design): with `txVersion` omitted or
- * 'v0', every send flow must make exactly the requests 2.3.1 makes, in the
+ * 'v0', every send flow must make exactly the requests 2.4.0 makes, in the
  * same order, and end the same way.
  *
  * `runCase` runs one case of the corpus matrix in a fresh process
@@ -12,7 +12,7 @@
  *   rpc        each JSON-RPC request in order: method, and its params' SHA-256
  *   portal     each portal page opened: action, and its parameters' SHA-256
  *
- * The golden (test/fixtures/flagoff.mobile.json) was recorded from 2.3.0's own
+ * The golden (test/fixtures/flagoff.mobile.json) was recorded from 2.4.0's own
  * dist/index.js by ./capture.mjs, with this workspace's dependencies, so a
  * difference is the adapter's own.
  */
