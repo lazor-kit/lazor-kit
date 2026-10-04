@@ -30,6 +30,7 @@ import {
 import { connectAbandoned, forgetCandidates, hasChooserHost } from './core/wallet/confirmation';
 import { type AuthorityTurn, withAuthority } from './core/wallet/sequence';
 import { deferredExpiryOffset, executeBeforeExpiry } from './core/wallet/deferred';
+import { toPolicyError } from './core/wallet/policy';
 import {
   type TxV1Decision,
   placeholderFor,
@@ -874,7 +875,8 @@ export const signAndSendWithSessionAction = async (
       });
       return signature;
     } catch (err) {
-      const error = toActionError(err, get, flowVersion);
+      // A session's actions name what may leave the vault (3037 / 3038).
+      const error = toActionError(toPolicyError(err, 'session'), get, flowVersion);
       logger.error('signAndSendWithSessionAction failed:', error);
       throw error;
     }

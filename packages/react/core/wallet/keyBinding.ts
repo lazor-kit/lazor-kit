@@ -8,8 +8,15 @@
  * `signAndSendWithAuthority` and `revokeSession()` use the key only while
  * that same wallet is connected. Otherwise they throw `KeyWalletMismatchError`
  * before anything is signed or sent, and the key itself checks again when it
- * signs, so a disconnect or a switch while a send is being built still stops
- * it.
+ * signs, and again right before each attempt to send what it signed, so a
+ * disconnect or a switch while a send is being built still stops it.
+ *
+ * A send that loaded its key before a disconnect never signs or sends after
+ * it, whichever way the disconnect came (the store's `disconnect`,
+ * `LazorkitWalletAdapter.disconnect`, the Wallet Standard
+ * `standard:disconnect`; see ./disconnects), and even if the same wallet is
+ * connected again by then (`'disconnected'`): with `keepSessionKeys` the key
+ * is kept, but the send started before the sign-out is not finished.
  *
  * An entry moved from an earlier release (the plaintext in localStorage)
  * names its wallet, but nothing checked it. On its first use it is bound to
@@ -30,6 +37,7 @@ import { type KeySigner, type KeySlot, type KeyStorage, type StoredKey, forgetKe
 import { clientFor, v1Client, v2Client } from '../program';
 import { chainHasError } from '../program/errorShape';
 import type { WalletState } from '../types';
+import { disconnectMark } from './disconnects';
 
 /**
  * Why a kept key was not used:
@@ -37,16 +45,20 @@ import type { WalletState } from '../types';
  * - `'other-wallet'`: a different wallet is connected;
  * - `'unbound'`: a key whose wallet could not be confirmed: an earlier
  *   release's entry, or a record whose PDA does not derive from the wallet it
- *   names (see the module header).
+ *   names (see the module header);
+ * - `'disconnected'`: the key's wallet is connected, but a disconnect ran
+ *   after this send loaded the key: a send started before a sign-out is not
+ *   finished after it. Send again.
  */
-export type KeyWalletMismatchReason = 'no-wallet' | 'other-wallet' | 'unbound';
+export type KeyWalletMismatchReason = 'no-wallet' | 'other-wallet' | 'unbound' | 'disconnected';
 
 /**
  * A session or authority key the SDK keeps was not used, because the wallet
- * it signs for is not the connected one (`reason`). Nothing was signed or
- * sent. Connect `keyWallet` to use the key, or create a session (add an
- * authority) for the connected wallet. An `'unbound'` key is never used:
- * create the session (add the authority) again, which replaces it.
+ * it signs for is not the connected one, or was disconnected during the send
+ * (`reason`). Nothing was sent. Connect `keyWallet` to use the key, or create
+ * a session (add an authority) for the connected wallet. An `'unbound'` key
+ * is never used: create the session (add the authority) again, which
+ * replaces it.
  */
 export class KeyWalletMismatchError extends Error {
     /** Matched with `name` by `isKeyWalletMismatchError`, across copies of the package. */
@@ -59,8 +71,14 @@ export class KeyWalletMismatchError extends Error {
         readonly keyWallet: string | undefined,
         /** The connected wallet's PDA; `undefined` when none is connected. */
         readonly connectedWallet: string | undefined,
+        /**
+         * `'send'`: refused after the key had signed, right before the
+         * transaction would have been sent (it was not). Default `'sign'`:
+         * nothing was signed.
+         */
+        stage: 'sign' | 'send' = 'sign',
     ) {
-        super(mismatchMessage(slot, reason, keyWallet, connectedWallet));
+        super(mismatchMessage(slot, reason, keyWallet, connectedWallet, stage));
         this.name = 'KeyWalletMismatchError';
     }
 }
@@ -70,21 +88,30 @@ function mismatchMessage(
     reason: KeyWalletMismatchReason,
     keyWallet: string | undefined,
     connectedWallet: string | undefined,
+    stage: 'sign' | 'send',
 ): string {
     const create = slot === 'session' ? 'create a session' : 'add an authority';
+    const outcome =
+        stage === 'send' ? 'The transaction it had signed was not sent.' : 'Nothing was signed or sent.';
     if (reason === 'unbound') {
         return (
             `The wallet the stored ${slot} key belongs to could not be confirmed: its ${slot} PDA does not ` +
             `derive from the wallet its record names (on this cluster), and no LazorKit account on chain names ` +
             `the key. It is not used: ${create} again, which replaces it (forgetStoredKeys() deletes it too, ` +
-            `with the other kept key). Nothing was signed or sent.`
+            `with the other kept key). ${outcome}`
+        );
+    }
+    if (reason === 'disconnected') {
+        return (
+            `The wallet was disconnected while this send was in progress, so the stored ${slot} key did not ` +
+            `finish it, although its wallet ${keyWallet} is connected again. Send it again. ${outcome}`
         );
     }
     const which =
         reason === 'no-wallet' ? 'no wallet is connected' : `the connected wallet is ${connectedWallet}`;
     return (
         `The stored ${slot} key signs only for wallet ${keyWallet}, and ${which}. Connect that wallet to use it, ` +
-        `or ${create} for the connected one. Nothing was signed or sent.`
+        `or ${create} for the connected one. ${outcome}`
     );
 }
 
@@ -97,19 +124,33 @@ export function isKeyWalletMismatchError(error: unknown): boolean {
     return chainHasError(error, KeyWalletMismatchError, 'KeyWalletMismatchError', 'KEY_WALLET_MISMATCH');
 }
 
+/** A kept key for the wallet connected when it was loaded (see `keyForConnectedWallet`). */
+export interface ConnectedKey<S extends KeySlot> extends StoredKey<S> {
+    /**
+     * Throws `KeyWalletMismatchError` when what the key signed may no longer
+     * be sent: its wallet is not connected any more, or a disconnect ran
+     * since the key was loaded. Called right before each attempt to send.
+     */
+    readonly assertSendable: () => void;
+}
+
 /**
  * The key the SDK keeps in `slot`, for the wallet connected now: null when
  * there is none. Throws when the stored session has expired (and deletes its
  * key), and `KeyWalletMismatchError` when the key is not the connected
- * wallet's. The signer it returns checks again when it signs.
+ * wallet's. The signer it returns checks again when it signs, and
+ * `assertSendable` before each attempt to send: both also refuse once a
+ * disconnect has run since this call started (see ./disconnects).
  */
 export async function keyForConnectedWallet<S extends KeySlot>(params: {
     get: () => WalletState;
     slot: S;
     storage: KeyStorage;
     connection: Connection;
-}): Promise<StoredKey<S> | null> {
+}): Promise<ConnectedKey<S> | null> {
     const { get, slot, storage, connection } = params;
+    // Read first: a disconnect while the key loads counts too.
+    const mark = disconnectMark();
     const stored = await loadKey(storage, slot);
     if (!stored) return null;
     let info = stored.info;
@@ -131,14 +172,15 @@ export async function keyForConnectedWallet<S extends KeySlot>(params: {
     }
 
     const bound = walletPda;
-    const check = () => {
+    const check = (stage: 'sign' | 'send') => {
         const connected = get().wallet?.smartWallet;
         if (connected !== bound) {
-            throw new KeyWalletMismatchError(slot, connected ? 'other-wallet' : 'no-wallet', bound, connected);
+            throw new KeyWalletMismatchError(slot, connected ? 'other-wallet' : 'no-wallet', bound, connected, stage);
         }
+        if (disconnectMark() !== mark) throw new KeyWalletMismatchError(slot, 'disconnected', bound, connected, stage);
     };
-    check();
-    return { signer: checkedSigner(stored.signer, check), info };
+    check('sign');
+    return { signer: checkedSigner(stored.signer, () => check('sign')), info, assertSendable: () => check('send') };
 }
 
 /** Signs only while `check` passes: a transaction, or a v1 message. */

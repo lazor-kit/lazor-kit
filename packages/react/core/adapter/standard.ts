@@ -94,8 +94,9 @@ class LazorkitWalletStandard implements Wallet {
             'standard:disconnect': {
                 version: '1.0.0',
                 // Deletes the session key the SDK keeps, as the store's and
-                // the adapter's disconnect do by default. The standard method
-                // takes no options, so there is no keepSessionKeys here.
+                // the adapter's disconnect do by default, and disconnects the
+                // store too (see the adapter's disconnect). The standard
+                // method takes no options, so there is no keepSessionKeys here.
                 disconnect: async () => {
                     await this._adapter.disconnect();
                 },
