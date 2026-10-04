@@ -12,10 +12,14 @@
 // - once the wallet-adapter's disconnect has deleted the session key, a v1
 //   session send has none to sign with, as a v0 one;
 // - a disconnect while a v1 send is in flight (#115) stops it as a v0 one:
-//   one with a reconnect of the same wallet while it is being built is
-//   refused ('disconnected'), one while the key signs the v1 message is not
-//   sent, and one while the paymaster send waits to be retried is not sent
-//   again (its outcome unknown when the first attempt's answer was lost).
+//   the store's, the wallet-adapter's or the Wallet Standard's while it is
+//   being built is refused ('no-wallet': nothing signed or sent, onFail
+//   called, the store disconnected, the session key deleted unless
+//   keepSessionKeys); one with a reconnect of the same wallet while it is
+//   being built is refused ('disconnected'), one while the key signs the v1
+//   message is not sent, and one while the paymaster send waits to be
+//   retried is not sent again (its outcome unknown when the first attempt's
+//   answer was lost).
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import { test, beforeEach, after } from 'node:test';
@@ -511,19 +515,57 @@ test("after the wallet-adapter's disconnect, which deletes the session key (3.3.
 
 // ─── A disconnect while a 'v1' kept-key send is in flight (#115) ────────────
 
+/** The wallet-adapter's and the Wallet Standard wallet's config: this page's RPC, portal and v1 paymaster. */
+const adapterConfig = { rpcUrl: RPC, portalUrl: PORTAL, paymasterConfig: { paymasterUrl: PAYMASTER, acceptsTxV1: true }, cluster: 'devnet' };
+
 /** A `LazorkitWalletAdapter` connected to WALLET, saved as connect saves it, with the v1 paymaster. */
 async function connectedAdapter(W) {
     await W.StorageManager.saveWallet(walletInfo(W, WALLET));
-    const adapter = new W.LazorkitWalletAdapter({
-        rpcUrl: RPC,
-        portalUrl: PORTAL,
-        paymasterConfig: { paymasterUrl: PAYMASTER, acceptsTxV1: true },
-        cluster: 'devnet',
-    });
+    const adapter = new W.LazorkitWalletAdapter(adapterConfig);
     await adapter.connect();
     assert.equal(adapter.connected, true);
     return adapter;
 }
+
+/** The Wallet Standard wallet `registerLazorkitWallet` registers (with the v1 paymaster), as an app that loads after it receives it. */
+function registeredStandardWallet(W) {
+    // registerWallet's own announcement is a Node `Event`, which jsdom's
+    // window refuses (and logs); an app that loads later asks again with
+    // 'wallet-standard:app-ready', which is how this page receives it.
+    const error = console.error;
+    console.error = () => {};
+    try {
+        W.registerLazorkitWallet(adapterConfig);
+    } finally {
+        console.error = error;
+    }
+    const registered = [];
+    window.dispatchEvent(new window.CustomEvent('wallet-standard:app-ready', { detail: { register: (wallet) => registered.push(wallet) } }));
+    return registered.at(-1);
+}
+
+/** Each way to disconnect, set up before the send: the store's, the wallet-adapter's, the Wallet Standard's. */
+async function disconnectPath(W, path) {
+    if (path === 'store') return (options) => W.useWalletStore.getState().disconnect(options);
+    if (path === 'adapter') {
+        const adapter = await connectedAdapter(W);
+        return (options) => adapter.disconnect(options);
+    }
+    await W.StorageManager.saveWallet(walletInfo(W, WALLET));
+    const wallet = registeredStandardWallet(W);
+    const { accounts } = await wallet.features['standard:connect'].connect();
+    assert.equal(accounts.length, 1);
+    return () => wallet.features['standard:disconnect'].disconnect();
+}
+
+/** Connects WALLET through the store's `connect()`, as when the portal has found it and saved it. */
+async function reconnect(W) {
+    await W.StorageManager.saveWallet(walletInfo(W, WALLET));
+    const connected = await W.useWalletStore.getState().connect();
+    assert.equal(connected.smartWallet, WALLET.toBase58());
+}
+
+const article = (word) => (/^[aeiou]/.test(word) ? 'an' : 'a');
 
 /**
  * Counts the messages a kept (WebCrypto Ed25519) key signs, until
@@ -567,8 +609,80 @@ function failFirstSend(status, whileRetrying) {
 }
 
 for (const kind of ['session', 'authority']) {
+    for (const path of ['adapter', 'standard', 'store']) {
+        test(`${kind}: ${article(path)} ${path} disconnect while a 'v1' ${kind} send is being built: the key signs nothing, nothing is sent, and the send rejects`, async () => {
+            const { W, publicKey } = await keptKey(kind);
+            const disconnect = await disconnectPath(W, path);
+            connect(W);
+            const sends = sent.length;
+            const prompts = approvals.length;
+            rpcCalls.length = 0;
+            const spy = spySubtleSign();
+            const calls = [];
+            let ran = false;
+            let error;
+            try {
+                // Built and simulated for its limits, its key loaded, not signed yet: the disconnect runs to its end.
+                onSimulate = async () => {
+                    onSimulate = null;
+                    ran = true;
+                    await disconnect();
+                };
+                error = await rejection(send(W, kind, { ...V1, onSuccess: () => calls.push('onSuccess'), onFail: (e) => calls.push(e) }));
+            } finally {
+                onSimulate = null;
+                spy.restore();
+            }
+            assert.ok(ran, 'the disconnect ran while the v1 send was being built');
+            assert.ok(rpcCalls.includes('simulateTransaction'), 'built as v1: its limits were simulated');
+            assert.ok(W.isKeyWalletMismatchError(error), String(error));
+            assert.equal(error.reason, 'no-wallet');
+            assert.equal(error.slot, kind);
+            assert.equal(error.keyWallet, WALLET.toBase58());
+            assert.match(error.message, /Nothing was signed or sent\.$/);
+            assert.deepEqual(calls, [error]);
+            assert.equal(spy.calls.filter((call) => call.algorithm === 'Ed25519').length, 0, 'the key signed nothing');
+            assert.equal(sent.length, sends, 'nothing sent');
+            assert.equal(approvals.length, prompts, 'no passkey prompt');
+            assert.equal(W.useWalletStore.getState().wallet, null, 'the store is disconnected');
+            assert.equal(W.useWalletStore.getState().isSigning, false);
+            if (kind === 'session') assert.equal(await storedRecord('session'), undefined, 'the session key is deleted');
+            else assert.equal((await storedRecord('authority')).publicKey, publicKey.toBase58(), 'the authority key is kept');
+        });
+    }
+}
+
+test("adapter.disconnect({ keepSessionKeys: true }) while a 'v1' session send is being built: the send is refused, the key is kept, and signs v1 once its wallet is connected again", async () => {
+    const { W, publicKey } = await keptKey('session');
+    const adapter = await connectedAdapter(W);
+    connect(W);
+    const sends = sent.length;
+    let ran = false;
+    let error;
+    try {
+        onSimulate = async () => {
+            onSimulate = null;
+            ran = true;
+            await adapter.disconnect({ keepSessionKeys: true });
+        };
+        error = await rejection(send(W, 'session'));
+    } finally {
+        onSimulate = null;
+    }
+    assert.ok(ran, 'the disconnect ran while the v1 send was being built');
+    assert.ok(W.isKeyWalletMismatchError(error), String(error));
+    assert.equal(error.reason, 'no-wallet');
+    assert.equal(sent.length, sends, 'nothing sent');
+    assert.equal((await storedRecord('session')).publicKey, publicKey.toBase58(), 'kept');
+
+    await reconnect(W);
+    await send(W, 'session');
+    assertV1SignedBy(sent.at(-1), publicKey);
+});
+
+for (const kind of ['session', 'authority']) {
     for (const path of ['store', 'adapter']) {
-        test(`${kind}: ${path === 'adapter' ? 'an' : 'a'} ${path} disconnect and a connect of the same wallet again while a 'v1' send is being built: refused ('disconnected'), and the next one signs`, async () => {
+        test(`${kind}: ${article(path)} ${path} disconnect and a connect of the same wallet again while a 'v1' send is being built: refused ('disconnected'), and the next one signs`, async () => {
             const { W, publicKey } = await keptKey(kind);
             const adapter = path === 'adapter' ? await connectedAdapter(W) : undefined;
             connect(W);
