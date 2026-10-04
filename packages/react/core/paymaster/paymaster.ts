@@ -469,10 +469,12 @@ export class Paymaster {
 
     /**
      * Sign and send a transaction that is already encoded (any version), with
-     * the retries and error mapping of `signAndSendVersionedTransaction`: a
-     * retry sends the same bytes, a 3006 is `SignatureReusedError`, a 3014 or
-     * an already-processed answer is not retried, and `maybeSent` says when an
-     * attempt may have been sent.
+     * the retries and error mapping of `signAndSendVersionedTransaction` (both
+     * go through `sendWithRetries`): this paymaster's `beforeAttempt` runs
+     * right before each attempt, a retry sends the same bytes, a 3006 is
+     * `SignatureReusedError`, a 3014, a 3037 / 3038 or an already-processed
+     * answer is not retried, and `maybeSent` says when an attempt may have
+     * been sent.
      *
      * A refusal with code -32051 (the paymaster does not sign v1
      * transactions, and refused before signing) is not retried. This

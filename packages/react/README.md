@@ -418,7 +418,10 @@ A `'v1'` session or authority send is signed by the key the SDK keeps (see
 the v1 message itself (in the default tier, `crypto.subtle` with the
 non-extractable key, so no secret is read), only for its own wallet
 (`KeyWalletMismatchError` otherwise), and it checks the connected wallet again
-when it signs, after the limits are set.
+when it signs, after the limits are set, and right before each attempt to
+send: a disconnect while it is in flight stops it as it stops a v0 send. A
+policy refusal (3037 / 3038) is `UnlistedSolOutflowError` /
+`UnlistedTokenOutflowError` and is not resent, as for v0.
 
 A `'v1'` request that goes out as v0 makes the paymaster requests and RPC
 calls a `'v0'` one makes. It differs only before the prompt, where it rejects
