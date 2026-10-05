@@ -82,6 +82,19 @@ yarn ios       # or android / web
 
 Same flow for `examples/squads-passkey-wallet`.
 
+## Temporary dependency overrides
+
+Root `pnpm.overrides` and the `resolutions` in `examples/expo-react-native/package.json` force a few transitive packages past the range their parent declares, to clear Dependabot advisories. None of them reaches the published `dist`. Drop each one when its parent catches up, then re-run `pnpm install` (or `yarn install` in the example) and the CI steps.
+
+| Override | Where | Parent declares | Drop when |
+| --- | --- | --- | --- |
+| `jayson>uuid` → `^11.1.1` | pnpm + example | jayson 4 (via `@solana/web3.js` 1.x): `uuid ^8.3.2` | web3.js moves to jayson 5 (no uuid) or leaves the tree |
+| `xcode>uuid` → `^11.1.1` | pnpm + example | xcode 3.0.1 (via `@expo/config-plugins`): `uuid ^7.0.3` | xcode or `@expo/config-plugins` stops pinning uuid 7 |
+| `@expo/metro-config>postcss` → `^8.5.23` | pnpm + example | `@expo/metro-config` 54.0.15 (example), 55.0.18 (pnpm): `postcss ~8.4.32` | the locked `@expo/metro-config` is 55.0.22+ (declares `postcss ^8.5.14`) or SDK 54 lifts its pin |
+| `@coral-xyz/anchor/toml` → `^4.2.0` | example | anchor 0.32.1: `toml ^3.0.0` | anchor allows toml ≥ 4.2.0 |
+
+The parents only call APIs the newer versions keep: `uuid.v4()`, the postcss 8 processor, and `toml.parse()`. toml 4 declares Node ≥ 20, which the example already needs for Metro, and anchor's browser build (the one Metro bundles) never loads toml.
+
 ## Working on the program
 
 The Anchor program is a submodule pointing at [`lazor-kit/program-v2`](https://github.com/lazor-kit/program-v2). Cd into it and follow its own `DEVELOPMENT.md`:

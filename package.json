@@ -43,6 +43,11 @@
       "sharp",
       "unrs-resolver",
       "utf-8-validate"
-    ]
+    ],
+    "overrides": {
+      "@expo/metro-config>postcss": "^8.5.23",
+      "jayson>uuid": "^11.1.1",
+      "xcode>uuid": "^11.1.1"
+    }
   }
 }
