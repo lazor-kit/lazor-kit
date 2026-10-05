@@ -47,6 +47,16 @@ export {
   MAX_DEFERRED_EXPIRY_SLOTS,
 } from './core/wallet/deferred';
 export type { DeferredFailureContext } from './core/wallet/deferred';
+// A session send refused for SOL (3037) or a token (3038) its actions do not name.
+export {
+  UnlistedSolOutflowError,
+  UnlistedTokenOutflowError,
+  isUnlistedSolOutflowError,
+  isUnlistedTokenOutflowError,
+  UNLISTED_SOL_OUTFLOW_CODE,
+  UNLISTED_TOKEN_OUTFLOW_CODE,
+} from './core/wallet/policy';
+export type { PolicySigner } from './core/wallet/policy';
 export { PaymasterError } from './core/paymaster';
 export * from './config';
 export * from './program';

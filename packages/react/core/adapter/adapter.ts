@@ -40,6 +40,7 @@ import { clearPendingConfirmation, connectAbandoned, connectFreshWallet } from '
 import type { OnConfirmWallet } from '../wallet/confirmation';
 import type { SignMessageResult } from '../message/signedMessage';
 import { wipeKey } from '../keys';
+import { noteAdapterDisconnect } from '../wallet/disconnects';
 import type { DisconnectOptions } from '../types';
 import { Buffer } from 'buffer';
 import { DEFAULTS, DEFAULT_COMMITMENT } from '../../config';
@@ -410,17 +411,23 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
     }
 
     /**
-     * Disconnects the wallet, as the store's `disconnect` does: the session
-     * key the SDK keeps (`createSession`) is deleted — from IndexedDB, this
-     * page's memory and any plaintext an earlier release left, whichever
-     * wallet it is for — unless `options.keepSessionKeys`. The stored wallet
-     * is shared with the store, so a session key left behind would outlive
-     * the sign-out the user asked for. The authority key is kept, and signs
-     * only once its wallet is connected again. A key that cannot be deleted
-     * is logged, not thrown. The Wallet Standard `standard:disconnect` takes
-     * no options, so it always deletes it.
+     * Disconnects the wallet, as the store's `disconnect` does, and the
+     * store too: the stored wallet is shared with it. The store's wallet goes
+     * (`useWallet()` shows none) and a connect it is running is abandoned.
+     * The session key the SDK keeps (`createSession`) is deleted — from
+     * IndexedDB, this page's memory and any plaintext an earlier release
+     * left, whichever wallet it is for — unless `options.keepSessionKeys`;
+     * otherwise it would outlive the sign-out the user asked for. The
+     * authority key is kept. A kept key signs only once its wallet is
+     * connected again, and a session or authority send still running when
+     * this is called neither signs nor sends after it. A key that cannot be
+     * deleted is logged, not thrown. The Wallet Standard `standard:disconnect`
+     * takes no options, so it always deletes it.
      */
     async disconnect(options?: LazorkitAdapterDisconnectOptions): Promise<void> {
+        // First: a kept key a send loaded before this signs and sends nothing
+        // from here on, and the store disconnects (see core/client/store).
+        noteAdapterDisconnect();
         // A connect still running is abandoned: its portal or chooser closes,
         // and it connects nothing (see connect).
         const running = this._connectAttempt;

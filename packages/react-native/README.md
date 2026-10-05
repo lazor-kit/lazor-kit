@@ -274,6 +274,8 @@ counter at `confirmed` from an RPC node that has executed it
 | `SignatureReusedError` | LazorKit rejected the passkey signature (3006): its counter was already used. Left for the same passkey signing somewhere else at the same moment, or a paymaster reading older state than the adapter. That signature can never be valid, so it is not resent, and no new portal trip opens on its own: ask the user to sign again. An inner program's error with the same code (Anchor's `AccountNotMutable`) is told apart by the logs and reported as the failure it is. |
 | `PaymasterError` | The paymaster refused the transaction: `code` and `data` of its JSON-RPC error, or `httpStatus`. |
 | `DeferredExpiredError` | TX2 of a deferred execution (`authorizeAndExecute`, `executeDeferred`) came after its authorization expired (`DeferredAuthorizationExpired`, 3014), so nothing in it ran. `authorizeSignature` (TX1, when this call sent it), `deferredExecPda` (the account holding the paymaster's rent: `reclaimDeferred` it) and `expiresAtSlot`. The passkey approval is spent: ask the user to approve again. An inner program's 3014 is not reported as this (see below). |
+| `UnlistedSolOutflowError` | A `signAndSendWithSession` transaction would have lowered the wallet's SOL balance (rent for a new account included), and the session's actions name no SOL (`ActionUnlistedSolOutflow`, 3037). Nothing in it ran. Its message is "This session is not allowed to spend SOL"; `signer` is `'session'`, and `cause` the failure as it came. See [What a session's actions bound](#what-a-sessions-actions-bound). |
+| `UnlistedTokenOutflowError` | The same for a token whose mint the actions do not name (`ActionUnlistedTokenOutflow`, 3038): "This session is not allowed to spend this token". |
 
 Every status read and paymaster request is bounded in time, so one that never
 answers cannot hold a passkey's queue. The slot the passkey's last transaction
@@ -318,6 +320,13 @@ when the logs name the v1 program or `version` is 1. The other error classes
 have no predicate: compare `error.name` (`'TransactionFailedError'`,
 `'PaymasterError'`, `'V1WalletMigratedError'`, `'SigningError'`, …), which
 holds across copies too.
+
+`isUnlistedSolOutflowError` and `isUnlistedTokenOutflowError` are true for
+`UnlistedSolOutflowError` and `UnlistedTokenOutflowError` from either copy,
+wrapped the same way, and for a raw 3037 or 3038 (`0xbdd`, `0xbde`): one whose
+logs name another program as the first to fail is not LazorKit's, one with no
+logs is (no Anchor error uses these codes). `ERROR_NAMES` and `errorFromCode`
+name 3036 to 3038 and 4018 as well.
 
 The portal's transaction preview is compiled without lookup tables whenever it
 fits in a packet, so the portal sees every account the transaction touches.
@@ -398,6 +407,75 @@ async function forgetSession() {
   and the item is lost when the enrolled biometrics change.
 - What bounds a session key is what was registered on chain: its `actions`
   (spending limits) and its expiry, not where you keep it.
+
+### What a session's actions bound
+
+A session's `actions`, and the `policy` of a key added with
+`addAuthorityEd25519` and `ROLE_SPENDER`, name what may leave the wallet, and
+under LazorKit v2 nothing they do not name may (from the program release that
+adds errors 3037 and 3038: until then an asset they do not name is not
+bounded at all, see the end of this section):
+
+- **SOL** leaves only with an `Actions.sol*` action (`solMaxPerTx`,
+  `solLimit`, `solRecurringLimit`). Without one, a transaction that lowers the
+  wallet's SOL balance is refused, rent the wallet pays for a new account
+  included (a recipient's token account, say): `UnlistedSolOutflowError`
+  (3037). The network fee is the fee payer's, not the wallet's.
+- **A token** leaves only with an `Actions.token*` action (`tokenMaxPerTx`,
+  `tokenLimit`, `tokenRecurringLimit`) that names its mint. Any other mint is
+  refused: `UnlistedTokenOutflowError` (3038). wSOL is a mint of its own: a
+  SOL action does not name it.
+- Limits are net over one transaction, and what comes in always passes. A
+  swap needs an action for the mint it sells, and a SOL action when the
+  wallet pays the rent of its output token account. A program whitelist names
+  programs, not assets.
+- The wallet's token accounts a transaction passes writable may change only
+  their balance: owner, delegate, close authority and state stay as they were
+  (`SessionTokenAuthorityChanged`, 3032).
+- A session or policy holds at most 16 actions, and at most one of each kind
+  per mint, and they must fit in the transaction that registers them, beside
+  the passkey's response: keep them within 244 bytes. `Actions.solMaxPerTx`
+  and `solLimit` take 19 bytes (`solRecurringLimit` 43), `tokenMaxPerTx` and
+  `tokenLimit` 51 and `tokenRecurringLimit` 75: `solMaxPerTx` with
+  `tokenMaxPerTx` and `tokenLimit` for 2 mints (223 bytes), or `solMaxPerTx`
+  with `tokenMaxPerTx` for 4 (223). The transaction holds 1232 bytes, and the
+  passkey's clientDataJSON takes up to about 300 of them. Nothing checks this
+  before the portal opens: actions that do not fit fail after the user
+  approved.
+
+A session made with `unrestricted: true` (no actions) has none of these
+bounds: it can move anything the wallet holds until it expires.
+
+So name every mint the session may spend, in the mint's base units:
+
+```ts
+import { Actions } from '@lazorkit/wallet-mobile-adapter';
+import { PublicKey } from '@solana/web3.js';
+
+const USDC = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+
+await createSession(
+  {
+    sessionKey: sessionKeypair.publicKey,
+    expiresAtSlot,
+    actions: [
+      Actions.solMaxPerTx(10_000_000n), // 0.01 SOL a transaction, rent included
+      Actions.tokenMaxPerTx({ mint: USDC, max: 5_000_000n }), // 5 USDC a transaction
+      Actions.tokenLimit({ mint: USDC, remaining: 100_000_000n }), // 100 USDC in all
+    ],
+  },
+  { redirectUrl },
+);
+```
+
+The program enforces this from the release that adds errors 3037 and 3038.
+Until that release an asset the actions do not name is not bounded at all: a
+session with token actions only can spend all the wallet's SOL, and one with
+SOL actions only any token. After it, a session or delegate whose actions
+name SOL only can move no token: revoke it (`revokeSession`, or
+`removeAuthority` for a delegate) and register one whose actions name the
+mints it spends. The program does not create a second session for the same
+key while the first exists.
 
 ## Signing messages
 
@@ -536,7 +614,7 @@ For a key your app holds, use `ROLE_SPENDER` with a `policy`.
 |---|---|---|
 | `payload.newEd25519Pubkey` | `PublicKey` | The key to add. |
 | `payload.role` | `number` | Required: `ROLE_OWNER`, `ROLE_ADMIN` or `ROLE_SPENDER`. |
-| `payload.policy` | `Uint8Array` | The spending policy, for `ROLE_SPENDER`. |
+| `payload.policy` | `Uint8Array` | The spending policy, for `ROLE_SPENDER`. It names what may leave the wallet: see [What a session's actions bound](#what-a-sessions-actions-bound). |
 | `payload.unrestricted` | `boolean` | Required on a v1 wallet, where any added key can spend the whole vault. |
 | `options.redirectUrl` | `string` | Deep link URL |
 

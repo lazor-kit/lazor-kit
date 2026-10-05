@@ -1,6 +1,6 @@
 {
   "name": "@lazorkit/wallet",
-  "version": "3.3.1",
+  "version": "3.4.1",
   "description": "Lazorkit Wallet SDK for Solana — passkey-native wallets with seedless onboarding and gasless transactions.",
   "license": "MIT",
   "homepage": "https://github.com/lazor-kit/lazor-kit/tree/main/packages/react#readme",
@@ -69,7 +69,7 @@
     "dev": "rollup -c -w",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/deferred.test.mjs test/errors.test.mjs test/callbacks.test.mjs test/landed-key.test.mjs test/keys.test.mjs test/keys-e2e.test.mjs test/portal.test.mjs test/types.test.mjs test/sign-message.test.mjs test/challenge-domains.test.mjs test/embedded-config.test.mjs test/embedded-connect.test.mjs test/embedded-sign.test.mjs test/embedded-message.test.mjs test/embedded-reconnect.test.mjs test/easy-react.test.mjs test/portal-storage.test.mjs test/package-shape.test.mjs",
+    "test": "node --test test/deferred.test.mjs test/errors.test.mjs test/session-policy.test.mjs test/callbacks.test.mjs test/landed-key.test.mjs test/keys.test.mjs test/keys-e2e.test.mjs test/portal.test.mjs test/types.test.mjs test/sign-message.test.mjs test/challenge-domains.test.mjs test/embedded-config.test.mjs test/embedded-connect.test.mjs test/embedded-sign.test.mjs test/embedded-message.test.mjs test/embedded-reconnect.test.mjs test/easy-react.test.mjs test/portal-storage.test.mjs test/package-shape.test.mjs",
     "prepublishOnly": "npm run clean && npm run build"
   },
   "publishConfig": {

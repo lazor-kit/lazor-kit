@@ -12,6 +12,28 @@
  *     moved with `LazorKitClient.migrateV1Wallet`.
  */
 export * from '@lazorkit/sdk-legacy';
+import { ERROR_NAMES as SDK_ERROR_NAMES } from '@lazorkit/sdk-legacy';
+
+/**
+ * The program's error names, by code: @lazorkit/sdk-legacy's, with the codes
+ * the program has that its 1.3 release does not name yet. Where the SDK names
+ * a code, its name is the one used.
+ */
+export const ERROR_NAMES: Record<number, string> = {
+  3036: 'SessionNotExpired',
+  3037: 'ActionUnlistedSolOutflow',
+  3038: 'ActionUnlistedTokenOutflow',
+  4018: 'RetiredDeployment',
+  ...SDK_ERROR_NAMES,
+};
+
+/**
+ * The program error's name, from its code. The code alone does not say which
+ * program raised it: see `errorFromCode` in @lazorkit/sdk-legacy.
+ */
+export function errorFromCode(code: number): string | undefined {
+  return ERROR_NAMES[code];
+}
 
 // Explicit re-exports win over the star above, which is what keeps the
 // historical call shape (optional `programId`) working.

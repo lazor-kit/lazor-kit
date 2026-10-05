@@ -2,8 +2,8 @@
 // LazorkitProvider in a jsdom page, connect through a scripted portal (a
 // fixed passkey whose wallet is on a scripted chain), then disconnect.
 // Returns what localStorage held after each step, key by key. With fixed
-// inputs the bytes are fixed, so 4.0's can be compared with 3.3.1's
-// (test/fixtures/portal-storage-3.3.1.json; see make-portal-storage.mjs).
+// inputs the bytes are fixed, so 4.0's can be compared with 3.4.1's
+// (test/fixtures/portal-storage-3.4.1.json; see make-portal-storage.mjs).
 import { createHash, createPrivateKey, createECDH, sign } from 'node:crypto';
 import { webcrypto } from 'node:crypto';
 import { JSDOM } from 'jsdom';

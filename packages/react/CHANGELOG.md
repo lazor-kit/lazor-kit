@@ -1,5 +1,39 @@
 # @lazorkit/wallet
 
+## 3.4.1
+
+### Patch Changes
+
+- [#120](https://github.com/lazor-kit/lazor-kit/pull/120) [`3d88ce1`](https://github.com/lazor-kit/lazor-kit/commit/3d88ce18de3d386e205052ff42c117a70c693628) Thanks [@onspeedhp](https://github.com/onspeedhp)! - `signMessage` with bytes that start with a UTF-8 byte order mark (EF BB BF) now sends a `displayMessage` that keeps the BOM (`ignoreBOM: true`), so the text the portal shows encodes back to exactly the signed bytes. Before, the BOM was dropped from the text, and a portal that recomputes the challenge from what it shows refused the request. Strings were not affected.
+
+## 3.4.0
+
+### Minor Changes
+
+- [#115](https://github.com/lazor-kit/lazor-kit/pull/115) [`b8596ef`](https://github.com/lazor-kit/lazor-kit/commit/b8596efe20982dd7d1a920a6821fe85332cb15e3) Thanks [@onspeedhp](https://github.com/onspeedhp)! - A session or authority send still running when the wallet is disconnected neither signs nor sends after the disconnect, whichever way it came, and `LazorkitWalletAdapter.disconnect()` disconnects the store too.
+
+  In 3.3.1, `adapter.disconnect()` and the Wallet Standard `standard:disconnect` deleted the session key the SDK keeps, but left the store's wallet connected, and the kept key re-checks only the store's wallet when it signs. So a `signAndSendWithSession` or `signAndSendWithAuthority` that had already loaded its key went on to sign and send when the adapter disconnected during it (while its blockhash was fetched, say). And after the adapter's disconnect, `useWallet()` still showed the wallet, and the authority key (and a session key kept with `keepSessionKeys`) went on signing for it with no reconnect. The store's own `disconnect()` already stopped a send at signing. Now:
+
+  - `adapter.disconnect()` and `standard:disconnect` disconnect the store as its own `disconnect()` does: its wallet goes (also from what the store persists, so not back after a reload), a `connect` it is running is abandoned (it rejects with `PortalCancelledError`), `error` is cleared, and `isSigning` is left to the action running. A kept key signs only once its wallet is connected again. `keepSessionKeys` still only decides whether the session key is deleted.
+  - A send that loaded its kept key before any disconnect (the store's, the adapter's, the Wallet Standard's) is refused right before the key signs, and again right before each attempt to hand what it signed to the paymaster, retries included. It rejects with `KeyWalletMismatchError`: `reason: 'no-wallet'`, or the new `reason: 'disconnected'` when the same wallet is connected again by then (send again). A refusal after the key signed ends "The transaction it had signed was not sent." If an earlier attempt got no answer from the paymaster, that attempt may still land: the send rejects with `TransactionOutcomeUnknownError` and is not sent again.
+  - `KeyWalletMismatchReason` gains `'disconnected'`. The `Paymaster` constructor's options take `beforeAttempt`: it runs right before each attempt to send, retries included, of every send that paymaster makes, and what it throws stops the send. A session or authority send gets a paymaster of its own with its key's check there, so the check holds whichever way the transaction is sent.
+
+  `@lazorkit/wallet-mobile-adapter` is unchanged: it has no wallet-adapter or Wallet Standard disconnect, and keeps no session key (the app holds it).
+
+- [#117](https://github.com/lazor-kit/lazor-kit/pull/117) [`5c94fa6`](https://github.com/lazor-kit/lazor-kit/commit/5c94fa69b80a018ccd52155b113d076298663bbe) Thanks [@onspeedhp](https://github.com/onspeedhp)! - **Session limits name every asset a session may spend**
+
+  LazorKit v2's next program release bounds what a session (or a delegate key) may move by what its policy names, and nothing else: with no SOL limit the wallet's SOL may not fall, rent for a new account included (`ActionUnlistedSolOutflow`, 3037), and a token may leave only when a limit names its mint (`ActionUnlistedTokenOutflow`, 3038). A session made with SOL limits only, as `SpendingLimits` could express until now, will move no token. Until that release an asset the limits do not name is not bounded at all: a session with `tokens` limits only can spend all the wallet's SOL.
+
+  - `SpendingLimits` takes `tokens`: one entry per mint, `{ mint, lifetimeCap?, perTxMax?, recurring?: { limit, windowSlots } }`, amounts in the mint's base units. wSOL is a mint of its own.
+  - `createSession` checks the limits before anything is read or the passkey is asked, and throws on a `tokens` entry with no limit, a mint named twice, an amount outside a u64, a window of 0 slots (which the program refuses), more than 16 actions, or more than 244 bytes of actions: what fits in the CreateSession transaction beside the passkey's response (a clientDataJSON of up to 300 bytes). A SOL limit takes 19 bytes (`solRecurring` 43), a token's `lifetimeCap` or `perTxMax` 51, its `recurring` 75: `solPerTxMax` with `perTxMax` and `lifetimeCap` for 2 mints, or with `perTxMax` for 4. Nothing is added that was not asked for.
+  - Changed: for a `sessionKey` of your own that already has a session, `createSession` now checks the limits before it looks for that session, so a call with no `spendingLimits` (and not `unrestricted`), or invalid ones, throws where it resolved with the existing session. With valid limits it still resolves with the session as it was made, whatever limits are passed: to change an external key's limits, revoke its session (`revokeSession({ sessionPda })`) or register a new key.
+  - New: `spendingLimitsToActions(limits)`, the actions a `SpendingLimits` stands for; `serializeActions(spendingLimitsToActions(limits))` is a delegate `policy` for `addAuthority`.
+  - New: `UnlistedSolOutflowError` ("This session is not allowed to spend SOL") and `UnlistedTokenOutflowError` ("This session is not allowed to spend this token"; "This key …" for a delegate), which `signAndSendWithSession` and `signAndSendWithAuthority` reject with for a 3037 / 3038, with `signer` and the original error as `cause`. A send whose outcome is unknown stays `TransactionOutcomeUnknownError`, and an Admin key's 3037 / 3038 is mapped only when the logs name LazorKit (an Admin has no policy). `isUnlistedSolOutflowError` / `isUnlistedTokenOutflowError` recognise them from either copy of the package, wrapped, or raw; `UNLISTED_SOL_OUTFLOW_CODE`, `UNLISTED_TOKEN_OUTFLOW_CODE`.
+  - The paymaster does not resend a transaction refused with 3037 or 3038 (the same bytes move the same assets), unless an earlier attempt's answer was lost.
+  - `ERROR_NAMES` / `errorFromCode` name 3036 (`SessionNotExpired`), 3037, 3038 and 4018 (`RetiredDeployment`).
+
+  See the README, "What a policy bounds".
+
 ## 3.3.1
 
 ### Patch Changes

@@ -54,11 +54,11 @@ test('one store, client and set of classes per page, whichever entries are impor
     }
 });
 
-// The root's exports are 3.3.1's (test/fixtures/exports-3.3.1.json: the
-// export names of dist/index.mjs in the published 3.3.1 tarball, shasum
-// 08d97bd01686a6102e9274fc2e2064f196c18ce7), none removed, plus these. Nothing
+// The root's exports are 3.4.1's (test/fixtures/exports-3.4.1.json: the
+// export names of dist/index.mjs in the published 3.4.1 tarball, shasum
+// e4adf51d8ee53dd8a8833beed415e95348027d07), none removed, plus these. Nothing
 // else: an internal binding a chunk shares with another entry never shows.
-const V331 = JSON.parse(readFileSync(new URL('./fixtures/exports-3.3.1.json', import.meta.url), 'utf8'));
+const V341 = JSON.parse(readFileSync(new URL('./fixtures/exports-3.4.1.json', import.meta.url), 'utf8'));
 const NEW_IN_4 = [
     'CONNECT_BUTTON_TEXT', 'ConnectButton', 'KeyRecoveryError', 'LazorkitConfigError', 'NetworkError', 'PasskeyMismatchError',
     'PasskeyUnavailableError', 'UserRejectedError', 'WalletVerificationError', 'builtinEmbeddedUi', 'connectButtonLabel',
@@ -69,8 +69,8 @@ const REACT_ONLY = ['CONNECT_BUTTON_TEXT', 'ConnectButton', 'LazorkitProvider', 
 const HOOKS = ['useLazorkitClient', 'useLazorkitState', 'useWallet', 'useWalletStatus', 'useWalletStore'];
 const names = (module) => Object.keys(module).filter((k) => k !== '__esModule' && k !== 'default').sort();
 
-test("each entry exports exactly its names: the root 3.3.1's plus 4.0's, /core the root's without React, /hooks its five (ESM, CJS, types)", async () => {
-    const root = [...new Set([...V331, ...NEW_IN_4])].sort();
+test("each entry exports exactly its names: the root 3.4.1's plus 4.0's, /core the root's without React, /hooks its five (ESM, CJS, types)", async () => {
+    const root = [...new Set([...V341, ...NEW_IN_4])].sort();
     const core = root.filter((n) => !REACT_ONLY.includes(n));
     for (const [entry, expected] of [
         ['index', root],

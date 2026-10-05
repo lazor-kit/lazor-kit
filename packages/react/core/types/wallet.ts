@@ -68,6 +68,20 @@ export interface WalletState {
     executeDeferred: (payload: ExecuteDeferredPayload) => Promise<string>;
 }
 
+/**
+ * What a session may spend. Under LazorKit v2 an asset the limits do not name
+ * cannot leave the wallet at all: with no SOL limit the session spends no SOL
+ * (rent for an account the wallet pays for included), and it spends a token
+ * only with a `tokens` entry for its mint. The program enforces this from the
+ * release that adds errors 3037 and 3038; until then an asset the limits do
+ * not name is not bounded at all, so token limits alone leave the wallet's
+ * SOL unbounded.
+ *
+ * The limits must fit in the CreateSession transaction beside the passkey's
+ * response: at most 244 bytes of actions. A SOL limit takes 19 bytes
+ * (`solRecurring` 43), a token's `lifetimeCap` or `perTxMax` 51 and its
+ * `recurring` 75. `createSession` refuses more before the passkey is asked.
+ */
 export interface SpendingLimits {
     /** Lifetime SOL cap in lamports — session exhausted once spent */
     solLifetimeCap?: bigint;
@@ -75,6 +89,27 @@ export interface SpendingLimits {
     solPerTxMax?: bigint;
     /** SOL cap that resets every `windowSlots` slots */
     solRecurring?: {
+        limit: bigint;
+        windowSlots: bigint;
+    };
+    /**
+     * The tokens the session may spend, one entry per mint, each with at
+     * least one limit. A mint not listed cannot leave the wallet. wSOL is a
+     * mint of its own: the SOL limits do not cover it.
+     */
+    tokens?: readonly TokenSpendingLimit[];
+}
+
+/** The limits on one token a session may spend, in the mint's base units. */
+export interface TokenSpendingLimit {
+    /** The token's mint (a `PublicKey` or base58). */
+    mint: import('@solana/web3.js').PublicKey | string;
+    /** Lifetime cap: the session is exhausted for this token once spent. */
+    lifetimeCap?: bigint;
+    /** Max per single execute. */
+    perTxMax?: bigint;
+    /** Cap that resets every `windowSlots` slots. */
+    recurring?: {
         limit: bigint;
         windowSlots: bigint;
     };
@@ -98,6 +133,11 @@ export interface CreateSessionPayload {
      * SDK registers this pubkey on-chain and stores nothing — useful for
      * delegating to a backend / agent that already holds the matching
      * private key.
+     *
+     * When this key already has a session on the wallet, `createSession`
+     * resolves with that session as it was made, whatever `spendingLimits`
+     * are passed (they are still checked first). To change its limits, revoke
+     * it (`revokeSession({ sessionPda })`) or register a new key.
      *
      * Accepts a base58 string or a `PublicKey` instance.
      */
@@ -145,9 +185,16 @@ export interface AddAuthorityPayload {
     readonly role: number;
     /**
      * Spending policy, required when the role is ROLE_SPENDER (Delegate) on a
-     * v2 wallet. Build it with `serializeActions([...])`. v2 rejects a Delegate
-     * without one (3033) and a policy on any other rank (3035). v1 wallets have
-     * no policies: passing one for a v1 wallet throws.
+     * v2 wallet. Build it with `serializeActions([...])`, or
+     * `serializeActions(spendingLimitsToActions(limits))`. v2 rejects a
+     * Delegate without one (3033) and a policy on any other rank (3035). An
+     * asset the policy does not name cannot leave the wallet (from the
+     * program release that adds errors 3037 and 3038): name SOL with a `sol*`
+     * action (rent the wallet pays counts) and each mint the key may spend
+     * with a `token*` action. Keep it within 244 bytes, which is what fits in
+     * the transaction beside the passkey's response; its size is not checked
+     * before the prompt. v1 wallets have no policies: passing one for a v1
+     * wallet throws.
      */
     readonly policy?: Uint8Array;
     /**

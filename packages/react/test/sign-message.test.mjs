@@ -264,6 +264,22 @@ test('DialogManager.openSignMessage sends the domain-separated challenge for a s
     }
 });
 
+test('bytes that start with a UTF-8 BOM keep it in displayMessage, so the text round-trips to the signed bytes', async () => {
+    const bytes = new Uint8Array(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('hi')]));
+    const dialog = new W.DialogManager({ portalUrl: PORTAL });
+    try {
+        await dialog.openSignMessage(bytes, CREDENTIAL_ID);
+    } finally {
+        dialog.destroy();
+    }
+    assert.equal(requests.length, 1);
+    const shown = requests[0].get('displayMessage');
+    assert.equal(shown, '\uFEFFhi');
+    // A portal recomputes the challenge from the UTF-8 of what it shows.
+    assert.deepEqual(Buffer.from(shown, 'utf8'), Buffer.from(bytes));
+    assert.deepEqual(challengeSent(requests[0]), expectedChallenge(bytes));
+});
+
 // ─── A reply over another challenge ─────────────────────────────────────────
 
 test('a portal reply over any other challenge is refused, on the store and the adapter', async () => {

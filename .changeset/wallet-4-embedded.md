@@ -11,7 +11,7 @@
 - A passkey whose public key cannot be recovered at connect rejects with `KeyRecoveryError` (`code: 'KEY_RECOVERY'`), in portal mode too, instead of a plain `Error`. The message is unchanged.
 - The root and `/hooks` entries are client modules (`'use client'`). Server code imports from `@lazorkit/wallet/core`.
 - The stored wallet is read synchronously when the provider first renders, so the first render can already be connected.
-- The stored config is never read back: the provider's props are the config from the first render. (3.3.1 put its stored config in the state until the provider's effect replaced it.) What is stored is unchanged.
+- The stored config is never read back: the provider's props are the config from the first render. (3.x put its stored config in the state until the provider's effect replaced it.) What is stored is unchanged.
 - Requires `@lazorkit/sdk-legacy` 1.3.1 or later.
 
 **Embedded mode**
