@@ -35,11 +35,12 @@
   "description": "React Native adapter for LazorKit smart wallet with WebAuthn/passkey authentication on Solana",
   "repository": {
     "type": "git",
-    "url": "https://github.com/lazorkit/wallet-mobile-adapter.git"
+    "url": "git+https://github.com/lazor-kit/lazor-kit.git",
+    "directory": "packages/react-native"
   },
   "homepage": "https://lazor.sh",
   "bugs": {
-    "url": "https://github.com/lazorkit/wallet-mobile-adapter/issues"
+    "url": "https://github.com/lazor-kit/lazor-kit/issues"
   },
   "engines": {
     "node": ">=18.0.0"

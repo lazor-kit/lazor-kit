@@ -1,35 +1,99 @@
 name: Release
 
+# On every push to main:
+#   version  opens or updates the "version packages" PR while changesets are pending; once
+#            there are none, checks each package version for being on npm and tagged on origin.
+#   build    only when a version is not finished: builds and packs the tarballs, without
+#            npm credentials.
+#   publish  only when a version is not finished: waits for approval on the npm-publish
+#            environment, then publishes the tarballs with npm trusted publishing (OIDC),
+#            pushes the git tags, creates the GitHub releases and syncs wallet's beta tag.
+# Pushes where every version is already on npm and tagged skip build and publish, so they
+# never request an approval.
+#
+# A manual run (workflow_dispatch) only runs trusted-publishing-check, a dry run that proves
+# the npm trusted publisher settings work and publishes nothing.
+
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
-concurrency:
-  group: release-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
-
-permissions:
-  contents: write
-  pull-requests: write
-  id-token: write
+permissions: {}
 
 jobs:
-  release:
-    name: Version or publish
+  version:
+    name: Version PR or npm check
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    # Per job, not per workflow: a publish job waiting for approval must not hold back the
+    # version PR updates of later pushes.
+    concurrency:
+      group: release-version-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: write # push the changeset-release/main branch
+      pull-requests: write # open or update the version PR
+    outputs:
+      hasChangesets: ${{ steps.changesets.outputs.hasChangesets }}
+      pending: ${{ steps.npm.outputs.pending }}
+      packages: ${{ steps.npm.outputs.packages }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           submodules: false
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
-          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Without a `publish` input the action only versions: it opens or updates the PR
+      # when changesets are pending and otherwise just reports hasChangesets=false.
+      - name: Create or update the version PR
+        id: changesets
+        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+        with:
+          version: pnpm run version
+          commit: "chore(release): version packages"
+          title: "chore(release): version packages"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # pending=true when a version is not on npm yet, or is on npm without its git tag
+      # (a publish that failed before tagging; the publish job then only tags and releases it).
+      - name: Check npm and git tags for unfinished releases
+        id: npm
+        if: steps.changesets.outputs.hasChangesets == 'false'
+        run: node scripts/npm-release.mjs check
+
+  build:
+    name: Build npm tarballs
+    needs: version
+    if: needs.version.outputs.hasChangesets == 'false' && needs.version.outputs.pending == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      # Node 22 is in the CI matrix. No dependency cache for the build that produces the
+      # published tarballs.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          package-manager-cache: false
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -43,16 +107,101 @@ jobs:
           pnpm --filter @lazorkit/wallet build
           pnpm --filter @lazorkit/wallet-mobile-adapter build
 
-      - name: Create release PR or publish
-        id: changesets
-        uses: changesets/action@v1
+      # Runs each package's prepublishOnly, then `pnpm pack`, as `pnpm publish` used to.
+      - name: Pack pending packages
+        env:
+          PACKAGES: ${{ needs.version.outputs.packages }}
+        run: node scripts/npm-release.mjs pack "$RUNNER_TEMP/npm-tarballs"
+
+      # Kept as long as an environment approval can wait (30 days).
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          publish: pnpm release
-          version: pnpm run version
-          commit: "chore(release): version packages"
-          title: "chore(release): version packages"
+          name: npm-tarballs
+          path: ${{ runner.temp }}/npm-tarballs
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish to npm
+    needs: [version, build]
+    if: needs.version.outputs.hasChangesets == 'false' && needs.version.outputs.pending == 'true'
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    # One publish at a time; a newer one waits instead of cancelling a publish in progress.
+    concurrency:
+      group: release-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write # push the release tags and create the GitHub releases
+      id-token: write # npm trusted publishing and provenance
+    steps:
+      # Full history and tags: the tags are created here and pushed by changesets/action.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      # No registry-url: npm already defaults to registry.npmjs.org, and the .npmrc that
+      # registry-url writes would send an unset ${NODE_AUTH_TOKEN} as a literal token.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      # Trusted publishing needs npm >= 11.5.1 and `npm dist-tag` over OIDC needs 11.21.0+
+      # (or 12.2.0+); Node 24 bundles an older npm. scripts/npm-release.mjs checks the version.
+      - name: Install npm 11.21.0
+        id: npm
+        run: |
+          npm install --global --ignore-scripts npm@11.21.0
+          npm --version
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-tarballs
+          path: ${{ runner.temp }}/npm-tarballs
+
+      # npm publish authenticates with OIDC; there is no NPM_TOKEN. The action reads the
+      # script's "New tag: <name>@<version>" lines, pushes those tags and creates the releases.
+      - name: Publish, push tags and create GitHub releases
+        id: changesets
+        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+        with:
+          publish: node scripts/npm-release.mjs publish ${{ runner.temp }}/npm-tarballs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: "true"
+
+      # Also runs when the step above failed after some packages were published.
+      - name: Point the wallet beta dist-tag at the release
+        if: ${{ !cancelled() && steps.npm.outcome == 'success' }}
+        run: node scripts/npm-release.mjs sync-dist-tags "$RUNNER_TEMP/npm-tarballs"
+
+  trusted-publishing-check:
+    name: Trusted publishing dry run
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write # the OIDC token npm exchanges
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install npm 11.21.0
+        run: |
+          npm install --global --ignore-scripts npm@11.21.0
+          npm --version
+
+      # `npm publish --dry-run` of each package's latest version: npm exchanges the OIDC token
+      # (the trusted publisher must match this repository, release.yml and npm-publish), then
+      # refuses to publish over an existing version. Nothing is published.
+      - name: Exchange an npm token for each package
+        run: node scripts/npm-release.mjs oidc-check @lazorkit/wallet @lazorkit/wallet-mobile-adapter
