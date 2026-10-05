@@ -58,5 +58,8 @@ export {
 } from './core/wallet/policy';
 export type { PolicySigner } from './core/wallet/policy';
 export { PaymasterError } from './core/paymaster';
+// What a `txVersion: 'v1'` request (SIMD-0385, experimental, devnet only)
+// throws when it cannot be sent. Nothing was sent; never thrown otherwise.
+export { TransactionTooLargeError, PayloadExceedsProgramLimitsError } from './core/wallet/txv1';
 export * from './config';
 export * from './program';

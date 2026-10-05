@@ -391,6 +391,101 @@ transaction is sent with (`transactionOptions.addressLookupTableAccounts`, or
 those of a dApp's v0 transaction), and a preview still over the limit no longer
 fails the call before the prompt.
 
+### Transaction v1 (experimental, devnet only)
+
+`transactionOptions.txVersion: 'v1'` sends a SIMD-0385 v1 transaction: up to
+4096 bytes and 64 addresses, against 1232 bytes for legacy and v0. That carries
+payloads no v0 transaction can, such as swap routes that do not fit even with
+lookup tables. A v1 transaction has no lookup tables.
+
+It is opt-in per call, and used only when all of these hold. Otherwise the
+transaction goes out as v0, with the same bytes as a `'v0'` request, and the
+reason is logged once (`[TxV1] … goes out as v0: <reason>`):
+
+| Condition | Reason when it does not hold |
+|---|---|
+| The paymaster declares that it signs v1: `paymasterConfig: { paymasterUrl, acceptsTxV1: true }`. Do not set it for `kora.devnet.lazorkit.com`, which cannot decode v1. | `paymaster` |
+| The paymaster has not refused a v1 transaction in this page (see below). | `refused` |
+| The wallet is on the devnet LazorKit v2 program. Mainnet and v1 wallets never send v1. | `not-devnet-v2` |
+
+`signAndSendTransaction`, `signAndSendWithSession`, `signAndSendWithAuthority`,
+`authorizeAndExecute` (both transactions), `authorizeDeferred` and
+`executeDeferred` take it. `connect` and the session and authority management
+calls ignore it.
+
+A `'v1'` session or authority send is signed by the key the SDK keeps (see
+**Session and authority keys** below), exactly as a v0 send is: the key signs
+the v1 message itself (in the default tier, `crypto.subtle` with the
+non-extractable key, so no secret is read), only for its own wallet
+(`KeyWalletMismatchError` otherwise), and it checks the connected wallet again
+when it signs, after the limits are set, and right before each attempt to
+send: a disconnect while it is in flight stops it as it stops a v0 send. A
+policy refusal (3037 / 3038) is `UnlistedSolOutflowError` /
+`UnlistedTokenOutflowError` and is not resent, as for v0.
+
+A `'v1'` request that goes out as v0 makes the paymaster requests and RPC
+calls a `'v0'` one makes. It differs only before the prompt, where it rejects
+what a `'v0'` request would only fail on later: a v0 transaction that no
+passkey response could fit (`TransactionTooLargeError`, with `v1Unavailable`),
+and, on the devnet v2 program, a payload over the program's limits. It does
+not check the v1 limits below.
+
+- **Too large.** A transaction over the limit of the format it goes out in
+  rejects with `TransactionTooLargeError`, and nothing is sent. v0 is not a
+  fallback for size: a transaction over v1's limits is over v0's too. The
+  check runs before the passkey prompt, on the largest response the portal can
+  return, so the user is not asked to approve a transaction that cannot be
+  sent; the check after signing, on the real bytes, decides
+  (`stage: 'after-signing'`: the passkey approved, nothing was sent, and the
+  approval was not used). For a deferred pair that goes out as v1, TX2 is
+  measured before the prompt too, so TX1 never authorizes a v1 TX2 that cannot
+  be sent.
+- **Program limits.** The devnet LazorKit v2 program runs at most 16 inner
+  instructions, and has 32,760 bytes of heap to run them. The heap a payload
+  needs is a sum over its instructions and their accounts, and depends on the
+  instruction that runs it. With 16 inner instructions of a System transfer's
+  12 bytes of data each, the most accounts each may name is 40 on a passkey
+  Execute, which needs the most (41 with 8 bytes of data each; one
+  instruction alone may name all 255), 42 on an ExecuteDeferred (TX2), and
+  148 on a session's or an Ed25519 authority's Execute.
+  A signer with a policy (a session with actions, a Delegate) needs 64 bytes
+  more per action and 240 per token account of the vault: the wallet reads
+  the policy from the signer's account, once, for a request that goes out as
+  v1, and counts every account the payload writes but the vault and the fee
+  payer, since their keys do not say which are the vault's token accounts.
+  Such a payload rejects with `PayloadExceedsProgramLimitsError` before the
+  prompt, whatever the format; `heapBytes` is the heap it needs, and `policy`
+  what the signer's policy added. These are the figures of the program with
+  exact heap sizing (lazorkit-protocol#42).
+- **Limits.** Every v1 transaction carries a compute-unit limit and a
+  loaded-accounts data size limit. By default they come from one simulation,
+  bounded to 3 s (units × 1.2 + 5,000, at least 20,000; loaded bytes × 1.1 in
+  32 KiB pages, at least 196,608). Any problem with the simulation gives the
+  maximums (1,400,000 and 64 MiB); in v1 the fee does not depend on them.
+  `computeUnitLimit` (1 to 1,400,000) and `loadedAccountsDataSizeLimit`
+  (196,608 to 67,108,864) set them yourself; out of range is a `RangeError`
+  before the prompt when the request goes out as v1. Legacy and v0 sends still
+  ignore `computeUnitLimit`.
+- **A paymaster that refuses v1.** It answers `PaymasterError` with code
+  -32051 before signing anything. That call fails, and is neither retried nor
+  sent again as v0; later `'v1'` calls to the same paymaster in the page go out
+  as v0. A reload clears this.
+- **Preview.** The portal still previews a v0 transaction of your
+  instructions. When the request goes out as v1, the preview is built without
+  your lookup tables, which the v1 transaction does not use, so the portal
+  lists every account the passkey approves. For a payload only v1 can carry,
+  its simulation banner may fail, as for a large swap today; signing is not
+  blocked.
+- **Bundle size.** The v1 code is in the package whether or not you use it:
+  about 6 KB gzip in an app. It adds no dependency: a key with a secret signs
+  with `@solana/web3.js`'s own ed25519, and a kept key signs with WebCrypto, as
+  for v0.
+
+| Error | When |
+|---|---|
+| `TransactionTooLargeError` | Only for `'v1'`: the transaction is over the limit of the format it was measured in. `stage` (`'before-signing'` / `'after-signing'`), `format` (`'v1'` / `'v0'`), `transaction` (`'single'`, `'tx1'`, `'tx2'`), `bytes`, `byteLimit`, `addresses`, `addressLimit`, `instructions`, and `v1Unavailable` (the reason above) when it was measured as v0. Nothing was sent. |
+| `PayloadExceedsProgramLimitsError` | Only for `'v1'`: the payload is over the program's limits (`limit`: `'inner-instructions'` or `'heap'`; `innerInstructions`, `maxMetas`, `totalMetas`, `heapBytes`, and `policy` when the signer's policy was counted). Nothing was signed or sent. |
+
 ## Session and authority keys
 
 `createSession()` without `sessionKey`, and `addAuthority({ role })`, generate an
@@ -863,8 +958,10 @@ Signs and sends transaction via Paymaster.
 | `payload.instructions` | `TransactionInstruction[]` | Instructions |
 | `payload.transactionOptions` | `object` | Optional config |
 | `transactionOptions.feeToken` | `string` | Token address for gas fees (e.g. USDC). |
-| `transactionOptions.computeUnitLimit` | `number` | Max compute units. |
-| `transactionOptions.addressLookupTableAccounts` | `AddressLookupTableAccount[]` | Lookup tables for v0 txs (the portal preview uses them too). |
+| `transactionOptions.txVersion` | `'legacy' \| 'v0' \| 'v1'` | Wire format. Default `'v0'`. `'v1'` is experimental and devnet only: see [Transaction v1](#transaction-v1-experimental-devnet-only). |
+| `transactionOptions.computeUnitLimit` | `number` | With `'v1'`: the compute-unit limit, 1 to 1,400,000 (default: simulated). Ignored by legacy and v0 sends. |
+| `transactionOptions.loadedAccountsDataSizeLimit` | `number` | With `'v1'` only: the loaded-accounts data size limit in bytes, 196,608 to 67,108,864 (default: simulated). |
+| `transactionOptions.addressLookupTableAccounts` | `AddressLookupTableAccount[]` | Lookup tables for v0 txs (the portal preview uses them too). A v1 transaction has none. |
 | `transactionOptions.clusterSimulation` | `'devnet' \| 'mainnet'` | Network for simulation. |
 | `payload.onSuccess` | `(signature: string) => void` | Runs once `isSigning` is `false`, right before the promise resolves (see [Callbacks](#sending-transactions)). |
 | `payload.onFail` | `(error: Error) => void` | Runs with the error the promise rejects with. |

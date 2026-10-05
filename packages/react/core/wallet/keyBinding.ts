@@ -183,13 +183,17 @@ export async function keyForConnectedWallet<S extends KeySlot>(params: {
     return { signer: checkedSigner(stored.signer, () => check('sign')), info, assertSendable: () => check('send') };
 }
 
-/** Signs only while `check` passes. */
+/** Signs only while `check` passes: a transaction, or a v1 message. */
 function checkedSigner(signer: KeySigner, check: () => void): KeySigner {
     return {
         publicKey: signer.publicKey,
         async signTransaction(tx) {
             check();
             await signer.signTransaction(tx);
+        },
+        async signMessage(message) {
+            check();
+            return signer.signMessage(message);
         },
     };
 }

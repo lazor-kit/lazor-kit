@@ -51,6 +51,17 @@ import { type KeySigner, type KeyStorage, forgetKey, generateKey, saveKey, wipeK
 import { keyForConnectedWallet } from './keyBinding';
 import { noteDisconnect } from './disconnects';
 import type { SignMessageResult } from '../message/signedMessage';
+import {
+    type TxV1Draft,
+    type TxV1Plan,
+    gateTxV1,
+    innerInstructionsOf,
+    placeholderForPrompt,
+    planTxV1,
+    sendPlannedTxV1,
+    shortestForPrompt,
+    signerPolicyForTxV1,
+} from './txv1-send';
 
 export function randomBytes(size: number): Uint8Array {
     return globalThis.crypto.getRandomValues(new Uint8Array(size));
@@ -126,6 +137,9 @@ function paymasterFor(
  * the paymaster's feePayer, pass it in `signers`: each adds its signature to
  * its own slot, in v0 and legacy alike, before the paymaster adds the fee
  * payer's. A transaction is signed once: `sendAndConfirm` never re-signs it.
+ *
+ * `txVersion: 'v1'` (with the request's `v1` plan) goes to ./txv1-send, and
+ * comes back here as 'v0' when v1 is not available.
  */
 async function buildAndSendTx(params: {
     paymaster: Paymaster;
@@ -134,11 +148,14 @@ async function buildAndSendTx(params: {
     instructions: TransactionInstruction[];
     signers?: KeySigner[];
     addressLookupTables?: AddressLookupTableAccount[];
-    txVersion?: 'legacy' | 'v0';
+    txVersion?: 'legacy' | 'v0' | 'v1';
     turn?: AuthorityTurn;
     /** A passkey authority this transaction creates: its first challenge is read at or past the creation. */
     createsAuthority?: PublicKey;
+    /** For `txVersion: 'v1'`: the request's plan, and which of its transactions this is. */
+    v1?: TxV1Send;
 }): Promise<string> {
+    if (params.txVersion === 'v1') return buildAndSendTxV1(params);
     const { paymaster, connection, feePayer, instructions } = params;
     const signers = params.signers ?? [];
     const txVersion = params.txVersion ?? 'v0';
@@ -177,6 +194,139 @@ async function buildAndSendTx(params: {
         turn: params.turn,
         createsAuthority: params.createsAuthority,
         simulateLogs,
+    });
+}
+
+/** A transaction of a planned 'v1' request (see ./txv1-send `sendPlannedTxV1`). */
+interface TxV1Send {
+    plan: TxV1Plan;
+    transaction: 'single' | 'tx1' | 'tx2';
+    /**
+     * Where a size failure of the real instructions stands; null for TX2 of a
+     * pair (measured exactly before the prompt as v1; as v0, left to v0, as a
+     * 'v0' request's TX2 is).
+     */
+    stage: 'before-signing' | 'after-signing' | null;
+}
+
+/** `buildAndSendTx` for `txVersion: 'v1'`. When v1 is not available, the same call as 'v0'. */
+function buildAndSendTxV1(params: Parameters<typeof buildAndSendTx>[0]): Promise<string> {
+    const { v1 } = params;
+    if (!v1) throw new Error("txv1: internal error: a 'v1' send without its plan");
+    return sendPlannedTxV1({
+        plan: v1.plan,
+        draft: {
+            transaction: v1.transaction,
+            instructions: params.instructions,
+            addressLookupTables: params.addressLookupTables,
+        },
+        stage: v1.stage,
+        paymaster: params.paymaster,
+        connection: params.connection,
+        feePayer: params.feePayer,
+        signers: params.signers ?? [],
+        turn: params.turn,
+        createsAuthority: params.createsAuthority,
+        sendV0: () => buildAndSendTx({ ...params, txVersion: 'v0', v1: undefined }),
+    });
+}
+
+/**
+ * A 'v1' request that a local key signs (a session, an Ed25519 authority):
+ * planned on its real instructions, which is exact, before the key signs,
+ * with what the signer's policy allocates when it carries one (read from
+ * `signer`, its session or authority account, when the request goes out as
+ * v1). Undefined for any other `txVersion`.
+ */
+async function planLocallySignedTxV1(params: {
+    connection: Connection;
+    paymaster: Paymaster;
+    feePayer: PublicKey;
+    walletPda: PublicKey;
+    signer: PublicKey;
+    instructions: TransactionInstruction[];
+    payload: SignAndSendTransactionPayload;
+}): Promise<TxV1Send | undefined> {
+    const options = params.payload.transactionOptions;
+    if (options?.txVersion !== 'v1') return undefined;
+    const policy = await signerPolicyForTxV1({
+        connection: params.connection,
+        paymaster: params.paymaster,
+        instructions: params.instructions,
+        signer: params.signer,
+        walletPda: params.walletPda,
+        feePayer: params.feePayer,
+        inner: params.payload.instructions,
+    });
+    const plan = planTxV1({
+        paymaster: params.paymaster,
+        feePayer: params.feePayer,
+        inner: params.payload.instructions,
+        // A session's or an Ed25519 authority's Execute.
+        execute: 'ed25519',
+        policy,
+        drafts: [
+            {
+                transaction: 'single',
+                instructions: params.instructions,
+                addressLookupTables: options.addressLookupTableAccounts,
+            },
+        ],
+        options,
+    });
+    return { plan, transaction: 'single', stage: null };
+}
+
+/**
+ * Plan a 'v1' deferred pair before the prompt (see ./txv1-send `planTxV1`):
+ * TX1 built from stand-in WebAuthn responses, and, when the pair goes out as
+ * v1, TX2 exactly, since it carries no WebAuthn bytes. One decision covers
+ * both, taken on TX1 (TX2 targets the same program), and a v1 TX2 must fit,
+ * so TX1 never authorizes a v1 TX2 that cannot be sent.
+ *
+ * TX2 is built only for v1, by a client of its own. `executeDeferredFromPayload`
+ * is not free of RPC (sdk-legacy 1.3): it reads the protocol config (cached
+ * per client) and, until it has seen it, the fee payer's FeeRecord; and when
+ * it adds RegisterPayer it marks the payer registered in that client. Built
+ * with the flow's client, the real TX2 would then leave RegisterPayer out. A
+ * pair that goes out as v0 makes neither read: it is the 'v0' request, whose
+ * TX2 is built and measured by v0 once TX1 has landed.
+ */
+async function planDeferredPairTxV1(params: {
+    client: ReturnType<typeof clientFor>;
+    prepared: Awaited<ReturnType<ReturnType<typeof clientFor>['prepareAuthorize']>>;
+    version: ProtocolVersion;
+    connection: Connection;
+    paymaster: Paymaster;
+    feePayer: PublicKey;
+    portalUrl: string;
+    payload: { instructions: TransactionInstruction[]; transactionOptions?: SignAndSendTransactionPayload['transactionOptions'] };
+}): Promise<TxV1Plan> {
+    const { feePayer, payload } = params;
+    const tx1 = params.client.finalizeAuthorize(params.prepared, placeholderForPrompt(params.portalUrl));
+    const tx1Shortest = params.client.finalizeAuthorize(params.prepared, shortestForPrompt(params.portalUrl));
+    const drafts: TxV1Draft[] = [
+        { transaction: 'tx1', instructions: tx1.instructions, shortest: tx1Shortest.instructions },
+    ];
+    if (gateTxV1({ paymaster: params.paymaster, instructions: tx1.instructions }).v1) {
+        const tx2 = await clientFor(params.version, params.connection).executeDeferredFromPayload({
+            payer: feePayer,
+            deferredPayload: tx1.deferredPayload,
+        });
+        drafts.push({
+            transaction: 'tx2',
+            instructions: tx2.instructions,
+            addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+        });
+    }
+    return planTxV1({
+        paymaster: params.paymaster,
+        feePayer,
+        inner: payload.instructions,
+        // TX2, ExecuteDeferred, runs the payload.
+        execute: 'deferred',
+        drafts,
+        options: payload.transactionOptions,
     });
 }
 
@@ -390,6 +540,37 @@ export const signAndSendTransactionAction = async (
                 secp256r1: { credentialIdHash, publicKeyBytes, authorityPda, ...(await turn.challengeReads(connection)) },
                 instructions: payload.instructions,
             });
+            // 'v1' only: whatever would refuse it refuses now, before the
+            // prompt, on a draft as large as the signed transaction can be,
+            // with what the passkey's policy allocates if it is a Delegate's.
+            let v1Plan: TxV1Plan | undefined;
+            if (payload.transactionOptions?.txVersion === 'v1') {
+                const draft = client.finalizeExecute(prepared, placeholderForPrompt(config.portalUrl)).instructions;
+                v1Plan = planTxV1({
+                    paymaster,
+                    feePayer,
+                    inner: payload.instructions,
+                    execute: 'secp256r1',
+                    policy: await signerPolicyForTxV1({
+                        connection,
+                        paymaster,
+                        instructions: draft,
+                        signer: authorityPda,
+                        walletPda,
+                        feePayer,
+                        inner: payload.instructions,
+                    }),
+                    drafts: [
+                        {
+                            transaction: 'single',
+                            instructions: draft,
+                            shortest: client.finalizeExecute(prepared, shortestForPrompt(config.portalUrl)).instructions,
+                            addressLookupTables: payload.transactionOptions.addressLookupTableAccounts,
+                        },
+                    ],
+                    options: payload.transactionOptions,
+                });
+            }
             const encodedChallenge = toBase64Url(prepared.challenge);
 
             // A display-only v0 transaction so the portal can render the ixs,
@@ -399,7 +580,13 @@ export const signAndSendTransactionAction = async (
                 feePayer,
                 recentBlockhash: latest.blockhash,
                 instructions: payload.instructions,
-                addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+                // A v1 transaction is sent without the caller's lookup tables,
+                // so its preview is built without them too: the portal then
+                // shows every account the passkey approves, rather than table
+                // entries it would resolve on chain.
+                addressLookupTables: v1Plan?.decision.v1
+                    ? undefined
+                    : payload.transactionOptions?.addressLookupTableAccounts,
             });
 
             const dialogManager = createDialogManager(config);
@@ -420,6 +607,7 @@ export const signAndSendTransactionAction = async (
                     addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
                     txVersion: payload.transactionOptions?.txVersion,
                     turn,
+                    v1: v1Plan && { plan: v1Plan, transaction: 'single', stage: 'after-signing' },
                 });
             } finally {
                 dialogManager.destroy();
@@ -734,6 +922,15 @@ export const signAndSendWithSessionAction = async (
             signers: [sessionKey],
             addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
             txVersion: payload.transactionOptions?.txVersion,
+            v1: await planLocallySignedTxV1({
+                connection,
+                paymaster,
+                feePayer,
+                walletPda,
+                signer: sessionPda,
+                instructions,
+                payload,
+            }),
         });
         return txSignature;
     } catch (error) {
@@ -968,6 +1165,21 @@ export const authorizeAndExecuteAction = async (
                 instructions: payload.instructions,
                 expiryOffset,
             });
+            // 'v1' only: one decision for TX1 and TX2 and, for v1, TX2
+            // measured exactly, before the prompt.
+            const v1Plan =
+                payload.transactionOptions?.txVersion === 'v1'
+                    ? await planDeferredPairTxV1({
+                          client,
+                          prepared,
+                          version,
+                          connection,
+                          paymaster,
+                          feePayer,
+                          portalUrl: config.portalUrl,
+                          payload,
+                      })
+                    : undefined;
 
             const encodedChallenge = toBase64Url(prepared.challenge);
             const dialogManager = createDialogManager(config);
@@ -995,6 +1207,7 @@ export const authorizeAndExecuteAction = async (
                     instructions: authorizeIxs,
                     txVersion,
                     turn,
+                    v1: v1Plan && { plan: v1Plan, transaction: 'tx1', stage: 'after-signing' },
                 });
 
                 // TX2 consumes no counter. The same client built TX1, so the
@@ -1016,6 +1229,7 @@ export const authorizeAndExecuteAction = async (
                             instructions: execIxs,
                             addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
                             txVersion,
+                            v1: v1Plan && { plan: v1Plan, transaction: 'tx2', stage: null },
                         }),
                 });
             } finally {
@@ -1063,6 +1277,21 @@ export const authorizeDeferredAction = async (
                 instructions: payload.instructions,
                 expiryOffset,
             });
+            // 'v1' only, before the prompt: as v1, TX2 as this fee payer would
+            // send it later must fit too, or the authorization would be stranded.
+            const v1Plan =
+                payload.transactionOptions?.txVersion === 'v1'
+                    ? await planDeferredPairTxV1({
+                          client,
+                          prepared,
+                          version,
+                          connection,
+                          paymaster,
+                          feePayer,
+                          portalUrl: config.portalUrl,
+                          payload,
+                      })
+                    : undefined;
 
             const encodedChallenge = toBase64Url(prepared.challenge);
             const dialogManager = createDialogManager(config);
@@ -1085,6 +1314,7 @@ export const authorizeDeferredAction = async (
                     instructions: authorizeIxs,
                     txVersion: payload.transactionOptions?.txVersion,
                     turn,
+                    v1: v1Plan && { plan: v1Plan, transaction: 'tx1', stage: 'after-signing' },
                 });
                 return { signature, deferredPayload };
             } finally {
@@ -1129,6 +1359,19 @@ export const executeDeferredAction = async (
             payer: feePayer,
             deferredPayload,
         });
+        // 'v1' only: measured exactly before anything is read or sent.
+        const options = payload.transactionOptions;
+        const v1Plan =
+            options?.txVersion === 'v1'
+                ? planTxV1({
+                      paymaster,
+                      feePayer,
+                      inner: innerInstructionsOf(deferredPayload.compactInstructions),
+                      execute: 'deferred',
+                      drafts: [{ transaction: 'tx2', instructions, addressLookupTables: options.addressLookupTableAccounts }],
+                      options,
+                  })
+                : undefined;
 
         // An expired authorization is refused before it is sent, or its
         // 3014 reported, as `DeferredExpiredError`.
@@ -1143,6 +1386,7 @@ export const executeDeferredAction = async (
                     instructions,
                     addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
                     txVersion: payload.transactionOptions?.txVersion,
+                    v1: v1Plan && { plan: v1Plan, transaction: 'tx2', stage: null },
                 }),
         });
 
@@ -1204,6 +1448,15 @@ export const signAndSendWithAuthorityAction = async (
             signers: [authorityKey],
             addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
             txVersion: payload.transactionOptions?.txVersion,
+            v1: await planLocallySignedTxV1({
+                connection,
+                paymaster,
+                feePayer,
+                walletPda,
+                signer: authorityPda,
+                instructions,
+                payload,
+            }),
         });
         return txSignature;
     } catch (error) {

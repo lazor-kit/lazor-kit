@@ -1,0 +1,19 @@
+{
+  "name": "txv1-oracle",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Test oracle for the wallets' SIMD-0385 v1 writer (txv1.ts): golden vectors and a seeded differential test against @solana/kit 8.4.0 and @solana/web3.js 1.99.0. Never published. Needs Node >= 20.18 (kit 8).",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/vectors.test.mjs test/differential.test.mjs",
+    "vectors": "node ../../scripts/txv1-vectors.mjs",
+    "vectors:check": "node ../../scripts/txv1-vectors.mjs --check"
+  },
+  "devDependencies": {
+    "@noble/curves": "^1.9.7",
+    "@solana/kit": "8.4.0",
+    "@solana/web3.js": "^1.99.0",
+    "typescript": "^5.9.3"
+  }
+}

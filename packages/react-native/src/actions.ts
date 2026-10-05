@@ -31,6 +31,12 @@ import { connectAbandoned, forgetCandidates, hasChooserHost } from './core/walle
 import { type AuthorityTurn, withAuthority } from './core/wallet/sequence';
 import { deferredExpiryOffset, executeBeforeExpiry } from './core/wallet/deferred';
 import { toPolicyError } from './core/wallet/policy';
+import {
+  type TxV1Decision,
+  placeholderFor,
+  planTxV1BeforePrompt,
+  withComputeUnitLimit,
+} from './core/wallet/txv1-send';
 import { logger } from './core/logger';
 import {
   isSignedMessageClientData,
@@ -77,6 +83,7 @@ import {
   SignAndSendTransactionPayload,
   SignOptions,
   SigningError,
+  TransactionOptions,
   TransferSolPayload,
   TxCallbacks,
   WalletConnectionError,
@@ -253,6 +260,64 @@ async function withPasskey<T>(
   return withAuthority(params.authorityPda!, async (turn) =>
     fn({ ...params, ...(await turn.challengeReads(connection)) }, turn),
   );
+}
+
+// ─── SIMD-0385 v1 ('v1' requests only; core/wallet/txv1-send) ──────
+
+/** The limits a 'v1' request passes on with a send. */
+function limitsOf(options: TransactionOptions): { computeUnitLimit?: number; loadedAccountsDataSizeLimit?: number } {
+  return {
+    computeUnitLimit: options.computeUnitLimit,
+    loadedAccountsDataSizeLimit: options.loadedAccountsDataSizeLimit,
+  };
+}
+
+/**
+ * The format of a deferred pair ('v1' requests), decided before the portal
+ * opens: one decision for both transactions. TX1 (Authorize) is measured with
+ * a worst-case WebAuthn response and, when the pair goes out as v1, TX2
+ * (ExecuteDeferred) exactly, since it carries no WebAuthn bytes: TX1 is never
+ * sent for a v1 TX2 that could not be. A pair that goes out as v0 does not
+ * build TX2 here, so it reads nothing a 'v0' request does not.
+ */
+function planAuthorizeTxV1(params: {
+  client: LazorKitClient;
+  connection: WalletStateClient['connection'];
+  version: ProtocolVersion;
+  config: WalletStateClient['config'];
+  feePayer: PublicKey;
+  prepared: Awaited<ReturnType<LazorKitClient['prepareAuthorize']>>;
+  instructions: TransactionInstruction[];
+  options: TransactionOptions;
+}): Promise<TxV1Decision> {
+  // What TX2 executes does not depend on the WebAuthn response.
+  const { deferredPayload } = params.client.finalizeAuthorize(params.prepared, placeholderFor(params.config.portalUrl));
+  return planTxV1BeforePrompt({
+    paymaster: paymasterFor(params.config, params.version),
+    options: params.options,
+    payload: params.instructions,
+    // TX2, ExecuteDeferred, runs the payload.
+    execute: 'deferred',
+    payer: params.feePayer,
+    portalUrl: params.config.portalUrl,
+    draft: (webAuthn) => params.client.finalizeAuthorize(params.prepared, webAuthn).instructions,
+    transaction: 'tx1',
+    tx2: async () => {
+      // TX2 as it is built once TX1 has landed, but on a client of its own:
+      // executeDeferredFromPayload reads the protocol config and the payer's
+      // FeeRecord, and once it has returned RegisterPayer it takes the payer
+      // as registered. Asked on the action's client, the real TX2 would then
+      // go without the RegisterPayer it needs.
+      const tx2 = await clientFor(params.version, params.connection).executeDeferredFromPayload({
+        payer: params.feePayer,
+        deferredPayload,
+      });
+      return {
+        instructions: withComputeUnitLimit(tx2.instructions, params.options.computeUnitLimit),
+        addressLookupTables: params.options.addressLookupTableAccounts,
+      };
+    },
+  });
 }
 
 // ─── Connect / Disconnect ──────────────────────────────────────────
@@ -509,11 +574,34 @@ async function performPasskeyExecute(
       instructions: payload.instructions,
     });
 
+    // 'v1' only: the format is decided, and the transaction measured with a
+    // worst-case WebAuthn response, before the portal opens.
+    const txOptions = payload.transactionOptions;
+    const v1: TxV1Decision | undefined =
+      txOptions?.txVersion === 'v1'
+        ? await planTxV1BeforePrompt({
+            paymaster: paymasterFor(config, version),
+            options: txOptions,
+            payload: payload.instructions,
+            execute: 'secp256r1',
+            // A Delegate's passkey carries a policy, which allocates beside the payload.
+            signer: { connection, account: new PublicKey(wallet!.walletDevice), walletPda },
+            payer: feePayer,
+            portalUrl: config.portalUrl,
+            draft: (webAuthn) =>
+              withComputeUnitLimit(client.finalizeExecute(prepared, webAuthn).instructions, txOptions.computeUnitLimit),
+            addressLookupTables: txOptions.addressLookupTableAccounts,
+          })
+        : undefined;
+
     const previewBase64Tx = await buildPreviewTransactionBase64({
       connection,
       feePayer,
       instructions: payload.instructions,
-      addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+      // A v1 transaction is sent without the caller's lookup tables, so its
+      // preview is built without them too: the portal then shows every
+      // account the passkey approves, not table entries it resolves on chain.
+      addressLookupTables: v1?.v1 ? undefined : payload.transactionOptions?.addressLookupTableAccounts,
     });
 
     const webAuthnResponse = await signChallengeViaPortal({
@@ -546,6 +634,12 @@ async function performPasskeyExecute(
       addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
       feeToken: payload.transactionOptions?.feeToken,
       turn,
+      ...(v1 && txOptions
+        ? {
+            txVersion: 'v1' as const,
+            v1: { decision: v1, ...limitsOf(txOptions), minContextSlot: secp256r1.minContextSlot },
+          }
+        : {}),
     });
   });
 }
@@ -756,6 +850,9 @@ export const signAndSendWithSessionAction = async (
       }
       allInstructions.push(...instructions);
 
+      // 'v1': no prompt here, so the send decides and measures before the
+      // session key signs.
+      const txOptions = payload.transactionOptions;
       const signature = await sendInstructionsViaPaymaster({
         instructions: allInstructions,
         connection,
@@ -765,6 +862,16 @@ export const signAndSendWithSessionAction = async (
         addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
         feeToken: payload.transactionOptions?.feeToken,
         extraSigners: [payload.sessionKeypair],
+        ...(txOptions?.txVersion === 'v1'
+          ? {
+              txVersion: 'v1' as const,
+              v1: {
+                ...limitsOf(txOptions),
+                payload: payload.instructions,
+                signer: { account: payload.sessionPda, walletPda },
+              },
+            }
+          : {}),
       });
       return signature;
     } catch (err) {
@@ -968,14 +1075,32 @@ export const authorizeAndExecuteAction = async (
           expiryOffset,
         });
 
+        // 'v1' only: one format for both transactions, decided before the
+        // portal opens, with a v1 TX2 measured exactly.
+        const txOptions = payload.transactionOptions;
+        const v1 =
+          txOptions?.txVersion === 'v1'
+            ? await planAuthorizeTxV1({
+                client,
+                connection,
+                version,
+                config,
+                feePayer,
+                prepared,
+                instructions: payload.instructions,
+                options: txOptions,
+              })
+            : undefined;
+
         // What the user approves: the inner instructions, compiled with the
         // lookup tables TX2 is sent with (the payloads this flow exists for
-        // are over the packet limit without them).
+        // are over the packet limit without them). A v1 TX2 is sent without
+        // them, and so is its preview, which then lists every account.
         const previewBase64Tx = await buildPreviewTransactionBase64({
           connection,
           feePayer,
           instructions: payload.instructions,
-          addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+          addressLookupTables: v1?.v1 ? undefined : payload.transactionOptions?.addressLookupTableAccounts,
         });
 
         const response = await signChallengeViaPortal({
@@ -1002,6 +1127,12 @@ export const authorizeAndExecuteAction = async (
           config,
           version,
           turn,
+          ...(v1
+            ? {
+                txVersion: 'v1' as const,
+                v1: { decision: v1, transaction: 'tx1' as const, minContextSlot: secp256r1.minContextSlot },
+              }
+            : {}),
         });
 
         // TX2: ExecuteDeferred. It consumes no counter, and the same client
@@ -1010,6 +1141,9 @@ export const authorizeAndExecuteAction = async (
           payer: feePayer,
           deferredPayload,
         });
+        // 'v1': TX2's limits are simulated on a node that has TX1 (the lane's
+        // floor; TX1 is settled, so this reads nothing over the network).
+        const tx2Floor = v1 ? (await turn.challengeReads(connection)).minContextSlot : undefined;
 
         const tx2Instructions: TransactionInstruction[] = [];
         if (payload.transactionOptions?.computeUnitLimit) {
@@ -1034,6 +1168,12 @@ export const authorizeAndExecuteAction = async (
               version,
               addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
               feeToken: payload.transactionOptions?.feeToken,
+              ...(v1 && txOptions
+                ? {
+                    txVersion: 'v1' as const,
+                    v1: { decision: v1, transaction: 'tx2' as const, ...limitsOf(txOptions), minContextSlot: tx2Floor },
+                  }
+                : {}),
             }),
         });
       });
@@ -1077,11 +1217,29 @@ export const authorizeDeferredAction = async (
           expiryOffset,
         });
 
+        // 'v1' only: decided before the portal opens, with the TX2 this
+        // authorization is for measured too when it is v1.
+        const txOptions = payload.transactionOptions;
+        const v1 =
+          txOptions?.txVersion === 'v1'
+            ? await planAuthorizeTxV1({
+                client,
+                connection,
+                version,
+                config,
+                feePayer,
+                prepared,
+                instructions: payload.instructions,
+                options: txOptions,
+              })
+            : undefined;
+
         const previewBase64Tx = await buildPreviewTransactionBase64({
           connection,
           feePayer,
           instructions: payload.instructions,
-          addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+          // As in authorizeAndExecute: a v1 TX2 goes without the lookup tables.
+          addressLookupTables: v1?.v1 ? undefined : payload.transactionOptions?.addressLookupTableAccounts,
         });
 
         const response = await signChallengeViaPortal({
@@ -1109,6 +1267,12 @@ export const authorizeDeferredAction = async (
           config,
           version,
           turn,
+          ...(v1
+            ? {
+                txVersion: 'v1' as const,
+                v1: { decision: v1, transaction: 'tx1' as const, minContextSlot: secp256r1.minContextSlot },
+              }
+            : {}),
         });
         return { signature, deferredPayload, deferredExecPda, counter };
       });
@@ -1162,7 +1326,9 @@ export const executeDeferredAction = async (
       allInstructions.push(...instructions);
 
       // An expired authorization is refused before it is sent, or its 3014
-      // reported, as `DeferredExpiredError`.
+      // reported, as `DeferredExpiredError`. 'v1': no prompt here, so the
+      // send decides and measures.
+      const txOptions = payload.transactionOptions;
       const signature = await executeBeforeExpiry({
         connection,
         deferredExecPda: payload.deferredPayload.deferredExecPda,
@@ -1175,6 +1341,9 @@ export const executeDeferredAction = async (
             version,
             addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
             feeToken: payload.transactionOptions?.feeToken,
+            ...(txOptions?.txVersion === 'v1'
+              ? { txVersion: 'v1' as const, v1: { transaction: 'tx2' as const, ...limitsOf(txOptions) } }
+              : {}),
           }),
       });
       return signature;

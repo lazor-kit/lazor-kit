@@ -40,23 +40,29 @@ export interface WalletInfo {
   readonly protocolVersion?: 1 | 2;
 }
 
+/** A paymaster: the JSON-RPC service that signs as fee payer and sends. */
+export interface PaymasterConfig {
+  readonly paymasterUrl: string;
+  readonly apiKey?: string;
+  /**
+   * This paymaster signs SIMD-0385 v1 transactions. Default `false`: a
+   * `txVersion: 'v1'` request is then sent as v0. Experimental, devnet only.
+   * Do not set it for kora.devnet.lazorkit.com, which cannot read v1.
+   */
+  readonly acceptsTxV1?: boolean;
+}
+
 export interface WalletConfig {
   readonly portalUrl: string;
   /** The paymaster for v2 wallets. */
-  readonly configPaymaster: {
-    readonly paymasterUrl: string;
-    readonly apiKey?: string;
-  };
+  readonly configPaymaster: PaymasterConfig;
   /**
    * The paymaster for wallets still on LazorKit v1 — the relayer the app used
    * before v2. Defaults to `configPaymaster`. Keep them apart where you can: a
    * relayer that sponsors the full v1 program can have its fee payer pulled
    * into any v1 transaction's inner calls, so the v2 relayer should not.
    */
-  readonly v1ConfigPaymaster?: {
-    readonly paymasterUrl: string;
-    readonly apiKey?: string;
-  };
+  readonly v1ConfigPaymaster?: PaymasterConfig;
   readonly rpcUrl?: string;
   /**
    * Which cluster `rpcUrl` serves, when its URL does not say. Without it the
@@ -191,15 +197,9 @@ export interface PendingWalletConfirmation {
 export interface LazorKitProviderProps {
   readonly rpcUrl?: string;
   readonly portalUrl?: string;
-  readonly configPaymaster?: {
-    readonly paymasterUrl: string;
-    readonly apiKey?: string;
-  };
+  readonly configPaymaster?: PaymasterConfig;
   /** The paymaster for users whose wallet is still on LazorKit v1. Defaults to `configPaymaster`. */
-  readonly v1ConfigPaymaster?: {
-    readonly paymasterUrl: string;
-    readonly apiKey?: string;
-  };
+  readonly v1ConfigPaymaster?: PaymasterConfig;
   /** Which cluster `rpcUrl` serves, if its URL does not say. See WalletConfig. */
   readonly cluster?: 'mainnet' | 'devnet';
   readonly rpId?: string;
@@ -283,8 +283,35 @@ export interface SignOptions {
 export interface TransactionOptions {
   readonly feeToken?: string;
   readonly addressLookupTableAccounts?: AddressLookupTableAccount[];
+  /**
+   * The compute-unit limit. A v0 transaction gets a SetComputeUnitLimit
+   * instruction; a v1 transaction carries it in its config instead
+   * (1 to 1,400,000; default: measured).
+   */
   readonly computeUnitLimit?: number;
   readonly clusterSimulation?: 'devnet' | 'mainnet';
+  /**
+   * The transaction format. Default `'v0'`, as before. `'v1'` is SIMD-0385
+   * (up to 4096 bytes and 64 addresses, no lookup tables), experimental and
+   * devnet-only. It is used when the paymaster declares `acceptsTxV1`, no
+   * `feeToken` is set, and the wallet is on the devnet LazorKit v2 program.
+   * Otherwise the transaction is sent as v0, with the requests a `'v0'`
+   * request makes, and the reason is logged (the README lists what a 'v1'
+   * request still checks before the portal opens; the v1 limits are not
+   * checked then). A 'v1' request that cannot be sent in the format chosen
+   * throws `TransactionTooLargeError` (or `PayloadExceedsProgramLimitsError`)
+   * before anything is sent, and before the portal opens when that is already
+   * known. Honoured by signAndSendTransaction, transferSol,
+   * signAndSendWithSession, authorizeAndExecute, authorizeDeferred and
+   * executeDeferred.
+   */
+  readonly txVersion?: 'v0' | 'v1';
+  /**
+   * v1 only (ignored when a 'v1' request goes out as v0): the loaded-accounts
+   * data size limit, in bytes, 196,608 to 67,108,864. Default: measured. In a
+   * deferred pair it applies to TX2, as `computeUnitLimit` does.
+   */
+  readonly loadedAccountsDataSizeLimit?: number;
 }
 
 /** Payload for single-tx `signAndSendTransaction` (and the 2-tx deferred flow). */
@@ -665,6 +692,10 @@ export interface WalletActions {
    * minutes ago; else `null`.
    */
   adoptRemembered: (confirmWallet: string) => WalletInfo | null;
+  /**
+   * Sends an Execute the passkey has signed, as v0 whatever `txVersion`
+   * says: a 'v1' request is decided and measured before the portal opens.
+   */
   executeWallet: (
     data: WalletInfo,
     feePayer: PublicKey,

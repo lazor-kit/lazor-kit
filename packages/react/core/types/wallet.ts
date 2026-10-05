@@ -266,10 +266,34 @@ export interface SignAndSendTransactionPayload {
     readonly transactionOptions?: {
         readonly feeToken?: string;
         readonly addressLookupTableAccounts?: AddressLookupTableAccount[];
+        /**
+         * Ignored by legacy and v0 sends, and by a 'v1' request that goes out
+         * as v0. As v1: the compute-unit limit written into the transaction,
+         * 1 to 1,400,000. Default: measured by a simulation.
+         */
         readonly computeUnitLimit?: number;
         readonly clusterSimulation?: 'devnet' | 'mainnet';
-        /** Wire format for the transaction. Defaults to 'v0'. */
-        readonly txVersion?: 'legacy' | 'v0';
+        /**
+         * Wire format for the transaction. Defaults to 'v0'.
+         *
+         * 'v1' (SIMD-0385, up to 4096 bytes and 64 addresses) is experimental
+         * and devnet only. It is used when the paymaster declares
+         * `acceptsTxV1` and the wallet is on the devnet LazorKit v2 program;
+         * otherwise the transaction goes out as v0, with the requests a 'v0'
+         * request makes (the README lists what a 'v1' request still checks
+         * before the prompt). A v1 transaction has no lookup tables:
+         * `addressLookupTableAccounts` serve only the v0 fallback and its
+         * preview. A transaction that does not fit the format it goes out in
+         * throws `TransactionTooLargeError`, before the prompt when that is
+         * already known; nothing is sent.
+         */
+        readonly txVersion?: 'legacy' | 'v0' | 'v1';
+        /**
+         * `txVersion: 'v1'` only, when it goes out as v1: the loaded-accounts
+         * data size limit, in bytes, 196,608 to 67,108,864. Default: measured
+         * by a simulation.
+         */
+        readonly loadedAccountsDataSizeLimit?: number;
     };
     readonly instructions: TransactionInstruction[];
     readonly onSuccess?: (signature: string) => void;

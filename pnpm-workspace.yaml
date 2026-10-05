@@ -4,3 +4,4 @@ packages:
   - packages/program-sdk/legacy
   - app/portal
   - app/migrate
+  - tools/txv1-oracle

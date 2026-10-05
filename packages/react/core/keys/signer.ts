@@ -4,6 +4,7 @@
  */
 import { Buffer } from 'buffer';
 import { Keypair, PublicKey, Transaction, VersionedTransaction } from '@solana/web3.js';
+import { keypairMessageSigner } from '../wallet/txv1';
 import { type Sealed, signEd25519, unseal } from './webcrypto';
 
 export interface KeySigner {
@@ -13,6 +14,13 @@ export interface KeySigner {
      * signer, as `tx.partialSign` (legacy) or `tx.sign` (v0) would.
      */
     signTransaction(tx: Transaction | VersionedTransaction): Promise<void>;
+    /**
+     * This key's 64-byte Ed25519 signature of exactly `message`: the message
+     * of a transaction web3.js cannot sign, a SIMD-0385 v1 one
+     * (`signTransactionV1Async` in ../wallet/txv1 places it). Every tier signs
+     * here as it does in `signTransaction`.
+     */
+    signMessage(message: Uint8Array): Promise<Uint8Array>;
 }
 
 function isLegacy(tx: Transaction | VersionedTransaction): tx is Transaction {
@@ -35,6 +43,7 @@ export function cryptoKeySigner(publicKey: PublicKey, privateKey: CryptoKey): Ke
                 tx.addSignature(publicKey, await signEd25519(privateKey, tx.message.serialize()));
             }
         },
+        signMessage: (message) => signEd25519(privateKey, message),
     };
 }
 
@@ -45,6 +54,7 @@ export function keypairSigner(keypair: Keypair): KeySigner {
         async signTransaction(tx) {
             signWithKeypair(tx, keypair);
         },
+        signMessage: (message) => keypairMessageSigner(keypair).signMessage(message),
     };
 }
 
@@ -54,18 +64,20 @@ export function keypairSigner(keypair: Keypair): KeySigner {
  * after.
  */
 export function sealedSigner(publicKey: PublicKey, wrapKey: CryptoKey, sealed: Sealed, context: string): KeySigner {
+    async function withKeypair<T>(sign: (keypair: Keypair) => T | Promise<T>): Promise<T> {
+        const seed = await unseal(wrapKey, sealed, context);
+        try {
+            const keypair = Keypair.fromSeed(seed);
+            if (!keypair.publicKey.equals(publicKey)) throw new Error('The stored key does not match its public key');
+            return await sign(keypair);
+        } finally {
+            seed.fill(0);
+        }
+    }
     return {
         publicKey,
-        async signTransaction(tx) {
-            const seed = await unseal(wrapKey, sealed, context);
-            try {
-                const keypair = Keypair.fromSeed(seed);
-                if (!keypair.publicKey.equals(publicKey)) throw new Error('The stored key does not match its public key');
-                signWithKeypair(tx, keypair);
-            } finally {
-                seed.fill(0);
-            }
-        },
+        signTransaction: (tx) => withKeypair((keypair) => signWithKeypair(tx, keypair)),
+        signMessage: (message) => withKeypair((keypair) => keypairMessageSigner(keypair).signMessage(message)),
     };
 }
 

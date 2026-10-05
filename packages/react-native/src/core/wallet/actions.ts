@@ -21,6 +21,7 @@ import { sha256 } from 'js-sha256';
 import {
   BrowserResult,
   ExecuteFinalize,
+  PaymasterConfig,
   SaveWalletOptions,
   TransactionOptions,
   WalletActions,
@@ -46,6 +47,7 @@ import { getFeePayer, signAndExecuteTransaction } from '../paymaster';
 import { logger } from '../logger';
 import { type AuthorityTurn, sendAndConfirm } from './sequence';
 import { buildPreviewTransactionBase64 as previewTransactionBase64 } from './preview';
+import { type TxV1Request, sendViaPaymasterTxV1 } from './txv1-send';
 
 /**
  * Factory that returns high-level wallet operations bound to a given
@@ -248,6 +250,9 @@ export const createWalletActions = (
       }
       allInstructions.push(...instructions);
 
+      // Always the v0 transaction, as for a 'v0' request: a 'v1' request goes
+      // out as v1 only once it was decided, checked and measured before the
+      // portal opened (./txv1-send), and the passkey signed before this runs.
       const alts = transactionOptions?.addressLookupTableAccounts ?? [];
       return await sendInstructionsViaPaymaster({
         instructions: allInstructions,
@@ -399,10 +404,7 @@ async function openPortalSign(params: PortalSignParams): Promise<BrowserResult> 
  * The paymaster for a wallet's protocol. v1 wallets keep the relayer the app
  * used before v2 (`v1ConfigPaymaster`, defaulting to the main one).
  */
-export function paymasterFor(
-  config: WalletConfig,
-  version: ProtocolVersion,
-): { paymasterUrl: string; apiKey?: string } {
+export function paymasterFor(config: WalletConfig, version: ProtocolVersion): PaymasterConfig {
   return version === 1
     ? (config.v1ConfigPaymaster ?? config.configPaymaster)
     : config.configPaymaster;
@@ -434,7 +436,20 @@ export async function sendInstructionsViaPaymaster(params: {
   turn?: AuthorityTurn;
   /** A passkey authority this transaction creates: its first challenge is read at or past the creation. */
   createsAuthority?: PublicKey;
+  /**
+   * `'v1'`: a SIMD-0385 request, sent by ./txv1-send — as v1 when it can be,
+   * else as v0 by the code below. Anything else is the v0 transaction this
+   * function has always sent.
+   */
+  txVersion?: 'v0' | 'v1';
+  /** With `txVersion: 'v1'`: the decision taken before the prompt, the limits, the lane's floor. */
+  v1?: TxV1Request;
 }): Promise<string> {
+  if (params.txVersion === 'v1') {
+    return sendViaPaymasterTxV1({ ...params, paymaster: paymasterFor(params.config, params.version ?? 2) }, () =>
+      sendInstructionsViaPaymaster({ ...params, txVersion: undefined, v1: undefined }),
+    );
+  }
   const { blockhash, lastValidBlockHeight } = await params.connection.getLatestBlockhash();
   const msg = new TransactionMessage({
     payerKey: params.feePayer,
