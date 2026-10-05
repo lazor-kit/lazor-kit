@@ -1,5 +1,11 @@
 # @lazorkit/wallet
 
+## 3.4.1
+
+### Patch Changes
+
+- [#120](https://github.com/lazor-kit/lazor-kit/pull/120) [`3d88ce1`](https://github.com/lazor-kit/lazor-kit/commit/3d88ce18de3d386e205052ff42c117a70c693628) Thanks [@onspeedhp](https://github.com/onspeedhp)! - `signMessage` with bytes that start with a UTF-8 byte order mark (EF BB BF) now sends a `displayMessage` that keeps the BOM (`ignoreBOM: true`), so the text the portal shows encodes back to exactly the signed bytes. Before, the BOM was dropped from the text, and a portal that recomputes the challenge from what it shows refused the request. Strings were not affected.
+
 ## 3.4.0
 
 ### Minor Changes
