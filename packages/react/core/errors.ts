@@ -251,9 +251,16 @@ export function userMessage(error: unknown, context: 'connect' | 'send' = 'conne
         case 'v1-migrated':
             return 'This wallet moved. Sign in again.';
         case 'key-mismatch':
-            return linkNamed(error, 'KeyWalletMismatchError')?.reason === 'disconnected'
-                ? 'The wallet was disconnected during this send. Nothing was sent; send it again.'
-                : 'This key belongs to another wallet. Nothing was sent.';
+            switch (linkNamed(error, 'KeyWalletMismatchError')?.reason) {
+                case 'disconnected':
+                    return 'The wallet was disconnected during this send. Nothing was sent; send it again.';
+                case 'no-wallet':
+                    return 'No wallet is connected. Nothing was sent; connect and send again.';
+                case 'unbound':
+                    return "This key couldn't be matched to a wallet. Nothing was sent.";
+                default:
+                    return 'This key belongs to another wallet. Nothing was sent.';
+            }
         case 'policy': {
             const refusal = linkNamed(error, 'UnlistedSolOutflowError') ?? linkNamed(error, 'UnlistedTokenOutflowError');
             const who = refusal?.signer === 'authority' ? 'This key' : 'This session';

@@ -195,7 +195,7 @@ test('errorKind and userMessage read errors from another copy of the package by 
     assert.equal(W.userMessage(new W.V1WalletRetiredError()), "This wallet's old version is retired. Move it to the new version to continue.");
 });
 
-test("errorKind 'policy' for a session's or delegate's refusal (3037 / 3038), before what it wraps; a disconnected key says so", async () => {
+test("errorKind 'policy' for a session's or delegate's refusal (3037 / 3038), before what it wraps; a disconnected, signed-out or unbound key says so", async () => {
     const other = await freshPage('core.mjs');
     const korasText = (code) => `Invalid transaction: Transaction simulation failed: InstructionError(0, Custom(${code}))`;
     const refused = new other.PaymasterError(korasText(3037), { code: -32602 });
@@ -218,6 +218,13 @@ test("errorKind 'policy' for a session's or delegate's refusal (3037 / 3038), be
     const disconnected = new other.KeyWalletMismatchError('authority', 'disconnected', 'A', 'A');
     assert.equal(W.errorKind(disconnected), 'key-mismatch');
     assert.equal(W.userMessage(disconnected, 'send'), 'The wallet was disconnected during this send. Nothing was sent; send it again.');
+    // Signed out (no wallet), or a key no wallet could be matched to: not "another wallet".
+    const signedOut = new other.KeyWalletMismatchError('session', 'no-wallet', 'A', undefined, 'send');
+    assert.equal(W.userMessage(signedOut, 'send'), 'No wallet is connected. Nothing was sent; connect and send again.');
+    assert.equal(W.userMessage(new W.KeyWalletMismatchError('session', 'no-wallet', 'A', undefined)), 'No wallet is connected. Nothing was sent; connect and send again.');
+    const unbound = Object.assign(new Error('wrapped'), { cause: new other.KeyWalletMismatchError('authority', 'unbound', undefined, 'B') });
+    assert.equal(W.errorKind(unbound), 'key-mismatch');
+    assert.equal(W.userMessage(unbound, 'send'), "This key couldn't be matched to a wallet. Nothing was sent.");
 });
 
 void PAYMASTER;

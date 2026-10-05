@@ -178,6 +178,7 @@ for (const path of ['store', 'adapter']) {
         assert.equal(store().wallet, null, 'the store is disconnected');
         assert.equal(store().isSigning, false);
         assert.equal(W.errorKind(error), 'key-mismatch');
+        assert.equal(W.userMessage(error, 'send'), 'No wallet is connected. Nothing was sent; connect and send again.');
     });
 }
 
@@ -222,6 +223,7 @@ test("Embedded: the adapter's disconnect disconnects the store, and its record: 
     const refused = await rejection(sendWithSession());
     assert.ok(W.isKeyWalletMismatchError(refused), String(refused));
     assert.equal(refused.reason, 'no-wallet');
+    assert.equal(W.userMessage(refused, 'send'), 'No wallet is connected. Nothing was sent; connect and send again.', 'not "another wallet": the user signed out');
     assert.equal(chain.state.sent.length, 0);
 
     // Not restored without the passkey: connect asks for it.
