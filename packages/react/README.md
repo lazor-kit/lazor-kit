@@ -1022,7 +1022,8 @@ Every error has a kind, `errorKind(error)`, and words to show,
 | `signature-reused` | `SignatureReusedError` | "Nothing was sent. Try again." |
 | `v1-retired` | `V1WalletRetiredError` | "This wallet's old version is retired. Move it to the new version to continue." |
 | `v1-migrated` | `V1WalletMigratedError` | "This wallet moved. Sign in again." |
-| `key-mismatch` | `KeyWalletMismatchError` | "This key belongs to another wallet. Nothing was signed." |
+| `key-mismatch` | `KeyWalletMismatchError` | "This key belongs to another wallet. Nothing was sent." (`reason` `'disconnected'`: "The wallet was disconnected during this send. Nothing was sent; send it again.") |
+| `policy` | `UnlistedSolOutflowError`, `UnlistedTokenOutflowError` | "This session isn't allowed to spend SOL. Nothing was spent." ("This key …" for a delegate, "… this token" for 3038) |
 
 A user rejection never sets the store's `error`, in either mode. `onFail`
 still runs for it.

@@ -169,6 +169,7 @@ export type ErrorKind =
     | 'v1-retired'
     | 'v1-migrated'
     | 'key-mismatch'
+    | 'policy'
     | 'wallet-mismatch'
     | 'unknown';
 
@@ -189,6 +190,10 @@ export function errorKind(error: unknown): ErrorKind {
     if (has('V1WalletMigratedError')) return 'v1-migrated';
     if (has('SignatureReusedError', 3006)) return 'signature-reused';
     if (has('KeyWalletMismatchError', 'KEY_WALLET_MISMATCH')) return 'key-mismatch';
+    // A session or delegate key's policy does not name what it would spend
+    // (3037 / 3038). Before the kinds of what it wraps: a paymaster's refusal
+    // or the failed transaction.
+    if (has('UnlistedSolOutflowError', 3037) || has('UnlistedTokenOutflowError', 3038)) return 'policy';
     if (has('PreviousTransactionPendingError')) return 'previous-pending';
     if (has('TransactionOutcomeUnknownError') || has('ConfirmationTimeoutError')) return 'tx-unknown';
     if (has('TransactionExpiredError')) return 'tx-expired';
@@ -246,12 +251,27 @@ export function userMessage(error: unknown, context: 'connect' | 'send' = 'conne
         case 'v1-migrated':
             return 'This wallet moved. Sign in again.';
         case 'key-mismatch':
-            return 'This key belongs to another wallet. Nothing was signed.';
+            return linkNamed(error, 'KeyWalletMismatchError')?.reason === 'disconnected'
+                ? 'The wallet was disconnected during this send. Nothing was sent; send it again.'
+                : 'This key belongs to another wallet. Nothing was sent.';
+        case 'policy': {
+            const refusal = linkNamed(error, 'UnlistedSolOutflowError') ?? linkNamed(error, 'UnlistedTokenOutflowError');
+            const who = refusal?.signer === 'authority' ? 'This key' : 'This session';
+            const what = refusal?.name === 'UnlistedSolOutflowError' ? 'SOL' : 'this token';
+            return `${who} isn't allowed to spend ${what}. Nothing was spent.`;
+        }
         case 'wallet-mismatch':
             return "The wallet that was created isn't this passkey's. Nothing was saved; try again.";
         default:
             return 'Something went wrong. Nothing was signed or sent.';
     }
+}
+
+/** The first link of the error's chain with this `name`, as the fields `userMessage` reads. */
+function linkNamed(error: unknown, name: string): { name: string; reason?: unknown; signer?: unknown } | undefined {
+    return errorChain(error).find((link) => isNamedError(link, name)) as
+        | { name: string; reason?: unknown; signer?: unknown }
+        | undefined;
 }
 
 /**

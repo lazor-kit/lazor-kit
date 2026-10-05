@@ -195,4 +195,29 @@ test('errorKind and userMessage read errors from another copy of the package by 
     assert.equal(W.userMessage(new W.V1WalletRetiredError()), "This wallet's old version is retired. Move it to the new version to continue.");
 });
 
+test("errorKind 'policy' for a session's or delegate's refusal (3037 / 3038), before what it wraps; a disconnected key says so", async () => {
+    const other = await freshPage('core.mjs');
+    const korasText = (code) => `Invalid transaction: Transaction simulation failed: InstructionError(0, Custom(${code}))`;
+    const refused = new other.PaymasterError(korasText(3037), { code: -32602 });
+    const sol = new other.UnlistedSolOutflowError('authority', refused);
+    assert.equal(W.errorKind(sol), 'policy', 'not network: the paymaster refused it for a program error');
+    assert.equal(W.userMessage(sol, 'send'), "This key isn't allowed to spend SOL. Nothing was spent.");
+    const token = Object.assign(new Error('wrapped'), { cause: new other.UnlistedTokenOutflowError('session') });
+    assert.equal(W.errorKind(token), 'policy');
+    assert.equal(W.userMessage(token, 'send'), "This session isn't allowed to spend this token. Nothing was spent.");
+    // A landed failure the refusal wraps does not decide its kind either.
+    const landed = new W.UnlistedSolOutflowError('session', new W.TransactionFailedError('5'.repeat(88), { InstructionError: [0, { Custom: 3037 }] }, 1));
+    assert.equal(W.errorKind(landed), 'policy');
+    // What it wraps, alone, is what it was.
+    assert.equal(W.errorKind(refused), 'unknown');
+
+    // A kept key refused after it signed (stage 'send') signed something: nothing was sent.
+    const mismatch = new other.KeyWalletMismatchError('session', 'other-wallet', 'A', 'B', 'send');
+    assert.equal(W.errorKind(mismatch), 'key-mismatch');
+    assert.equal(W.userMessage(mismatch, 'send'), 'This key belongs to another wallet. Nothing was sent.');
+    const disconnected = new other.KeyWalletMismatchError('authority', 'disconnected', 'A', 'A');
+    assert.equal(W.errorKind(disconnected), 'key-mismatch');
+    assert.equal(W.userMessage(disconnected, 'send'), 'The wallet was disconnected during this send. Nothing was sent; send it again.');
+});
+
 void PAYMASTER;

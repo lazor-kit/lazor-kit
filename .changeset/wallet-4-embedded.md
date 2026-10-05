@@ -39,7 +39,7 @@ The passkey lives on the app's own `rpId`, and the SDK runs every ceremony in th
 - `signAndSend` with `onSubmitted`.
 - `<ConnectButton>`, `useWalletStatus()`, `useLazorkitClient()`.
 - `createLazorkitClient()` and `getLazorkitClient()`: one client per page. A conflicting reconfigure throws `LazorkitConfigError('reconfigured')`.
-- New error classes, with `errorKind()` and `userMessage()`.
+- New error classes, with `errorKind()` and `userMessage()` (`'policy'` for `UnlistedSolOutflowError` and `UnlistedTokenOutflowError`).
 - `onEvent` instrumentation (experimental).
 - `forgetEmbeddedDevice()`.
 - `passkeyCapabilities()`.
