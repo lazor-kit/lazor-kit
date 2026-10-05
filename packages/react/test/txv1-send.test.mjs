@@ -169,7 +169,7 @@ test('U5: a 2.2 KB payload that no v0 form can carry goes out as v1; the caller\
     assert.ok(preview.length > 1232, `${preview.length} bytes`);
     assertPreviewShowsEveryAccount(preview, sent.instructions);
   });
-  // The same payload as v0 fails, as 3.4.0 (and 3.2.1) fails it.
+  // The same payload as v0 fails, as 3.4.1 (and 3.2.1) fails it.
   assert.equal(golden.cases['web/execute/payload2k2/v0'].steps[0].ok, false);
 });
 

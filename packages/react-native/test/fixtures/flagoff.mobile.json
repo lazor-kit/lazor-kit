@@ -1,6 +1,6 @@
 {
  "about": "Flag-off golden for test/flagoff.test.mjs (txv1 design U4): per case, the calls and their outcomes, the paymaster requests, the JSON-RPC requests in order and the portal pages opened, as test/support/flagoff/flagoff.mjs compacts them.",
- "recordedFrom": "@lazorkit/wallet-mobile-adapter 2.4.0: dist/index.js of the published release tarball (sha1 63743d6a0a1dd3a6e8276cceea78e596c4697670, the registry's dist.shasum), run with this workspace's dependencies. Case for case equal to the 2.3.1 golden it replaces (sha1 44fc3d98...), itself as 2.3.0's (sha1 8977f546...) and 2.2.1's (sha1 946a72c8...), and, uncompacted (every request in full), to this branch's build at fd9592c.",
+ "recordedFrom": "@lazorkit/wallet-mobile-adapter 2.4.0: dist/index.js of the published release tarball (sha1 63743d6a0a1dd3a6e8276cceea78e596c4697670, the registry's dist.shasum), run with this workspace's dependencies. Case for case equal to the 2.3.1 golden it replaces (sha1 44fc3d98...), itself as 2.3.0's (sha1 8977f546...) and 2.2.1's (sha1 946a72c8...), and, uncompacted (every request in full), to this branch's build at 9181929 (main at 3.4.1, whose mobile source differs from 2.4.0 only in #120's signMessage display text, which no send uses).",
  "distSha256": "4be3bbe4ac881158cf57ec0a8a55c78933ba2cd0b374628211736c52641e39e2",
  "corpusVersion": 1,
  "cases": {

@@ -7,7 +7,7 @@
  * so nothing here is a secret and every run builds byte-identical inputs. It
  * is the corpus the flag-off goldens were first captured with from the
  * published 3.2.1 tarball (the "T0" capture of the txv1 design), and
- * recaptured from 3.3.0's, 3.3.1's and 3.4.0's, so its labels must not change. The package's own @solana/web3.js and
+ * recaptured from 3.3.0's, 3.3.1's, 3.4.0's and 3.4.1's, so its labels must not change. The package's own @solana/web3.js and
  * @lazorkit/sdk-legacy are passed in, so the instructions and PDAs are built
  * with the very classes the wallet uses.
  */
