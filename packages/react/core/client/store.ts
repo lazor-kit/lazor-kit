@@ -33,7 +33,7 @@ import {
 } from '../wallet/actions';
 import { reportOutcome } from '../wallet/utils';
 import { onAdapterDisconnect } from '../wallet/disconnects';
-import { type WalletConfig, type WalletInfo, syncStorage } from '../storage';
+import { StorageManager, type WalletConfig, type WalletInfo, syncStorage, walletRecords } from '../storage';
 import { DEFAULTS, DEFAULT_COMMITMENT } from '../../config';
 import type { AddAuthorityPayload, WalletState } from '../types';
 import { rateLimitedFetch } from './rpc';
@@ -175,16 +175,21 @@ export const walletStore = createStore<WalletState>()(
 
 // `LazorkitWalletAdapter.disconnect()` (and the Wallet Standard
 // `standard:disconnect`, which calls it) disconnects the store too, as the
-// store's own `disconnect` would: a connect still running is abandoned, and
-// the wallet goes. The stored wallet is the one both connect, and a store
-// left connected would keep a kept key signing after the user signed out:
-// the authority key, and a session key kept with `keepSessionKeys`. The
-// adapter clears the stored wallet and deletes the session key (unless
-// `keepSessionKeys`) itself; `isSigning`, and the `step` of a send still
-// running, are left to the action running, as the store's `disconnect`
-// leaves them.
+// store's own `disconnect` would, in either mode: a connect still running is
+// abandoned, and the wallet goes. A store left connected would keep a kept
+// key signing after the user signed out: the authority key, and a session
+// key kept with `keepSessionKeys` (the keys are one per page, whichever mode
+// made them). The adapter clears the portal's stored wallet and deletes the
+// session key (unless `keepSessionKeys`) itself; Embedded mode's record is
+// kept apart from the portal's, so it is cleared here. `isSigning`, and the
+// `step` of a send still running, are left to the action running, as the
+// store's `disconnect` leaves them.
 onAdapterDisconnect(() => {
     abandonConnect();
+    const records = walletRecords();
+    if (records !== StorageManager) {
+        void records.clearWallet().catch((error) => console.error('[LazorKit] Could not clear the stored wallet:', error));
+    }
     const { isSigning } = walletStore.getState();
     walletStore.setState({ wallet: null, error: null, isConnecting: false, isLoading: false, ...(isSigning ? {} : { step: null }) });
 });

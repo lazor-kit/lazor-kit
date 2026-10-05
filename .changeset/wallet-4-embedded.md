@@ -32,6 +32,7 @@ The passkey lives on the app's own `rpId`, and the SDK runs every ceremony in th
   - sends read the passkey authority directly, with no scan.
 - `signMessage` keeps the 3.3 format.
 - Silent reconnect from `lazorkit:embedded:<rpId>:*`. Embedded never writes the portal's keys.
+- Session and authority keys work as in portal mode: `spendingLimits` (with `tokens`) are checked before the passkey is asked, a send its limits do not cover is `UnlistedSolOutflowError` / `UnlistedTokenOutflowError`, and a send that loaded its key before a disconnect neither signs nor sends after it. The wallet adapter's and the Wallet Standard's disconnect disconnect the Embedded store too, its record included.
 
 **New**
 
@@ -53,4 +54,4 @@ The passkey lives on the app's own `rpId`, and the SDK runs every ceremony in th
 **Unchanged**
 
 - Portal mode's flows and stored bytes.
-- The wallet adapter and the Wallet Standard wallet, which stay portal-only.
+- The wallet adapter and the Wallet Standard wallet, which stay portal-only (their disconnect still disconnects the page's store, in either mode).

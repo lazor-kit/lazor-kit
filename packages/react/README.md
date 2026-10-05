@@ -963,6 +963,16 @@ localStorage, and never writes the portal's keys:
 `disconnect()` deletes the wallet record and the session key (unless
 `keepSessionKeys`), but keeps the known ids and pending passkeys.
 `forgetEmbeddedDevice(rpId)` deletes those too. None of it is a secret.
+`LazorkitWalletAdapter.disconnect()` and the Wallet Standard
+`standard:disconnect` on the same page disconnect the Embedded store too,
+its record included, so the next `connect()` asks for the passkey.
+
+Session and authority keys work as in portal mode (see
+[Session and authority keys](#session-and-authority-keys)): a send that
+loaded its key before a disconnect neither signs nor sends after it, and a
+session's `spendingLimits` name what may leave the wallet
+([What a policy bounds](#what-a-policy-bounds)), checked before the passkey
+is asked.
 
 **Sessions on the chooser (D10).** A wallet with a live session is not used
 without asking, unless the session's key is one this device holds, bound to
@@ -1160,7 +1170,7 @@ that use only `/core`.
 - the `signMessage` format (changed in 3.3);
 - `addAuthority`'s required `role`;
 - the wallet adapter and the Wallet Standard wallet, which stay portal-only in
-  4.0.
+  4.0 (their disconnect still disconnects the page's store, in either mode).
 
 **Not in the alpha:**
 - "remember this device" (the `session` prop is reserved);
