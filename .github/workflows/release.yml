@@ -58,7 +58,7 @@ jobs:
       # when changesets are pending and otherwise just reports hasChangesets=false.
       - name: Create or update the version PR
         id: changesets
-        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+        uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
           version: pnpm run version
           commit: "chore(release): version packages"
@@ -165,7 +165,7 @@ jobs:
       # script's "New tag: <name>@<version>" lines, pushes those tags and creates the releases.
       - name: Publish, push tags and create GitHub releases
         id: changesets
-        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+        uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
           publish: node scripts/npm-release.mjs publish ${{ runner.temp }}/npm-tarballs
         env:
