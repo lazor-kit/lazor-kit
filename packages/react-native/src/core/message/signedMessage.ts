@@ -117,7 +117,7 @@ export function signedMessageDisplayText(message: SignedMessageInput): string | 
     if (typeof message === 'string') return message;
     if (typeof TextDecoder === 'undefined') return undefined;
     try {
-        return new TextDecoder('utf-8', { fatal: true }).decode(messageBytes(message));
+        return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(messageBytes(message));
     } catch {
         return undefined;
     }
