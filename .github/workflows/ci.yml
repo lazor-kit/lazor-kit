@@ -37,6 +37,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Check the v1 writer's web and mobile copies are identical
+        run: node scripts/check-txv1-identical.mjs
+
       - name: Typecheck (web SDK)
         run: pnpm --filter @lazorkit/wallet typecheck
 
@@ -91,3 +94,34 @@ jobs:
           name: lazorkit-wallet-mobile-adapter-dist
           path: packages/react-native/dist
           retention-days: 7
+
+  txv1-oracle:
+    # The v1 writer against @solana/kit 8.4.0 and @solana/web3.js 1.99.0: the
+    # golden vectors and the 10,000-case differential. kit 8 needs Node 20.18+.
+    name: txv1 oracle (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Golden vectors are up to date
+        run: node scripts/txv1-vectors.mjs --check
+
+      - name: Oracle and differential tests
+        run: pnpm --filter txv1-oracle test

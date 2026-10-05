@@ -11,7 +11,7 @@
     "access": "public"
   },
   "scripts": {
-    "test": "node --test test/deferred.test.cjs test/errors.test.cjs test/session-policy.test.cjs test/callbacks.test.cjs test/keys.test.cjs test/types.test.cjs test/sign-message.test.cjs test/challenge-domains.test.cjs",
+    "test": "node --test test/deferred.test.cjs test/errors.test.cjs test/session-policy.test.cjs test/callbacks.test.cjs test/keys.test.cjs test/types.test.cjs test/sign-message.test.cjs test/challenge-domains.test.cjs test/txv1.test.mjs",
     "build": "rollup --bundleConfigAsCjs -c rollup.config.js",
     "prepublishOnly": "node scripts/prepublish-check.js && npm run build",
     "prepack": "npm run build",
