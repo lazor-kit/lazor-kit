@@ -1,5 +1,16 @@
 name: Release
 
+# On every push to main:
+#   version  opens or updates the "version packages" PR while changesets are pending; once
+#            there are none, checks npm for package versions that are not published yet.
+#   build    only when something is unpublished: builds and packs the tarballs, without
+#            npm credentials.
+#   publish  only when something is unpublished: waits for approval on the npm-publish
+#            environment, then publishes the tarballs with npm trusted publishing (OIDC),
+#            pushes the git tags, creates the GitHub releases and syncs wallet's beta tag.
+# Pushes where every version is already on npm skip build and publish, so they never
+# request an approval.
+
 on:
   push:
     branches: [main]
@@ -8,15 +19,18 @@ concurrency:
   group: release-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
-permissions:
-  contents: write
-  pull-requests: write
-  id-token: write
+permissions: {}
 
 jobs:
-  release:
-    name: Version or publish
+  version:
+    name: Version PR or npm check
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the changeset-release/main branch
+      pull-requests: write # open or update the version PR
+    outputs:
+      hasChangesets: ${{ steps.changesets.outputs.hasChangesets }}
+      unpublished: ${{ steps.npm.outputs.unpublished }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -27,9 +41,49 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
           cache: pnpm
-          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Without a `publish` input the action only versions: it opens or updates the PR
+      # when changesets are pending and otherwise just reports hasChangesets=false.
+      - name: Create or update the version PR
+        id: changesets
+        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+        with:
+          version: pnpm run version
+          commit: "chore(release): version packages"
+          title: "chore(release): version packages"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check npm for unpublished versions
+        id: npm
+        if: steps.changesets.outputs.hasChangesets == 'false'
+        run: node scripts/npm-release.mjs check
+
+  build:
+    name: Build npm tarballs
+    needs: version
+    if: needs.version.outputs.hasChangesets == 'false' && needs.version.outputs.unpublished == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      # No dependency cache for the build that produces the published tarballs.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -43,16 +97,72 @@ jobs:
           pnpm --filter @lazorkit/wallet build
           pnpm --filter @lazorkit/wallet-mobile-adapter build
 
-      - name: Create release PR or publish
-        id: changesets
-        uses: changesets/action@v1
+      # Runs each package's prepublishOnly, then `pnpm pack`, as `pnpm publish` used to.
+      - name: Pack unpublished packages
+        run: node scripts/npm-release.mjs pack "$RUNNER_TEMP/npm-tarballs"
+
+      - uses: actions/upload-artifact@v7
         with:
-          publish: pnpm release
-          version: pnpm run version
-          commit: "chore(release): version packages"
-          title: "chore(release): version packages"
+          name: npm-tarballs
+          path: ${{ runner.temp }}/npm-tarballs
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to npm
+    needs: [version, build]
+    if: needs.version.outputs.hasChangesets == 'false' && needs.version.outputs.unpublished == 'true'
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: write # push the release tags and create the GitHub releases
+      id-token: write # npm trusted publishing and provenance
+    steps:
+      # Full history and tags: the tags are created here and pushed by changesets/action.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      # No registry-url: npm already defaults to registry.npmjs.org, and the .npmrc that
+      # registry-url writes would send an unset ${NODE_AUTH_TOKEN} as a literal token.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      # Trusted publishing needs npm >= 11.5.1 and `npm dist-tag` over OIDC needs
+      # 11.21.0+ (or 12.2.0+); Node 24.21.0 bundles npm 11.19.0.
+      - name: Install npm 11.21.0
+        id: npm
+        run: |
+          npm install --global --ignore-scripts npm@11.21.0
+          npm --version
+          node -e '
+            const [major, minor] = process.argv[1].split(".").map(Number);
+            const ok = major === 11 ? minor >= 21 : major === 12 ? minor >= 2 : major > 12;
+            if (!ok) {
+              console.error("npm " + process.argv[1] + " lacks OIDC dist-tag support (need 11.21.0+ or 12.2.0+)");
+              process.exit(1);
+            }
+          ' "$(npm --version)"
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-tarballs
+          path: ${{ runner.temp }}/npm-tarballs
+
+      # npm publish authenticates with OIDC; there is no NPM_TOKEN. The action reads the
+      # script's "New tag: <name>@<version>" lines, pushes those tags and creates the releases.
+      - name: Publish, push tags and create GitHub releases
+        id: changesets
+        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+        with:
+          publish: node scripts/npm-release.mjs publish ${{ runner.temp }}/npm-tarballs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: "true"
+
+      # Also runs when the step above failed after some packages were published.
+      - name: Point the wallet beta dist-tag at the release
+        if: ${{ !cancelled() && steps.npm.outcome == 'success' }}
+        run: node scripts/npm-release.mjs sync-dist-tags
