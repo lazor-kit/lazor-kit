@@ -59,7 +59,11 @@
     "typescript": "~5.9.3"
   },
   "resolutions": {
-    "expo-web-browser": "~15.0.9"
+    "expo-web-browser": "~15.0.9",
+    "**/jayson/uuid": "^11.1.1",
+    "**/xcode/uuid": "^11.1.1",
+    "**/@expo/metro-config/postcss": "^8.5.23",
+    "**/@coral-xyz/anchor/toml": "^4.2.0"
   },
   "private": true
 }
