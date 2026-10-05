@@ -7,9 +7,9 @@
  *   neither signs nor sends after it (see ./keyBinding): the key compares
  *   `disconnectMark()` with the one read when the send loaded it, right
  *   before it signs and right before each attempt to send.
- * - The adapter's disconnect disconnects the store too (react/store listens
- *   with `onAdapterDisconnect`). The stored wallet is the one both connect,
- *   and a store left connected would let a kept key sign after the sign-out.
+ * - The adapter's disconnect disconnects the store too (core/client/store
+ *   listens with `onAdapterDisconnect`), in either mode. A store left
+ *   connected would let a kept key sign after the sign-out.
  *
  * Counted per copy of the package, as the store is one per copy.
  */

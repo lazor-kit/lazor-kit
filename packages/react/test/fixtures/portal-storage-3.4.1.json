@@ -1,0 +1,15 @@
+{
+  "mounted": {
+    "lazorkit-wallet-store": "{\"state\":{\"wallet\":null,\"config\":{\"portalUrl\":\"http://portal.test\",\"paymasterConfig\":{\"paymasterUrl\":\"http://paymaster.test/\"},\"rpcUrl\":\"http://rpc.test/\",\"cluster\":\"devnet\",\"keyStorage\":\"auto\"}},\"version\":0}"
+  },
+  "connected": {
+    "CREDENTIAL_ID": "YSBmaXhlZCBwYXNza2V5IGNyZWRlbnRpYWw=",
+    "PUBLIC_KEY": "Alkat3HrvP1tnLkJTRBlKK3Rpp1EwsH2J/CJ7Fi5xhrf",
+    "SMART_WALLET_ADDRESS": "3h6NRbVQsnxmUU2faQAEmtdsCT8bBoDTEAurzdGeJ3tV",
+    "lazorkit-wallet": "{\"credentialId\":\"YSBmaXhlZCBwYXNza2V5IGNyZWRlbnRpYWw=\",\"passkeyPubkey\":[2,89,26,183,113,235,188,253,109,156,185,9,77,16,101,40,173,209,166,157,68,194,193,246,39,240,137,236,88,185,198,26,223],\"expo\":\"web\",\"platform\":\"\",\"walletDevice\":\"\",\"accountName\":\"Alice\",\"smartWallet\":\"3h6NRbVQsnxmUU2faQAEmtdsCT8bBoDTEAurzdGeJ3tV\",\"vaultPda\":\"5jhjMKw2SaRBU8auBfMNGUHnMjKvNmD8PUQVuzyqpYoY\",\"protocolVersion\":2}",
+    "lazorkit-wallet-store": "{\"state\":{\"wallet\":{\"credentialId\":\"YSBmaXhlZCBwYXNza2V5IGNyZWRlbnRpYWw=\",\"passkeyPubkey\":[2,89,26,183,113,235,188,253,109,156,185,9,77,16,101,40,173,209,166,157,68,194,193,246,39,240,137,236,88,185,198,26,223],\"expo\":\"web\",\"platform\":\"\",\"walletDevice\":\"\",\"accountName\":\"Alice\",\"smartWallet\":\"3h6NRbVQsnxmUU2faQAEmtdsCT8bBoDTEAurzdGeJ3tV\",\"vaultPda\":\"5jhjMKw2SaRBU8auBfMNGUHnMjKvNmD8PUQVuzyqpYoY\",\"protocolVersion\":2},\"config\":{\"portalUrl\":\"http://portal.test\",\"paymasterConfig\":{\"paymasterUrl\":\"http://paymaster.test/\"},\"rpcUrl\":\"http://rpc.test/\",\"cluster\":\"devnet\",\"keyStorage\":\"auto\"}},\"version\":0}"
+  },
+  "disconnected": {
+    "lazorkit-wallet-store": "{\"state\":{\"wallet\":null,\"config\":{\"portalUrl\":\"http://portal.test\",\"paymasterConfig\":{\"paymasterUrl\":\"http://paymaster.test/\"},\"rpcUrl\":\"http://rpc.test/\",\"cluster\":\"devnet\",\"keyStorage\":\"auto\"}},\"version\":0}"
+  }
+}

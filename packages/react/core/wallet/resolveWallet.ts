@@ -41,6 +41,7 @@ import {
 // Domain-separated (`tag || 32 random bytes`), never sdk-legacy's bare 32.
 import { createOwnershipChallenge } from '../message/ownershipProof';
 import { PortalCancelledError, type DialogManager, type PortalAssertion } from '../portal';
+import { KeyRecoveryError } from '../errors';
 import type { WalletInfo } from '../storage';
 import { getCredentialHash, getPasskeyPublicKey, getPortalRpId } from './utils';
 import {
@@ -77,9 +78,11 @@ export function clearPendingConfirmation(): void {
 
 function rememberOffer(next: Offer): void {
     offer = next;
-    setTimeout(() => {
+    const timer = setTimeout(() => {
         if (offer === next) offer = null;
     }, OFFER_TTL_MS);
+    // Never what keeps a process (a test, a server render) alive.
+    (timer as { unref?: () => void }).unref?.();
 }
 
 /**
@@ -87,7 +90,7 @@ function rememberOffer(next: Offer): void {
  * `null` when there is no live offer for this RPC and portal. Throws when there
  * is one and `confirmWallet` names none of its wallets.
  */
-function takeOffer(confirmWallet: string, endpoint: string, rpId: string) {
+export function takeOffer(confirmWallet: string, endpoint: string, rpId: string) {
     const current = offer;
     if (!current) return null;
     if (Date.now() - current.at > OFFER_TTL_MS) {
@@ -106,7 +109,7 @@ function takeOffer(confirmWallet: string, endpoint: string, rpId: string) {
  * type as the user closing the portal, so an app treats both as a cancel.
  */
 export function connectAbandoned(): PortalCancelledError {
-    return new PortalCancelledError('disconnect was called while connecting, so no wallet was connected.');
+    return new PortalCancelledError('disconnect was called while connecting, so no wallet was connected.', 'abandoned');
 }
 
 /** A `confirmWallet` (or a chooser's answer) that names none of the wallets offered. Never ignored. */
@@ -153,10 +156,20 @@ export interface ResolveOwnWalletParams {
     accountName?: string;
     /** Aborted by `disconnect`: then nothing is offered or asked any more. */
     signal?: AbortSignal;
+    /**
+     * D10 (Embedded only; default none): the session key the SDK keeps on
+     * this device and the wallet it is bound to. On that one wallet, and only
+     * there, a live session with this key is counted as the user's own, as a
+     * trusted key would be. Never global, never another wallet's.
+     */
+    heldSessionKey?: () => Promise<{ walletPda: string; publicKey: string } | null>;
 }
 
-/** A proven wallet to use, or the key to create one for (the passkey is proven to hold no live wallet). */
-export type OwnWallet = { adopt: WalletFacts } | { create: Uint8Array };
+/**
+ * A proven wallet to use (`confirmed`: the user chose it), or the key to
+ * create one for (the passkey is proven to hold no live wallet).
+ */
+export type OwnWallet = { adopt: WalletFacts; confirmed?: boolean } | { create: Uint8Array };
 
 /** An ownership proof; from a portal sign, also the credential the portal said it signed with, if it said. */
 type PortalProof = OwnershipProof & { readonly signedWith?: string };
@@ -207,21 +220,63 @@ export async function resolveOwnWallet(p: ResolveOwnWalletParams): Promise<OwnWa
 
     // Always called: it also rejects a malformed trustedAuthorities / watchMints
     // entry. A failed read throws — a connect error, never "no wallet".
-    const facts = await client.describeWalletCandidates(proven, {
-        trustedKeys: [...(p.trustedAuthorities ?? [])],
-        watchMints: [...(p.watchMints ?? [])],
-    });
+    const facts = await describeCandidates(client, proven, p);
+    return (await settleCandidates(facts, p)) ?? { create: await keyToCreate(p, reported, prove, signFresh) };
+}
 
+/**
+ * Describe proven candidates (who else can spend from each), with the app's
+ * trusted keys, and, under D10, the session key this device holds for one
+ * of them (see `heldSessionKey`).
+ */
+export async function describeCandidates(
+    client: ReturnType<typeof v2Client>,
+    candidates: PasskeyWalletCandidate[],
+    p: Pick<ResolveOwnWalletParams, 'trustedAuthorities' | 'watchMints' | 'heldSessionKey'>,
+): Promise<WalletFacts[]> {
+    const trustedKeys = [...(p.trustedAuthorities ?? [])];
+    const watchMints = [...(p.watchMints ?? [])];
+    const facts = await client.describeWalletCandidates(candidates, { trustedKeys, watchMints });
+    if (!p.heldSessionKey || facts.every((f) => f.controlledAlone)) return facts;
+    const held = await p.heldSessionKey();
+    if (!held) return facts;
+    return Promise.all(
+        facts.map(async (f) => {
+            if (f.controlledAlone || f.walletPda.toBase58() !== held.walletPda) return f;
+            if (!f.liveSessions.some((s) => s.sessionKey.toBase58() === held.publicKey)) return f;
+            const candidate: PasskeyWalletCandidate = {
+                version: f.version,
+                programId: f.programId,
+                walletPda: f.walletPda,
+                vaultPda: f.vaultPda,
+                authorityPda: f.authorityPda,
+                publicKey: f.publicKey,
+            };
+            const [again] = await client.describeWalletCandidates([candidate], {
+                trustedKeys: [...trustedKeys, held.publicKey],
+                watchMints,
+            });
+            return again ?? f;
+        }),
+    );
+}
+
+/**
+ * Which of the described wallets to use: the one `confirmWallet` names; else
+ * the one sdk-legacy's `pickOwnWallet` adopts; else the user's choice among
+ * the rest, the way `onConfirmWallet` says. `null` when there is none (create).
+ */
+export async function settleCandidates(facts: WalletFacts[], p: ResolveOwnWalletParams): Promise<OwnWallet | null> {
     if (p.confirmWallet) {
         const chosen = selectWalletByAddress(facts, p.confirmWallet);
         if (!chosen) throw notOffered(p.confirmWallet, facts);
-        return { adopt: chosen };
+        return { adopt: chosen, confirmed: true };
     }
 
     const { adopt, needsConfirmation } = pickOwnWallet(facts);
     if (adopt) return { adopt };
-    if (needsConfirmation.length) return { adopt: await confirmWithUser(needsConfirmation, p) };
-    return { create: await keyToCreate(p, reported, prove, signFresh) };
+    if (needsConfirmation.length) return { adopt: await confirmWithUser(needsConfirmation, p), confirmed: true };
+    return null;
 }
 
 /** Ask the user which of `offered` is theirs, the way `onConfirmWallet` says. */
@@ -334,7 +389,7 @@ async function recoverOwnKey(
         pr === connectProof || (pr.signedWith !== undefined && sameCredential(pr.signedWith, credentialId));
     // Another sign would come from the same portal, and name no more.
     if (!proofs.some(tied)) {
-        throw new Error(
+        throw new KeyRecoveryError(
             "This passkey has no wallet yet, and its public key could not be determined: the portal did not " +
                 "report this passkey's key, and did not say which passkey made its signatures, so no key can be " +
                 'tied to this one. No wallet was created. Create a new passkey with "Create new account".',
@@ -348,7 +403,7 @@ async function recoverOwnKey(
         key = resolvePasskeyPublicKey(proofs, rpId);
     }
     if (!key) {
-        throw new Error(
+        throw new KeyRecoveryError(
             "This passkey has no wallet yet, and its public key could not be determined: the portal did not " +
                 "report this passkey's key, and its signatures did not pin one. No wallet was created. " +
                 'Try again, or create a new passkey with "Create new account".',

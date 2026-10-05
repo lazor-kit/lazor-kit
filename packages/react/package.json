@@ -21,7 +21,8 @@
     "lazorkit",
     "sdk",
     "react",
-    "wallet-standard"
+    "wallet-standard",
+    "embedded-wallet"
   ],
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -32,6 +33,27 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core.d.ts",
+      "import": "./dist/core.mjs",
+      "require": "./dist/core.js"
+    },
+    "./hooks": {
+      "types": "./dist/hooks.d.ts",
+      "import": "./dist/hooks.mjs",
+      "require": "./dist/hooks.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "typesVersions": {
+    "*": {
+      "core": [
+        "dist/core.d.ts"
+      ],
+      "hooks": [
+        "dist/hooks.d.ts"
+      ]
     }
   },
   "files": [
@@ -43,11 +65,11 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "build": "rollup -c",
+    "build": "rm -rf dist && rollup -c",
     "dev": "rollup -c -w",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/deferred.test.mjs test/errors.test.mjs test/session-policy.test.mjs test/callbacks.test.mjs test/landed-key.test.mjs test/keys.test.mjs test/keys-e2e.test.mjs test/portal.test.mjs test/types.test.mjs test/sign-message.test.mjs test/challenge-domains.test.mjs",
+    "test": "node --test test/deferred.test.mjs test/errors.test.mjs test/session-policy.test.mjs test/callbacks.test.mjs test/landed-key.test.mjs test/keys.test.mjs test/keys-e2e.test.mjs test/portal.test.mjs test/types.test.mjs test/sign-message.test.mjs test/challenge-domains.test.mjs test/embedded-config.test.mjs test/embedded-connect.test.mjs test/embedded-sign.test.mjs test/embedded-message.test.mjs test/embedded-reconnect.test.mjs test/embedded-kept-keys.test.mjs test/easy-react.test.mjs test/portal-storage.test.mjs test/package-shape.test.mjs",
     "prepublishOnly": "npm run clean && npm run build"
   },
   "publishConfig": {
@@ -55,7 +77,7 @@
     "provenance": true
   },
   "dependencies": {
-    "@lazorkit/sdk-legacy": "^1.3.0",
+    "@lazorkit/sdk-legacy": "^1.3.1",
     "@noble/curves": "^1.9.7",
     "bs58": "^6.0.0",
     "lazorkit-sdk-v1": "npm:@lazorkit/sdk-legacy@0.3.2",
@@ -73,6 +95,14 @@
     "react": "^18.3.1 || ^19.0.0",
     "react-dom": "^18.3.1 || ^19.0.0",
     "zustand": "^5.0.5"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@solana/wallet-adapter-base": "^0.9.27",

@@ -13,6 +13,7 @@
  */
 import { PublicKey } from '@solana/web3.js';
 import type { WalletFacts } from '../program';
+import { UserRejectedError } from '../errors';
 
 /** A wallet the passkey is proven to hold, offered for the user to recognise. */
 export interface WalletChoice {
@@ -136,10 +137,13 @@ export class WalletNeedsConfirmationError extends Error {
     }
 }
 
-/** The user recognised none of the wallets offered. Nothing was connected or saved. */
-export class WalletConfirmationDeclinedError extends Error {
+/**
+ * The user recognised none of the wallets offered. Nothing was connected or
+ * saved. A `UserRejectedError` (reason `'wallet-declined'`).
+ */
+export class WalletConfirmationDeclinedError extends UserRejectedError {
     constructor() {
-        super('None of the wallets this passkey is on was chosen, so no wallet was connected.');
+        super('wallet-declined', 'None of the wallets this passkey is on was chosen, so no wallet was connected.');
         this.name = 'WalletConfirmationDeclinedError';
     }
 }
