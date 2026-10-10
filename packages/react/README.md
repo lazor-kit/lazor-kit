@@ -10,10 +10,11 @@ Traditionally, crypto requires users to manage complex seed phrases. LazorKit re
 - **Smart**: Programmable account logic (PDAs)
 - **Secure**: Hardware-bound credentials
 
-> **4.0 alpha.** This branch is the 4.0 alpha (Embedded mode, the Easy tier,
-> `/core` and `/hooks`). Its API can still change after device testing. It is
-> not published; 3.3.x is the release on npm. See
-> [Upgrading from 3.x](#upgrading-from-3x).
+> **4.0 pre-release.** 4.0 (Embedded mode, the Easy tier, `/core` and
+> `/hooks`, typed approval requests, session time in seconds) is published as
+> `4.0.0-next.N` on the `next` dist-tag (`npm install @lazorkit/wallet@next`).
+> Its API can still change after device testing; 3.4.x is the stable release
+> (`latest`). See [Upgrading from 3.x](#upgrading-from-3x).
 
 ## Two modes
 
@@ -1244,7 +1245,7 @@ that use only `/core`.
 - the wallet adapter and the Wallet Standard wallet, which stay portal-only in
   4.0 (their disconnect still disconnects the page's store, in either mode).
 
-**Not in the alpha:**
+**Not in 4.0 yet:**
 - "remember this device" (the `session` prop is reserved);
 - the session, authority and deferred hooks;
 - Embedded mode for the adapter and the Wallet Standard;
