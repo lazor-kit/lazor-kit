@@ -1,0 +1,12 @@
+{
+  "mode": "pre",
+  "tag": "next",
+  "initialVersions": {
+    "@lazorkit/migrate": "0.0.0",
+    "@lazorkit/portal": "0.0.0",
+    "@lazorkit/sdk-legacy": "0.2.0",
+    "@lazorkit/wallet": "3.4.1",
+    "@lazorkit/wallet-mobile-adapter": "2.4.0"
+  },
+  "changesets": []
+}
