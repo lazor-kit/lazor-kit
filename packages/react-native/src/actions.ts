@@ -18,6 +18,7 @@ import { sha256 } from 'js-sha256';
 import { handleAuthRedirect, readConnectAssertion } from './core/auth/handleRedirect';
 import { openBrowser } from './core/browser/open';
 import {
+  approveViaPortal,
   buildPreviewTransactionBase64,
   createWalletActions,
   decodeWebAuthnResponse,
@@ -31,6 +32,7 @@ import { connectAbandoned, forgetCandidates, hasChooserHost } from './core/walle
 import { type AuthorityTurn, withAuthority } from './core/wallet/sequence';
 import { deferredExpiryOffset, executeBeforeExpiry } from './core/wallet/deferred';
 import { toPolicyError } from './core/wallet/policy';
+import { sessionExpiresAt } from './core/wallet/sessionExpiry';
 import { logger } from './core/logger';
 import {
   isSignedMessageClientData,
@@ -236,6 +238,11 @@ function buildSecp256r1Params(wallet: {
     ),
     authorityPda: new PublicKey(wallet.walletDevice),
   };
+}
+
+/** A stored credential id (base64) as bytes: what a typed request names the passkey by. */
+function credentialIdBytes(credentialIdBase64: string): Uint8Array {
+  return new Uint8Array(Buffer.from(credentialIdBase64, 'base64'));
 }
 
 /**
@@ -625,26 +632,40 @@ export const createSessionAction = async (
         );
       }
 
+      // Unix seconds of the cluster clock (a slot for a v1 wallet), checked
+      // before the portal opens.
+      const expiresAt = await sessionExpiresAt({
+        connection,
+        client,
+        version,
+        input: {
+          expiresInSeconds: params.expiresInSeconds,
+          expiresAt: params.expiresAt,
+          expiresAtSlot: params.expiresAtSlot,
+        },
+      });
+
       const { signature, sessionPda } = await withPasskey(connection, wallet!, async (secp256r1, turn) => {
         const prepared = await client.prepareCreateSession({
           payer: feePayer,
           walletPda,
-          secp256r1,
+          secp256r1: { ...secp256r1, credentialId: credentialIdBytes(wallet!.credentialId) },
           sessionKey: params.sessionKey,
-          expiresAt: params.expiresAtSlot,
+          expiresAt,
           ...(params.actions?.length
             ? { actions: params.actions }
             : { unrestricted: true as const }),
         });
 
-        const response = await signChallengeViaPortal({
-          challenge: prepared.challenge,
+        const { response, binding } = await approveViaPortal({
+          kind: 'createSession',
+          prepared,
           credentialId: wallet!.credentialId,
           portalUrl: config.portalUrl,
           redirectUrl: options.redirectUrl,
         });
 
-        const { instructions } = client.finalizeCreateSession(prepared, response);
+        const { instructions } = client.finalizeCreateSession(prepared, response, binding);
         const signature = await sendInstructionsViaPaymaster({
           instructions,
           connection,
@@ -682,19 +703,20 @@ export const revokeSessionAction = async (
         const prepared = await client.prepareRevokeSession({
           payer: feePayer,
           walletPda,
-          secp256r1,
+          secp256r1: { ...secp256r1, credentialId: credentialIdBytes(wallet!.credentialId) },
           sessionPda: params.sessionPda,
           refundDestination: params.refundDestination,
         });
 
-        const response = await signChallengeViaPortal({
-          challenge: prepared.challenge,
+        const { response, binding } = await approveViaPortal({
+          kind: 'revokeSession',
+          prepared,
           credentialId: wallet!.credentialId,
           portalUrl: config.portalUrl,
           redirectUrl: options.redirectUrl,
         });
 
-        const { instructions } = client.finalizeRevokeSession(prepared, response);
+        const { instructions } = client.finalizeRevokeSession(prepared, response, binding);
         return sendInstructionsViaPaymaster({
           instructions,
           connection,
@@ -902,19 +924,20 @@ export const removeAuthorityAction = async (
         const prepared = await client.prepareRemoveAuthority({
           payer: feePayer,
           walletPda,
-          secp256r1,
+          secp256r1: { ...secp256r1, credentialId: credentialIdBytes(wallet!.credentialId) },
           targetAuthorityPda: params.targetAuthorityPda,
           refundDestination: params.refundDestination,
         });
 
-        const response = await signChallengeViaPortal({
-          challenge: prepared.challenge,
+        const { response, binding } = await approveViaPortal({
+          kind: 'removeAuthority',
+          prepared,
           credentialId: wallet!.credentialId,
           portalUrl: config.portalUrl,
           redirectUrl: options.redirectUrl,
         });
 
-        const { instructions } = client.finalizeRemoveAuthority(prepared, response);
+        const { instructions } = client.finalizeRemoveAuthority(prepared, response, binding);
         return sendInstructionsViaPaymaster({
           instructions,
           connection,

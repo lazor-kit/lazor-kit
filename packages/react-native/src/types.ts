@@ -127,8 +127,10 @@ export interface WalletChoice {
     /** `null` when the session account is too short to read. */
     sessionKey: string | null;
     /**
-     * About when it stops signing, ms since the epoch (slots × 400 ms). `null`
-     * when the account is too short to read.
+     * About when it stops signing, ms since the epoch: the session's own Unix
+     * time read on the cluster clock (v2), or its slot at 400 ms a slot (v1,
+     * and a v2 session written before sessions were measured in seconds).
+     * `null` when the account is too short to read.
      */
     approxExpiresAt: number | null;
     trusted: boolean;
@@ -234,6 +236,14 @@ export interface BrowserResult {
    * `allowCredentials` entry) and names it back in the redirect.
    */
   readonly credentialId?: string;
+  /**
+   * The redirect's `typedV`, `typedKind`, `typedSlot`, `typedCounter` and
+   * `typedSysvarIx` parameters, as they arrived (unchecked): the slot and
+   * counter the portal signed, when it answered a typed request. Absent when
+   * the redirect has none of them (a portal that does not read typed
+   * requests).
+   */
+  readonly typed?: Readonly<Record<string, string | null>>;
 }
 
 /**
@@ -373,8 +383,28 @@ export interface CreateSessionPayload {
    * "Session keys".
    */
   readonly sessionKey: PublicKey;
-  /** Absolute slot at which the session expires. */
-  readonly expiresAtSlot: bigint;
+  /**
+   * How long the session lasts, in seconds of the cluster clock (the Clock
+   * sysvar's Unix time, which the program compares against): more than 0 and
+   * at most 30 days (`MAX_SESSION_SECONDS`). Defaults to
+   * `DEFAULTS.SESSION_EXPIRY_SECONDS` (5 hours) when no expiry is given. Give
+   * at most one of `expiresInSeconds`, `expiresAt` and `expiresAtSlot`.
+   */
+  readonly expiresInSeconds?: number | bigint;
+  /**
+   * When the session ends, as a Unix time in seconds: after the cluster clock
+   * and at most 30 days ahead of it. The portal shows it to the user ("until
+   * about 6:50 PM") before the passkey signs.
+   */
+  readonly expiresAt?: number | bigint;
+  /**
+   * @deprecated Sessions expire by the cluster clock now, not by slot. Use
+   * `expiresInSeconds` or `expiresAt`. Still accepted: the slots left until
+   * it are converted to seconds with the cluster's measured slot time (recent
+   * performance samples), and a warning is logged once. It throws when the
+   * slot time cannot be read.
+   */
+  readonly expiresAtSlot?: bigint;
   /**
    * Permission actions (spending limits, program whitelist, etc.). An asset
    * they do not name cannot leave the wallet: with no `Actions.sol*` action

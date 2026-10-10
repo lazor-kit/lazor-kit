@@ -38,6 +38,18 @@ export {
   ConfirmationTimeoutError,
   PreviousTransactionPendingError,
 } from './core/wallet/sequence';
+// Typed approval requests: CreateSession, RevokeSession and RemoveAuthority
+// show the portal what the passkey approves. A request over the URL cap; a
+// portal reply that does not match the request (nothing is sent; a forged
+// deep link included); the portal's refusals (the passkey signed nothing),
+// `RequestOutOfDateError` being retryable.
+export {
+  TypedRequestTooLargeError,
+  PortalReplyMismatchError,
+  RequestOutOfDateError,
+} from '@lazorkit/sdk-legacy/approval';
+export type { ApprovalRequest, ApprovalKind, ApprovalRefusalCode } from '@lazorkit/sdk-legacy/approval';
+export { PortalRefusedError } from './core/approval/errors';
 // A deferred execution whose authorization expired before TX2 ran (3014).
 export {
   DeferredExpiredError,

@@ -4,6 +4,11 @@ export const DEFAULTS = {
   RPC_ENDPOINT: 'https://api.devnet.solana.com',
   RP_ID: 'portal.lazor.sh',
   /**
+   * How long a session lasts when `createSession` is given no expiry: 5 hours
+   * of the cluster clock.
+   */
+  SESSION_EXPIRY_SECONDS: 18_000,
+  /**
    * Deferred execution: how many slots after TX1 (Authorize) the program still
    * accepts TX2, when the caller passes no `expiryOffset`. A slot has no fixed
    * length (devnet ran near 230 ms in September 2026, mainnet near 400 ms), so

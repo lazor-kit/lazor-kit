@@ -7,26 +7,41 @@
 
 import { BrowserResult, LazorKitError } from '../../types';
 import { logger } from '../logger';
+import { portalRefusal } from '../approval/errors';
 
 /** Longest portal error text passed on; the redirect is not a place for essays. */
 const MAX_PORTAL_ERROR_LENGTH = 500;
 
 /**
- * The failure the portal reported on its redirect (`error=<text>`), as an
- * error carrying that text — or `null` when it reported none. Checked before
- * anything else, so the app sees why the portal failed rather than which
- * field was missing.
+ * The failure the portal reported on its redirect — or `null` when it
+ * reported none. Checked before anything else, so the app sees why the portal
+ * failed rather than which field was missing.
+ *
+ * - A typed request's refusal (`type=error&code=<code>`):
+ *   `RequestOutOfDateError` for `stale-counter`, `PortalRefusedError` with the
+ *   code for the others. The passkey signed nothing.
+ * - Any other `error=<text>`: a `LazorKitError` carrying that text.
  */
-export const portalErrorOf = (url: string): LazorKitError | null => {
-  let text: string | null;
+export const portalErrorOf = (url: string): Error | null => {
+  let params: URLSearchParams;
   try {
-    text = new URL(url).searchParams.get('error');
+    params = new URL(url).searchParams;
   } catch {
     return null;
   }
-  if (!text || !text.trim()) return null;
-  return new LazorKitError(text.trim().slice(0, MAX_PORTAL_ERROR_LENGTH), 'PORTAL_ERROR');
+  const text = (params.get('error') ?? '').trim().slice(0, MAX_PORTAL_ERROR_LENGTH);
+  const refusal = portalRefusal(params.get('code'), text);
+  if (refusal) return refusal;
+  if (!text) return null;
+  return new LazorKitError(text, 'PORTAL_ERROR');
 };
+
+/** The `typed*` parameters of a redirect, as they arrived, or undefined when it has none. */
+function typedOf(params: URLSearchParams): BrowserResult['typed'] {
+  const names = ['typedV', 'typedKind', 'typedSlot', 'typedCounter', 'typedSysvarIx'];
+  if (!names.some((name) => params.has(name))) return undefined;
+  return Object.fromEntries(names.map((name) => [name, params.get(name)]));
+}
 
 /**
  * Extracts signature and authenticator data from redirect URL.
@@ -57,12 +72,14 @@ export const handleBrowserResult = (url: string): BrowserResult => {
       throw new Error('Missing signature or message from redirect');
     }
 
+    const typed = typedOf(parsed.searchParams);
     return {
       signature,
       clientDataJsonBase64,
       authenticatorDataBase64,
       message,
       credentialId: parsed.searchParams.get('credentialId') || undefined,
+      ...(typed ? { typed } : {}),
     };
   } catch (error) {
     logger.error('Failed to handle browser result:', error, { url });
