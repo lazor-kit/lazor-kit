@@ -186,7 +186,7 @@ test("the actions must fit in the transaction that registers them, beside the pa
 
 // ─── The refusals ───────────────────────────────────────────────────────────
 
-const hex = { 3037: '0xbdd', 3038: '0xbde' };
+const hex = { 3023: '0xbcf', 3037: '0xbdd', 3038: '0xbde' };
 /** Logs of a failed instruction: `first` failed first (an inner program, or LazorKit itself). */
 const logsFor = (code, first) => [
     `Program ${V2} invoke [1]`,
@@ -489,6 +489,31 @@ test("an inner program's 3037, which the logs name, is reported as it came", asy
     const error = await rejection(store.getState().signAndSendWithSession({ instructions: transfer() }));
     assert.equal(error.name, 'PaymasterError');
     assert.equal(W.isUnlistedSolOutflowError(error), false);
+});
+
+test('a send over its SolMaxPerTx (3023) is sent once and reported as it came: the same bytes move the same amount', async () => {
+    // As Kora words it, and as a simulation's logs give it.
+    for (const answer of [
+        { code: -32602, message: korasText(3023) },
+        { code: -32002, message: 'Transaction simulation failed', data: { logs: logsFor(3023, V2) } },
+    ]) {
+        keptSession();
+        sends = 0;
+        refusal = answer;
+        const error = await rejection(store.getState().signAndSendWithSession({ instructions: transfer() }));
+        assert.equal(error.name, 'PaymasterError');
+        assert.ok(/Custom\(3023\)|0xbcf/.test(error.message) || /0xbcf/.test(JSON.stringify(error.data)), error.message);
+        assert.equal(sends, 1, 'not sent again');
+    }
+
+    // After an attempt whose answer was lost the outcome is unknown: sent again, as before.
+    keptSession();
+    sends = 0;
+    firstAnswerLost = true;
+    refusal = { code: -32602, message: korasText(3023) };
+    const unknown = await rejection(store.getState().signAndSendWithSession({ instructions: transfer() }));
+    assert.ok(unknown instanceof W.TransactionOutcomeUnknownError, `${unknown.name}: ${unknown.message}`);
+    assert.ok(sends > 1);
 });
 
 test('any other failure of a session send is reported as it came', async () => {

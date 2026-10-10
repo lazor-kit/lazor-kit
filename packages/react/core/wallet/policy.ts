@@ -234,6 +234,19 @@ export function hasUnlistedOutflowCode(error: unknown): boolean {
     return hasCode(text, UNLISTED_SOL_OUTFLOW_CODE) || hasCode(text, UNLISTED_TOKEN_OUTFLOW_CODE);
 }
 
+/** The program's ActionSolMaxPerTxExceeded, seen as `custom program error: 0xbcf`. */
+export const SOL_MAX_PER_TX_EXCEEDED_CODE = 3023;
+
+/**
+ * The error has the shape of a 3023 (a session or delegate moving more SOL
+ * in one transaction than its `SolMaxPerTx` action allows), from whichever
+ * program. The cap and the amount the same bytes move do not change, so the
+ * paymaster does not resend one.
+ */
+export function hasSolMaxPerTxExceededCode(error: unknown): boolean {
+    return hasCode(errorChainText(error), SOL_MAX_PER_TX_EXCEEDED_CODE);
+}
+
 /**
  * Whose `code` (3037 or 3038) this error is, as far as the error itself says:
  * `'lazorkit'` when the logs name the LazorKit v2 program as the first to
