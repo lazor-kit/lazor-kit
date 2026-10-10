@@ -1,7 +1,8 @@
 /**
  * The SDK's wallet chooser: what `connect` shows when it will not adopt a
  * wallet on its own (see core/wallet/resolveWallet). Drawn by
- * `DialogManager.openWalletChoice` inside the portal dialog's shell.
+ * `DialogManager.openWalletChoice` inside the portal dialog's shell, and by
+ * Embedded mode's own sheet (core/embedded/sheets), with the same copy.
  *
  * Rules the wording follows:
  * - Rows come in the order given, which is not a recommendation (balances can
@@ -16,7 +17,8 @@
  */
 import type { WalletChoice } from '../wallet/confirmation';
 
-const MINT_NAMES: Record<string, string> = {
+/** Names for the mints wallets are checked for (and the review sheet shows). */
+export const MINT_NAMES: Record<string, string> = {
     So11111111111111111111111111111111111111112: 'wSOL',
     EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: 'USDC',
     Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB: 'USDT',
@@ -156,7 +158,8 @@ export function choiceDetails(choice: WalletChoice, now: number = Date.now()): {
 }
 
 const STYLE_ID = 'lazorkit-choice-style';
-const SCOPE = 'dialog#lazorkit-dialog[data-content="choice"]';
+// The portal dialog's shell, and Embedded mode's own (../embedded/sheets).
+const SCOPE = 'dialog:is(#lazorkit-dialog, #lazorkit-embedded)[data-content="choice"]';
 
 /** Palette and layout for the chooser, light or dark with the system. */
 export function ensureChoiceStyles(): void {
@@ -222,15 +225,18 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
 
 /**
  * The chooser's content: title, intro, one row per choice and the footer.
- * `onPick` gets the chosen wallet, or `null` for "None of these".
+ * `onPick` gets the chosen wallet, or `null` for "None of these". `titleText`
+ * replaces the default title ("Is this your wallet?" for one candidate, in
+ * Embedded mode).
  */
 export function renderWalletChoices(
     choices: WalletChoice[],
     onPick: (wallet: string | null) => void,
+    titleText: string = CHOICE_TEXT.title,
 ): { body: HTMLElement; footer: HTMLElement; title: HTMLElement } {
     const now = Date.now();
     const body = el('div', 'lk-body');
-    const title = el('h2', 'lk-title', CHOICE_TEXT.title);
+    const title = el('h2', 'lk-title', titleText);
     title.id = 'lazorkit-choice-title';
     title.tabIndex = -1;
     const intro = el('p', 'lk-intro', CHOICE_TEXT.intro);
@@ -245,6 +251,7 @@ export function renderWalletChoices(
     const footer = el('div', 'lk-footer');
     const none = el('button', 'lk-none', CHOICE_TEXT.none);
     none.type = 'button';
+    none.setAttribute('data-lk', 'none');
     none.addEventListener('click', () => onPick(null));
     footer.appendChild(none);
     return { body, footer, title };
@@ -318,6 +325,7 @@ function renderRow(choice: WalletChoice, now: number, onPick: (wallet: string | 
     if (choice.vaultIsSystemAccount) {
         const use = el('button', 'lk-use', CHOICE_TEXT.use);
         use.type = 'button';
+        use.setAttribute('data-lk', 'use-wallet');
         use.setAttribute('aria-label', `${CHOICE_TEXT.use}: ${short}`);
         use.addEventListener('click', () => onPick(choice.wallet));
         row.appendChild(use);

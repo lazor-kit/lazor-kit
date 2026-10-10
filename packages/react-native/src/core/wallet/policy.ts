@@ -13,6 +13,41 @@
  */
 import { PROGRAM_ID_DEVNET, PROGRAM_ID_MAINNET } from '../../program/utils';
 import { chainHasError, errorChain, errorChainText, isNamedError } from '../../program/errorShape';
+import { serializeActions, type SessionAction } from '../../program/utils';
+import { MAX_PASSKEY_SESSION_ACTIONS_BYTES } from '@lazorkit/sdk-legacy/approval';
+
+/** The most actions the program accepts in one policy. */
+export const MAX_POLICY_ACTIONS = 16;
+
+/**
+ * The most bytes of actions a session may carry: 224. They travel in the
+ * CreateSession transaction beside the passkey's WebAuthn response, and a
+ * transaction holds 1232 bytes. `@lazorkit/sdk-legacy` sizes the
+ * clientDataJSON at 320 bytes and refuses a typed request with more actions
+ * than fit then (`MAX_PASSKEY_SESSION_ACTIONS_BYTES`). The same as the web
+ * SDK's.
+ */
+export const MAX_POLICY_ACTION_BYTES = MAX_PASSKEY_SESSION_ACTIONS_BYTES;
+
+/**
+ * Throws a RangeError when `actions` could not land in a CreateSession
+ * transaction: more than 16 actions, or more than 224 bytes of them. Checked
+ * before the portal opens, so the user is never asked to approve a session
+ * that cannot be sent.
+ */
+export function checkSessionActionsFit(actions: readonly SessionAction[]): void {
+  if (actions.length > MAX_POLICY_ACTIONS) {
+    throw new RangeError(`createSession got ${actions.length} actions; a session holds at most ${MAX_POLICY_ACTIONS}`);
+  }
+  const bytes = serializeActions([...actions]).length;
+  if (bytes > MAX_POLICY_ACTION_BYTES) {
+    throw new RangeError(
+      `createSession got ${bytes} bytes of actions; at most ${MAX_POLICY_ACTION_BYTES} fit in the ` +
+        "transaction beside the passkey's response. A sol* action takes 19 bytes (solRecurringLimit 43), " +
+        'tokenMaxPerTx and tokenLimit 51, tokenRecurringLimit 75: drop an action, or a mint.',
+    );
+  }
+}
 
 /** The program's ActionUnlistedSolOutflow, seen as `custom program error: 0xbdd`. */
 export const UNLISTED_SOL_OUTFLOW_CODE = 3037;

@@ -90,6 +90,17 @@ const account = ({ owner, data = Buffer.alloc(0) }) => ({
     space: data.length,
 });
 
+/** The Clock sysvar: the cluster clock a session's expiry is measured against. */
+const CLOCK_SYSVAR = 'SysvarC1ock11111111111111111111111111111111';
+/** 2026-10-10 12:00 UTC, in Unix seconds. */
+const CLUSTER_TIME = 1_791_633_600n;
+function clockAccount() {
+    const data = Buffer.alloc(40);
+    data.writeBigUInt64LE(5000n, 0);
+    data.writeBigInt64LE(CLUSTER_TIME, 32);
+    return { owner: 'Sysvar1111111111111111111111111111111111111', data };
+}
+
 async function rpc(init) {
     const { id, method, params } = JSON.parse(init.body);
     const reply = (result) => new Response(JSON.stringify({ jsonrpc: '2.0', id, result }), { status: 200 });
@@ -99,7 +110,7 @@ async function rpc(init) {
         case 'getSlot':
             return reply(1000);
         case 'getAccountInfo': {
-            const found = accounts.get(params[0]);
+            const found = params[0] === CLOCK_SYSVAR ? clockAccount() : accounts.get(params[0]);
             return reply({ context: { slot: 5000 }, value: found ? account(found) : null });
         }
         case 'getMultipleAccounts':

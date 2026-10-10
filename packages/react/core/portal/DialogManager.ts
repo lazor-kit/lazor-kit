@@ -9,6 +9,7 @@ import { CredentialManager } from './CredentialManager';
 import { getDialogStyles } from './styles/DialogStyles';
 import { ensureChoiceStyles, renderWalletChoices } from './WalletChoiceView';
 import { Logger } from '../../utils/logger';
+import { UserRejectedError, type UserRejectionReason } from '../errors';
 import type { WalletChoice } from '../wallet/confirmation';
 import {
   isSignedMessageClientData,
@@ -17,6 +18,8 @@ import {
   toBase64Url,
   type SignedMessageInput,
 } from '../message/signedMessage';
+import { withApprovalFragment, type ApprovalRequest } from '@lazorkit/sdk-legacy/approval';
+import { portalRefusal } from '../approval/errors';
 
 /** A WebAuthn assertion as the portal sends it (base64 fields, like a sign reply). */
 export interface PortalAssertion {
@@ -45,11 +48,16 @@ export interface DialogResult {
 /**
  * The user closed the portal — the dialog's X, Escape, a click outside it, or
  * the popup window — before it answered, or the app disconnected while a
- * connect was still going. Nothing was signed, and nothing was saved.
+ * connect was still going. Nothing was signed, and nothing was saved. A
+ * `UserRejectedError` (reason `'portal-closed'`, or `'abandoned'` for the
+ * disconnect), so it does not set the store's `error`.
  */
-export class PortalCancelledError extends Error {
-  constructor(message = 'The LazorKit portal was closed before it finished, so nothing was signed.') {
-    super(message);
+export class PortalCancelledError extends UserRejectedError {
+  constructor(
+    message = 'The LazorKit portal was closed before it finished, so nothing was signed.',
+    reason: UserRejectionReason = 'portal-closed',
+  ) {
+    super(reason, message);
     this.name = 'PortalCancelledError';
   }
 }
@@ -59,6 +67,19 @@ export class PortalCancelledError extends Error {
  * to arrive before the pending action counts as cancelled.
  */
 const POPUP_CLOSED_GRACE_MS = 500;
+
+/** How long the portal has to answer a connect or a sign. */
+const PORTAL_TIMEOUT_MS = 60_000;
+
+/**
+ * How long the portal has to answer a typed approval (`openApproval`). The
+ * portal picks the slot the passkey signs at when the user taps Approve, so
+ * the time spent reading the screen does not count against the transaction;
+ * the SDK must not cut it short either. Closing the portal (X, Escape, a
+ * click outside, the popup closing, or the portal's own close) still ends the
+ * wait at once; this only bounds a portal that never answers.
+ */
+const APPROVAL_TIMEOUT_MS = 10 * 60_000;
 
 export interface SignResult {
   readonly signature: string;
@@ -71,6 +92,12 @@ export interface SignResult {
    * `allowCredentials` entry) and names it back here.
    */
   readonly credentialId?: string;
+  /**
+   * The reply's `typed` block, as the portal sent it (unchecked): the slot
+   * and counter it signed, when it answered a typed request (see
+   * `openApproval`). Absent from a portal that does not read typed requests.
+   */
+  readonly typed?: unknown;
 }
 
 export interface DialogManagerConfig {
@@ -147,15 +174,56 @@ export class DialogManager extends EventEmitter {
    * @returns Promise that resolves with signature result
    */
   async openSign(message: string, transaction: string, credentialId: string, clusterSimulation?: 'devnet' | 'mainnet'): Promise<SignResult> {
-    const encodedMessage = encodeURIComponent(message);
-    let signUrl = `${this.config.portalUrl}?action=${API_ENDPOINTS.SIGN}&message=${encodedMessage}&transaction=${encodeURIComponent(transaction)}&credentialId=${encodeURIComponent(credentialId)}`;
+    let signUrl = this.signUrl(message, transaction, credentialId);
     if (clusterSimulation) {
       signUrl += `&clusterSimulation=${clusterSimulation}`;
     }
-    return this.awaitPortal<SignResult>('sign-result', 'Signing timed out after 60 seconds', () => {
-      this._currentAction = API_ENDPOINTS.SIGN;
-      return this.shouldUsePopup('sign') ? this.openPopup(signUrl) : this.openSignDialog(signUrl);
-    });
+    return this.openSignUrl(signUrl);
+  }
+
+  /**
+   * Open the portal to approve a typed request: CreateSession, RevokeSession
+   * or RemoveAuthority, with the operation's parameters (`request`, from the
+   * protocol SDK's `prepareX`) in the URL fragment (`#/?lk1=…`), so the
+   * portal can show what the passkey approves. The query is `openSign`'s, so
+   * a portal that does not read typed requests signs `challenge` as before.
+   * Throws `TypedRequestTooLargeError` before opening anything when the
+   * request is over the cap.
+   *
+   * The reply is not checked here: its `typed` block names the slot and
+   * counter the portal signed, which the caller checks against what it
+   * prepared (see core/approval/typed.ts) before sending anything.
+   *
+   * @internal Not a stable API.
+   * @param challenge - The challenge the SDK prepared, base64url.
+   */
+  async openApproval(challenge: string, credentialId: string, request: ApprovalRequest): Promise<SignResult> {
+    return this.openSignUrl(
+      withApprovalFragment(this.signUrl(challenge, '', credentialId), request),
+      APPROVAL_TIMEOUT_MS,
+      'Approval timed out after 10 minutes',
+    );
+  }
+
+  /** The portal's sign URL, as 3.x builds it. */
+  private signUrl(message: string, transaction: string, credentialId: string): string {
+    return `${this.config.portalUrl}?action=${API_ENDPOINTS.SIGN}&message=${encodeURIComponent(message)}&transaction=${encodeURIComponent(transaction)}&credentialId=${encodeURIComponent(credentialId)}`;
+  }
+
+  private openSignUrl(
+    signUrl: string,
+    timeoutMs = PORTAL_TIMEOUT_MS,
+    timeoutMessage = 'Signing timed out after 60 seconds',
+  ): Promise<SignResult> {
+    return this.awaitPortal<SignResult>(
+      'sign-result',
+      timeoutMessage,
+      () => {
+        this._currentAction = API_ENDPOINTS.SIGN;
+        return this.shouldUsePopup('sign') ? this.openPopup(signUrl) : this.openSignDialog(signUrl);
+      },
+      timeoutMs,
+    );
   }
 
   /**
@@ -190,16 +258,22 @@ export class DialogManager extends EventEmitter {
 
   /**
    * Wait for the portal's answer to the action `open` starts: its result, its
-   * error, the user closing it (PortalCancelledError, at once), or 60 s.
+   * error, the user closing it (PortalCancelledError, at once), or
+   * `timeoutMs` (60 s unless given).
    */
-  private awaitPortal<T>(resultEvent: 'connect-result' | 'sign-result', timeoutMessage: string, open: () => Promise<void>): Promise<T> {
+  private awaitPortal<T>(
+    resultEvent: 'connect-result' | 'sign-result',
+    timeoutMessage: string,
+    open: () => Promise<void>,
+    timeoutMs: number = PORTAL_TIMEOUT_MS,
+  ): Promise<T> {
     // Destroyed (a disconnect mid-connect): open nothing more.
     if (this.isDestroyed) return Promise.reject(new PortalCancelledError());
     return new Promise<T>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         finish();
         reject(new Error(timeoutMessage));
-      }, 60000);
+      }, timeoutMs);
       const finish = () => {
         clearTimeout(timeoutId);
         this.off(resultEvent, onResult);
@@ -768,7 +842,7 @@ export class DialogManager extends EventEmitter {
       const { type, data, error } = event.data;
 
       if (error) {
-        this.emit('error', new Error(portalErrorText(event.data)));
+        this.emit('error', portalError(event.data));
         return;
       }
 
@@ -806,12 +880,13 @@ export class DialogManager extends EventEmitter {
             authenticatorDataBase64: data.authenticatorDataReturn,
             signedPayload: data.msg,
             credentialId: typeof data.credentialId === 'string' && data.credentialId ? data.credentialId : undefined,
+            ...(data.typed !== undefined && data.typed !== null ? { typed: data.typed } : {}),
           };
           this.emit('sign-result', transformedDataSignResult);
           this.closeDialog();
           break;
         case 'error':
-          this.emit('error', new Error(portalErrorText(event.data)));
+          this.emit('error', portalError(event.data));
           break;
         case 'close':
           // The portal closed itself without an answer.
@@ -925,7 +1000,7 @@ export class DialogManager extends EventEmitter {
 
     this.isDestroyed = true;
     // Whatever still waits on the dialog ends now — a portal action with
-    // PortalCancelledError, the chooser with null — rather than at the 60 s
+    // PortalCancelledError, the chooser with null — rather than at the
     // timeout, or never.
     this.pendingCancel?.();
     this.pendingChoice?.();
@@ -934,6 +1009,17 @@ export class DialogManager extends EventEmitter {
     this.removeAllListeners();
     this.logger.debug('Destroyed dialog manager');
   }
+}
+
+/**
+ * The error for a portal's error message: a typed-request refusal by its
+ * `code` (`{ type: 'error', error: { code, message } }`), as
+ * `RequestOutOfDateError` or `PortalRefusedError`; anything else as an
+ * `Error` with the portal's words.
+ */
+function portalError(message: { error?: unknown; details?: unknown; data?: { message?: unknown } }): Error {
+  const code = (message.error as { code?: unknown } | undefined)?.code;
+  return portalRefusal(code, portalErrorText(message)) ?? new Error(portalErrorText(message));
 }
 
 /**

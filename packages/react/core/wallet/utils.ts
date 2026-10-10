@@ -10,15 +10,30 @@ import {
     type ProtocolVersion,
 } from '../program/protocol';
 import { isNamedError } from '../program/errorShape';
-import { StorageManager } from '../storage';
+import { walletRecords } from '../storage';
 import { DialogManager } from '../portal';
 import { WalletConfig } from '../storage';
 import type { ActionCallbacks, WalletState } from '../types';
+import { isUserRejection } from '../errors';
+import { EmbeddedPrompt } from '../embedded/prompt';
+
+/** What the passkey actions need of a ceremony surface: the portal dialog, or Embedded mode's prompt. */
+export type PasskeyPrompt = Pick<
+    DialogManager,
+    'openSign' | 'openApproval' | 'openSignMessage' | 'openWalletChoice' | 'destroy'
+>;
 
 /**
- * Creates a configured DialogManager instance
+ * The ceremony surface for `config`'s mode: Embedded mode's prompt (WebAuthn
+ * in the app's page), or the portal dialog (`createPortalDialog`). The
+ * actions call the same methods either way.
  */
-export const createDialogManager = (config: WalletConfig): DialogManager => {
+export const createDialogManager = (config: WalletConfig): PasskeyPrompt => {
+    return config.mode === 'embedded' ? new EmbeddedPrompt(config) : createPortalDialog(config);
+};
+
+/** A configured portal dialog: portal mode's connect, which needs `openConnect`. */
+export const createPortalDialog = (config: WalletConfig): DialogManager => {
     return new DialogManager({
         portalUrl: config.portalUrl,
         rpcUrl: config.rpcUrl,
@@ -61,8 +76,10 @@ export const toActionError = (error: unknown, version?: ProtocolVersion): Error 
 
 /**
  * Standardized error handling for wallet actions: records the error in the
- * store and throws it. The action's `onFail` is called by the store, once the
- * action is over (see `reportOutcome`).
+ * store and throws it. A user rejection (`UserRejectedError`: a closed sheet
+ * or portal, "Not now", "None of these") is thrown without being recorded:
+ * it is not a failure. The action's `onFail` is called by the store, once
+ * the action is over (see `reportOutcome`).
  */
 export const handleActionError = (
     error: unknown,
@@ -73,10 +90,10 @@ export const handleActionError = (
     const err = toActionError(error, version);
     if (err instanceof V1WalletMigratedError) {
         // The stored wallet is gone from the chain; stop showing its address.
-        void StorageManager.clearWallet();
+        void walletRecords().clearWallet();
         set({ wallet: null });
     }
-    set({ error: err });
+    if (!isUserRejection(err)) set({ error: err });
     throw err;
 };
 
@@ -112,7 +129,7 @@ export async function reportOutcome<T>(
 }
 
 /** Calls an app's callback. What it throws is logged, and does not change the action's outcome. */
-function notify<A>(callback: ((arg: A) => void) | undefined, arg: A): void {
+export function notify<A>(callback: ((arg: A) => void) | undefined, arg: A): void {
     if (!callback) return;
     try {
         callback(arg);

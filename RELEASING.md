@@ -83,6 +83,20 @@ An approval request is only made when something is left to publish or tag. If tw
 on `main` while a publish waits for approval, the second one may ask again once the first is
 done; approving it is harmless (it finds everything published and tagged), or reject it.
 
+## Pre-releases
+
+Changesets [pre mode](https://github.com/changesets/changesets/blob/main/docs/prereleases.md)
+publishes a line ahead of `latest`. `pnpm changeset pre enter <tag>` commits
+`.changeset/pre.json`; while it is there, the version PR makes `X.Y.Z-<tag>.N` versions and
+`scripts/npm-release.mjs publish` passes `--tag <tag>`, so `latest` does not move, and
+`sync-dist-tags` leaves the wallet's `beta` on the latest stable version. Each later merge with
+changesets makes the next `-<tag>.N`. `pnpm changeset pre exit` (committed and merged like any
+change) makes the next version PR produce the stable versions, published on `latest`.
+
+While `main` is in pre mode, every release from `main` is a pre-release. A fix for the current
+stable line then needs the manual fallback below (from a branch off its release tag), or waits
+for `pre exit`.
+
 ## Manual fallback
 
 If automation is unavailable:

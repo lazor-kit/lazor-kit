@@ -6,6 +6,7 @@ import {
 import { WalletInfo, WalletConfig } from '../storage';
 import type { OnConfirmWallet } from '../wallet/confirmation';
 import type { SignMessageResult } from '../message/signedMessage';
+import type { Availability, Step } from '../embedded/types';
 
 export interface WalletState {
     // Data
@@ -17,7 +18,15 @@ export interface WalletState {
     isLoading: boolean;
     isConnecting: boolean;
     isSigning: boolean;
+    /**
+     * Not a failure: a user rejection (`UserRejectedError`: a closed sheet or
+     * portal, "Not now", "None of these") leaves it alone.
+     */
     error: Error | null;
+    /** The phase of the connect or send that is running, `null` when none is. */
+    step: Step | null;
+    /** Whether passkeys can work on this page, as configure found it. */
+    availability: Availability;
 
     // State setters
     setConfig: (config: WalletConfig) => void;
@@ -37,7 +46,7 @@ export interface WalletState {
     // `true`: it belongs to the call that is running.
     connect: (options?: ConnectOptions & { feeMode?: 'paymaster' | 'user' }) => Promise<WalletInfo>;
     disconnect: (options?: DisconnectOptions) => Promise<void>;
-    signAndSendTransaction: (payload: SignAndSendTransactionPayload) => Promise<string>;
+    signAndSendTransaction: (payload: SignAndSendPayload) => Promise<string>;
     signMessage: (message: string, options?: SignMessageOptions) => Promise<SignMessageResult>;
 
     // Session key actions
@@ -69,7 +78,7 @@ export interface WalletState {
  * SOL unbounded.
  *
  * The limits must fit in the CreateSession transaction beside the passkey's
- * response: at most 244 bytes of actions. A SOL limit takes 19 bytes
+ * response: at most 224 bytes of actions. A SOL limit takes 19 bytes
  * (`solRecurring` 43), a token's `lifetimeCap` or `perTxMax` 51 and its
  * `recurring` 75. `createSession` refuses more before the passkey is asked.
  */
@@ -78,10 +87,13 @@ export interface SpendingLimits {
     solLifetimeCap?: bigint;
     /** Max SOL per single execute in lamports */
     solPerTxMax?: bigint;
-    /** SOL cap that resets every `windowSlots` slots */
+    /**
+     * SOL cap that resets every `windowSeconds` seconds of the cluster clock
+     * (`86_400n` is a day), counted from the first payment in each window.
+     */
     solRecurring?: {
         limit: bigint;
-        windowSlots: bigint;
+        windowSeconds: bigint;
     };
     /**
      * The tokens the session may spend, one entry per mint, each with at
@@ -99,14 +111,38 @@ export interface TokenSpendingLimit {
     lifetimeCap?: bigint;
     /** Max per single execute. */
     perTxMax?: bigint;
-    /** Cap that resets every `windowSlots` slots. */
+    /** Cap that resets every `windowSeconds` seconds of the cluster clock (`86_400n` is a day). */
     recurring?: {
         limit: bigint;
-        windowSlots: bigint;
+        windowSeconds: bigint;
     };
 }
 
 export interface CreateSessionPayload {
+    /**
+     * How long the session lasts, in seconds of the cluster clock (the
+     * Clock sysvar's Unix time, which the program compares against): more
+     * than 0 and at most 30 days (`MAX_SESSION_SECONDS`). Defaults to
+     * `DEFAULTS.SESSION_EXPIRY_SECONDS` (5 hours). Give at most one of
+     * `expiresInSeconds`, `expiresAt` and `expiresInSlots`.
+     */
+    readonly expiresInSeconds?: number | bigint;
+    /**
+     * When the session ends, as a Unix time in seconds: after the cluster
+     * clock and at most 30 days ahead of it. The portal shows it to the user
+     * ("until about 6:50 PM") before the passkey signs.
+     */
+    readonly expiresAt?: number | bigint;
+    /**
+     * @deprecated Sessions expire by the cluster clock now, not by slot. Use
+     * `expiresInSeconds`. Still accepted: it is converted to seconds with the
+     * cluster's measured slot time (recent performance samples), and a
+     * warning is logged once. It throws when the slot time cannot be read.
+     *
+     * A wallet made before LazorKit v2 (v1) expires sessions at a slot, as
+     * before: `expiresInSlots` is used as given, and with no expiry the
+     * session lasts `DEFAULTS.SESSION_EXPIRY_SLOTS` (50,000) slots.
+     */
     readonly expiresInSlots?: bigint;
     readonly spendingLimits?: SpendingLimits;
     /**
@@ -182,7 +218,7 @@ export interface AddAuthorityPayload {
      * asset the policy does not name cannot leave the wallet (from the
      * program release that adds errors 3037 and 3038): name SOL with a `sol*`
      * action (rent the wallet pays counts) and each mint the key may spend
-     * with a `token*` action. Keep it within 244 bytes, which is what fits in
+     * with a `token*` action. Keep it within 224 bytes, which is what fits in
      * the transaction beside the passkey's response; its size is not checked
      * before the prompt. v1 wallets have no policies: passing one for a v1
      * wallet throws.
@@ -274,6 +310,27 @@ export interface SignAndSendTransactionPayload {
     readonly instructions: TransactionInstruction[];
     readonly onSuccess?: (signature: string) => void;
     readonly onFail?: (error: Error) => void;
+}
+
+/**
+ * `signAndSend`'s payload: a send, plus what only the Easy send takes.
+ * Deferred and key-signed sends do not take these.
+ */
+export interface SignAndSendPayload extends SignAndSendTransactionPayload {
+    /**
+     * Called once with the signature as soon as the paymaster has sent the
+     * transaction, before it is confirmed (the promise resolves at
+     * confirmed). Never called when nothing was sent: a cancel, a refusal
+     * before sending, a lost answer with no signature. What it throws is
+     * logged and changes nothing.
+     */
+    readonly onSubmitted?: (signature: string) => void;
+    /**
+     * Embedded mode: show the review sheet (decoded instructions and a
+     * simulation) before the passkey prompt. Overrides the provider's
+     * `confirm` for this call. Ignored in portal mode.
+     */
+    readonly confirm?: boolean;
 }
 
 export interface SignOptions {

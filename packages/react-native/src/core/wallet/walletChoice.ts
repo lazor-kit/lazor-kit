@@ -12,13 +12,27 @@ import type { WalletChoice } from '../../types';
 /** The expiry the SDK reports for a session or deferred execution it cannot read. */
 const UNREADABLE_EXPIRY = 2n ** 64n - 1n;
 
-/** Roughly how long a slot lasts. Expiries are slots; people read clocks. */
+/** Roughly how long a slot lasts. Some expiries are slots; people read clocks. */
 const MS_PER_SLOT = 400;
+
+/** 2020-01-01 in Unix seconds: a stored session expiry below it is a slot. */
+const MIN_UNIX_SECONDS = 1_577_836_800n;
 
 /** An expiry slot as an approximate time, or `null` when it could not be read. */
 function approxTime(expiresAtSlot: bigint, slot: bigint, now: number): number | null {
   if (expiresAtSlot === UNREADABLE_EXPIRY) return null;
   return now + Number(expiresAtSlot - slot) * MS_PER_SLOT;
+}
+
+/**
+ * A session's expiry as an approximate time: a v2 session's Unix time, offset
+ * by how far this device's clock is from the cluster's; a slot (v1, or a v2
+ * session written before sessions were measured in seconds) as `approxTime`.
+ */
+function approxSessionTime(facts: WalletFacts, expiresAt: bigint, now: number): number | null {
+  if (expiresAt === UNREADABLE_EXPIRY) return null;
+  if (facts.version === 1 || expiresAt < MIN_UNIX_SECONDS) return approxTime(expiresAt, facts.slot, now);
+  return now + Number(expiresAt - facts.unixTimestamp) * 1000;
 }
 
 /** A wallet's facts in the shape a chooser shows: base58 strings, times instead of slots. */
@@ -43,7 +57,7 @@ export function toWalletChoice(facts: WalletFacts, now: number = Date.now()): Wa
       // The SDK reports an unreadable session's key as the all-zero address,
       // which is nobody's key and must not be shown as one.
       sessionKey: s.sessionKey.equals(PublicKey.default) ? null : s.sessionKey.toBase58(),
-      approxExpiresAt: approxTime(s.expiresAtSlot, facts.slot, now),
+      approxExpiresAt: approxSessionTime(facts, s.expiresAt, now),
       trusted: s.trusted,
     })),
     pendingDeferred: facts.pendingDeferred.map((d) => ({

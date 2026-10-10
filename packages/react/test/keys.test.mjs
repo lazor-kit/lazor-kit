@@ -15,6 +15,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createPublicKey, verify, webcrypto } from 'node:crypto';
+import { freshPage } from './helpers/fresh-page.mjs';
 import {
     Connection,
     Keypair,
@@ -62,6 +63,9 @@ const accountData = new Map();
 const sent = [];
 /** The slot `getSlot` answers. */
 let chainSlot = 1000;
+/** The Unix time (seconds) the Clock sysvar answers. */
+let clusterTime = 1_791_633_600n;
+const CLOCK_SYSVAR = 'SysvarC1ock11111111111111111111111111111111';
 /** `getLatestBlockhash` answers once this settles (see `holdBlockhash`). */
 let blockhashGate = Promise.resolve();
 
@@ -73,6 +77,15 @@ const rpcFetch = async (_url, init) => {
         return reply({ context: { slot: 1 }, value: { blockhash: BLOCKHASH, lastValidBlockHeight: 1e9 } });
     }
     if (method === 'getSlot') return reply(chainSlot);
+    if (method === 'getAccountInfo' && params[0] === CLOCK_SYSVAR) {
+        const data = Buffer.alloc(40);
+        data.writeBigUInt64LE(BigInt(chainSlot), 0);
+        data.writeBigInt64LE(clusterTime, 32);
+        return reply({
+            context: { slot: 1 },
+            value: { data: [data.toString('base64'), 'base64'], executable: false, lamports: 1_000_000, owner: 'Sysvar1111111111111111111111111111111111111', rentEpoch: 0, space: 40 },
+        });
+    }
     if (method === 'getAccountInfo') {
         const owner = accounts.get(params[0]);
         const data = accountData.get(params[0]) ?? Buffer.alloc(0);
@@ -102,7 +115,6 @@ globalThis.fetch = async (url, init) => {
 const warnings = [];
 console.warn = (...args) => warnings.push(args.map(String).join(' '));
 
-let pages = 0;
 let PROGRAM;
 
 /** The stored record of a connected v2 wallet: what the store holds once `connect` resolves. */
@@ -122,7 +134,7 @@ const walletInfo = (walletPda) => ({
  * for none.
  */
 async function page({ keyStorage, wallet = WALLET } = {}) {
-    const W = await import(`../dist/index.mjs?page=${++pages}`);
+    const W = await freshPage();
     PROGRAM = W.PROGRAM_ID_DEVNET;
     W.registerCluster(RPC, 'devnet');
     W.useWalletStore.setState({
@@ -150,6 +162,7 @@ beforeEach(() => {
     sent.length = 0;
     warnings.length = 0;
     chainSlot = 1000;
+    clusterTime = 1_791_633_600n;
     blockhashGate = Promise.resolve();
 });
 
@@ -927,6 +940,24 @@ test('an expired session key is deleted when read; one that expires this slot st
         W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }),
         /^Error: No session key found\. Create a session first\.$/,
     );
+});
+
+test('a session that expires by the cluster clock (a Unix time): its key signs through that second, and is deleted after it', async () => {
+    const W = await page();
+    const expiresAt = 1_791_640_000n;
+    const { sessionPda } = plantSession(W, SEEDS[4], { expiresAt: String(expiresAt) });
+    // The slot is far past the value: a Unix time is not compared with slots.
+    chainSlot = 2_000_000_000;
+    clusterTime = expiresAt;
+    await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
+    assert.equal(sent.length, 1);
+
+    clusterTime = expiresAt + 1n;
+    const error = await rejection(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }));
+    assert.match(error.message, /^No session key found: the stored session .* expired at 2026-10-10T13:46:40\.000Z \(the cluster clock reads 2026-10-10T13:46:41\.000Z\)/);
+    assert.ok(error.message.includes(sessionPda.toBase58()));
+    assert.equal(sent.length, 1);
+    assert.equal(await storedRecord('session'), undefined, 'deleted');
 });
 
 test('an expired session key a page holds in memory only, and its plaintext, are deleted too', async () => {

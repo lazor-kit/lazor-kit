@@ -276,6 +276,10 @@ counter at `confirmed` from an RPC node that has executed it
 | `DeferredExpiredError` | TX2 of a deferred execution (`authorizeAndExecute`, `executeDeferred`) came after its authorization expired (`DeferredAuthorizationExpired`, 3014), so nothing in it ran. `authorizeSignature` (TX1, when this call sent it), `deferredExecPda` (the account holding the paymaster's rent: `reclaimDeferred` it) and `expiresAtSlot`. The passkey approval is spent: ask the user to approve again. An inner program's 3014 is not reported as this (see below). |
 | `UnlistedSolOutflowError` | A `signAndSendWithSession` transaction would have lowered the wallet's SOL balance (rent for a new account included), and the session's actions name no SOL (`ActionUnlistedSolOutflow`, 3037). Nothing in it ran. Its message is "This session is not allowed to spend SOL"; `signer` is `'session'`, and `cause` the failure as it came. See [What a session's actions bound](#what-a-sessions-actions-bound). |
 | `UnlistedTokenOutflowError` | The same for a token whose mint the actions do not name (`ActionUnlistedTokenOutflow`, 3038): "This session is not allowed to spend this token". |
+| `PortalReplyMismatchError` | `createSession`, `revokeSession` or `removeAuthority`: the portal's redirect does not match the request the adapter prepared (another operation, slot, counter or kind; a forged deep link). Nothing was sent. `reason` says what differed. See [What the user approves](#what-the-user-approves-and-when-a-session-ends). |
+| `RequestOutOfDateError` | The portal refused a typed request with `stale-counter`: its view of the passkey's counter was behind. The passkey signed nothing; `retryable` is `true`. |
+| `PortalRefusedError` | The portal refused a typed request; the passkey signed nothing. `code`: `request-invalid` (it would fail on chain), `wrong-network`, `challenge-mismatch`, `typed-malformed`, `typed-unsupported` or `chain-unavailable`. |
+| `TypedRequestTooLargeError` | The typed request, or the portal URL carrying it, is over its cap (8,192 / 16,384 characters). Nothing was opened. |
 
 Every status read and paymaster request is bounded in time, so one that never
 answers cannot hold a passkey's queue. The slot the passkey's last transaction
@@ -345,6 +349,60 @@ public record, the configuration, and each passkey's transaction state; none of
 it is secret. (The web SDK, `@lazorkit/wallet`, generates and keeps the key
 itself, as a non-extractable WebCrypto key.)
 
+### What the user approves, and when a session ends
+
+`createSession`, `revokeSession` and `removeAuthority` send the portal the
+operation itself, not only its challenge: a *typed request* in the URL
+fragment (`#/?lk1=…`), next to the query earlier releases sent. A portal that
+reads it shows exactly what the passkey approves, for example "Let MyApp spend
+up to 0.002 SOL per payment and 5 USDC in total, until about 6:50 PM". It
+recomputes the challenge from what it shows, and picks the slot it signs when
+the user taps Approve. A portal that does not read typed requests signs the
+challenge in the query, as before. Other passkey actions open the portal as
+before.
+
+Before anything is sent, the adapter checks the redirect against the request
+it prepared: the passkey must have signed this operation, at the slot and
+counter the portal names (`typedV`, `typedKind`, `typedSlot`, `typedCounter`,
+`typedSysvarIx`), or at the prepared ones when the portal names none. A
+redirect that does not match, a forged deep link included, rejects with
+`PortalReplyMismatchError` and nothing is sent. The portal's refusals
+(`type=error&code=…`) mean the passkey signed nothing: `RequestOutOfDateError`
+(`stale-counter`, the portal's node was behind; `retryable: true`, a new
+request may go through) or `PortalRefusedError` with the portal's `code`
+(`request-invalid`, `wrong-network`, `challenge-mismatch`, `typed-malformed`,
+`typed-unsupported`, `chain-unavailable`). A request whose URL would be over
+16,384 characters is refused with `TypedRequestTooLargeError` before the
+browser opens; it is never truncated. Wallets made before LazorKit v2 send no
+typed request.
+
+A session ends by the **cluster clock** (the Clock sysvar's Unix time, which
+the program compares against), not by slot:
+
+- `expiresInSeconds`: how long it lasts, more than 0 and at most 30 days
+  (`MAX_SESSION_SECONDS`), counted from the cluster's time when
+  `createSession` reads it.
+- `expiresAt`: when it ends, as a Unix time in seconds, after the cluster's
+  time and at most 30 days ahead of it.
+- Neither: `DEFAULTS.SESSION_EXPIRY_SECONDS`, 5 hours.
+- `expiresAtSlot` is deprecated. It is still accepted: the slots left until it
+  are converted to seconds with the cluster's measured slot time (recent
+  performance samples), with a warning, and it throws when the slot time
+  cannot be read. Give at most one of the three.
+
+An expiry the program would refuse throws before the portal opens. Recurring
+limits count seconds too: `Actions.solRecurringLimit({ limit, windowSeconds:
+86_400n })` is a day. Actions that cannot fit in the CreateSession
+transaction (more than 16, or more than 224 bytes of `serializeActions`) throw
+before the portal opens, so the user is never asked to approve a session that
+cannot be sent.
+
+A wallet made before LazorKit v2 (v1) still counts in slots: with no expiry
+its session ends `DEFAULTS.SESSION_EXPIRY_SLOTS` (50,000) slots ahead;
+`expiresAtSlot` is used as given; `expiresInSeconds` and `expiresAt` are
+converted to slots with the measured slot time. A recurring limit's
+`windowSeconds` is converted to slots the same way.
+
 To keep a session key across restarts, store it in the OS keystore with
 `expo-secure-store` (iOS Keychain, Android Keystore). Never store it in
 AsyncStorage, which is not encrypted on disk and is included in device backups.
@@ -359,11 +417,12 @@ const OPTIONS = { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY
 
 // Once createSession has resolved. `walletPda`: the connected wallet's
 // (`wallet.walletPda`), the only one this key may sign for.
-async function keepSession(sessionKeypair: Keypair, sessionPda: PublicKey, expiresAtSlot: bigint, walletPda: string) {
+// `expiresAt`: when the session ends, in Unix seconds.
+async function keepSession(sessionKeypair: Keypair, sessionPda: PublicKey, expiresAt: bigint, walletPda: string) {
   const value = JSON.stringify({
     seed: Buffer.from(sessionKeypair.secretKey.slice(0, 32)).toString('base64'),
     sessionPda: sessionPda.toBase58(),
-    expiresAtSlot: expiresAtSlot.toString(),
+    expiresAt: expiresAt.toString(),
     walletPda,
   });
   await SecureStore.setItemAsync(SLOT, value, OPTIONS);
@@ -373,12 +432,12 @@ async function keepSession(sessionKeypair: Keypair, sessionPda: PublicKey, expir
 async function keptSession(connectedWalletPda: string | undefined) {
   const raw = await SecureStore.getItemAsync(SLOT, OPTIONS);
   if (!raw) return null;
-  const { seed, sessionPda, expiresAtSlot, walletPda } = JSON.parse(raw);
+  const { seed, sessionPda, expiresAt, walletPda } = JSON.parse(raw);
   if (!connectedWalletPda || walletPda !== connectedWalletPda) return null;
   return {
     sessionKeypair: Keypair.fromSeed(Buffer.from(seed, 'base64')),
     sessionPda: new PublicKey(sessionPda),
-    expiresAtSlot: BigInt(expiresAtSlot),
+    expiresAt: BigInt(expiresAt),
   };
 }
 
@@ -398,8 +457,9 @@ async function forgetSession() {
   restored to another one from a backup.
 - On iOS, a Keychain item survives uninstalling the app. After a reinstall,
   the item may name a session that has expired or been revoked: check the
-  session account still exists and `expiresAtSlot` is in the future before you
-  use it, and delete the item if not.
+  session account still exists and `expiresAt` is after the cluster's time
+  (`new LazorKitClient(connection).getClusterTime()`) before you use it, and
+  delete the item if not.
 - On Android, exclude SecureStore's data from Auto Backup (see the
   expo-secure-store docs). A restored item cannot be decrypted on another
   install.
@@ -434,12 +494,13 @@ bounded at all, see the end of this section):
   (`SessionTokenAuthorityChanged`, 3032).
 - A session or policy holds at most 16 actions, and at most one of each kind
   per mint, and they must fit in the transaction that registers them, beside
-  the passkey's response: keep them within 244 bytes. `Actions.solMaxPerTx`
+  the passkey's response: keep them within 224 bytes. `Actions.solMaxPerTx`
   and `solLimit` take 19 bytes (`solRecurringLimit` 43), `tokenMaxPerTx` and
   `tokenLimit` 51 and `tokenRecurringLimit` 75: `solMaxPerTx` with
   `tokenMaxPerTx` and `tokenLimit` for 2 mints (223 bytes), or `solMaxPerTx`
   with `tokenMaxPerTx` for 4 (223). The transaction holds 1232 bytes, and the
-  passkey's clientDataJSON takes up to about 300 of them. Nothing checks this
+  passkey's clientDataJSON is sized at 320 of them (as `@lazorkit/sdk-legacy`
+  sizes it). Nothing checks this
   before the portal opens: actions that do not fit fail after the user
   approved.
 
@@ -457,7 +518,7 @@ const USDC = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
 await createSession(
   {
     sessionKey: sessionKeypair.publicKey,
-    expiresAtSlot,
+    expiresInSeconds: 3600, // an hour, by the cluster clock
     actions: [
       Actions.solMaxPerTx(10_000_000n), // 0.01 SOL a transaction, rent included
       Actions.tokenMaxPerTx({ mint: USDC, max: 5_000_000n }), // 5 USDC a transaction

@@ -14,22 +14,24 @@ import { PublicKey } from '@solana/web3.js';
 import { Actions, serializeActions, type SessionAction } from '../program';
 import { PROGRAM_ID_DEVNET, PROGRAM_ID_MAINNET } from '../program/utils';
 import { chainHasError, errorChain, errorChainText, isNamedError } from '../program/errorShape';
+import { MAX_PASSKEY_SESSION_ACTIONS_BYTES } from '@lazorkit/sdk-legacy/approval';
 import type { SpendingLimits } from '../types';
 
 /** The most actions the program accepts in one policy. */
 export const MAX_POLICY_ACTIONS = 16;
 
 /**
- * The most bytes of actions a preset may make. They travel in the transaction
- * that registers them (CreateSession, or AddAuthority for a delegate) beside
- * the passkey's WebAuthn response, and a transaction holds 1232 bytes. 688
- * of them are taken whatever the actions. The clientDataJSON the browser
- * writes takes about 175 for the portal's frame on an app's page, and about
- * 110 more when Chrome adds the extra key it adds at random. 244 bytes leave
- * room for a clientDataJSON of 300, so a preset that would not fit is refused
- * before the passkey is asked, not after.
+ * The most bytes of actions a preset may make: 224. They travel in the
+ * transaction that registers them (CreateSession, or AddAuthority for a
+ * delegate) beside the passkey's WebAuthn response, and a transaction holds
+ * 1232 bytes. The clientDataJSON the browser writes is known only once
+ * signed; `@lazorkit/sdk-legacy` sizes it at 320 bytes (a cross-origin
+ * frame's topOrigin and Chrome's random extra key included), and its
+ * `prepareCreateSession` refuses a typed request with more actions than fit
+ * then. The same bound here, so a preset that would not fit is refused before
+ * the passkey is asked, not after, with this message.
  */
-export const MAX_POLICY_ACTION_BYTES = 1232 - 688 - 300;
+export const MAX_POLICY_ACTION_BYTES = MAX_PASSKEY_SESSION_ACTIONS_BYTES;
 
 const U64_MAX = (1n << 64n) - 1n;
 
@@ -40,19 +42,32 @@ function amount(what: string, value: unknown): bigint {
     return value;
 }
 
-function windowSlots(what: string, value: unknown): bigint {
-    const slots = amount(what, value);
-    if (slots === 0n) throw new RangeError(`spendingLimits.${what} must be at least 1 slot`);
-    return slots;
+/**
+ * A recurring limit's window, in seconds of the cluster clock. A preset
+ * written for a release that measured windows in slots (`windowSlots`) is
+ * refused rather than read as seconds: 216,000 slots is a day on mainnet,
+ * 216,000 seconds two and a half.
+ */
+function windowSeconds(what: string, recurring: { windowSeconds?: unknown; windowSlots?: unknown }): bigint {
+    if (recurring.windowSeconds === undefined && recurring.windowSlots !== undefined) {
+        throw new TypeError(
+            `spendingLimits.${what}.windowSlots is no longer read: windows are measured in seconds of the ` +
+                `cluster clock. Pass windowSeconds (86_400n is a day).`,
+        );
+    }
+    const seconds = amount(`${what}.windowSeconds`, recurring.windowSeconds);
+    if (seconds === 0n) throw new RangeError(`spendingLimits.${what}.windowSeconds must be at least 1 second`);
+    return seconds;
 }
 
 /**
  * The session actions a `SpendingLimits` preset stands for: the SOL limits,
  * then each token's, in the order given. Throws, before anything is read or
  * prompted, on a token with no limit or a mint that is not a public key, on a
- * mint named twice, on an amount outside a u64, on a window of 0 slots, on
- * more than 16 actions in all (what the program accepts), and on actions of
- * more than 244 bytes (what fits in the transaction beside the passkey's
+ * mint named twice, on an amount outside a u64, on a window of 0 seconds (or
+ * one given as `windowSlots`, as releases that measured windows in slots took
+ * it), on more than 16 actions in all (what the program accepts), and on actions of
+ * more than 224 bytes (what fits in the transaction beside the passkey's
  * response; see `MAX_POLICY_ACTION_BYTES`). A SOL limit takes 19 bytes
  * (`solRecurring` 43), a token's `lifetimeCap` or `perTxMax` 51 and its
  * `recurring` 75.
@@ -76,7 +91,7 @@ export function spendingLimitsToActions(limits: SpendingLimits | undefined): Ses
     if (limits.solRecurring) {
         actions.push(Actions.solRecurringLimit({
             limit: amount('solRecurring.limit', limits.solRecurring.limit),
-            window: windowSlots('solRecurring.windowSlots', limits.solRecurring.windowSlots),
+            windowSeconds: windowSeconds('solRecurring', limits.solRecurring),
         }));
     }
     const named = new Set<string>();
@@ -103,7 +118,7 @@ export function spendingLimitsToActions(limits: SpendingLimits | undefined): Ses
             actions.push(Actions.tokenRecurringLimit({
                 mint,
                 limit: amount(`${at}.recurring.limit`, token.recurring.limit),
-                window: windowSlots(`${at}.recurring.windowSlots`, token.recurring.windowSlots),
+                windowSeconds: windowSeconds(`${at}.recurring`, token.recurring),
             }));
         }
         if (actions.length === before) {
@@ -135,8 +150,8 @@ export function spendingLimitsToActions(limits: SpendingLimits | undefined): Ses
 /** `SpendingLimits` as the kept session key's record holds it: amounts as decimal text, mints as base58. */
 export function spendingLimitsRecord(limits: SpendingLimits | undefined) {
     if (!limits) return undefined;
-    const recurring = (r: { limit: bigint; windowSlots: bigint } | undefined) =>
-        r ? { limit: r.limit.toString(), windowSlots: r.windowSlots.toString() } : undefined;
+    const recurring = (r: { limit: bigint; windowSeconds: bigint } | undefined) =>
+        r ? { limit: r.limit.toString(), windowSeconds: r.windowSeconds.toString() } : undefined;
     return {
         solLifetimeCap: limits.solLifetimeCap?.toString(),
         solPerTxMax: limits.solPerTxMax?.toString(),
@@ -217,6 +232,19 @@ function hasCode(text: string, code: number): boolean {
 export function hasUnlistedOutflowCode(error: unknown): boolean {
     const text = errorChainText(error);
     return hasCode(text, UNLISTED_SOL_OUTFLOW_CODE) || hasCode(text, UNLISTED_TOKEN_OUTFLOW_CODE);
+}
+
+/** The program's ActionSolMaxPerTxExceeded, seen as `custom program error: 0xbcf`. */
+export const SOL_MAX_PER_TX_EXCEEDED_CODE = 3023;
+
+/**
+ * The error has the shape of a 3023 (a session or delegate moving more SOL
+ * in one transaction than its `SolMaxPerTx` action allows), from whichever
+ * program. The cap and the amount the same bytes move do not change, so the
+ * paymaster does not resend one.
+ */
+export function hasSolMaxPerTxExceededCode(error: unknown): boolean {
+    return hasCode(errorChainText(error), SOL_MAX_PER_TX_EXCEEDED_CODE);
 }
 
 /**
