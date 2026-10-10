@@ -1,6 +1,6 @@
 {
   "name": "@lazorkit/wallet",
-  "version": "3.4.1",
+  "version": "4.0.0-next.0",
   "description": "Lazorkit Wallet SDK for Solana — passkey-native wallets with seedless onboarding and gasless transactions.",
   "license": "MIT",
   "homepage": "https://github.com/lazor-kit/lazor-kit/tree/main/packages/react#readme",
