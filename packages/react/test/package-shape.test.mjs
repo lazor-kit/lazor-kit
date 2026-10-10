@@ -64,6 +64,8 @@ const NEW_IN_4 = [
     'PasskeyUnavailableError', 'UserRejectedError', 'WalletVerificationError', 'builtinEmbeddedUi', 'connectButtonLabel',
     'createLazorkitClient', 'derToLowS', 'deriveStatus', 'errorKind', 'forgetEmbeddedDevice', 'getLazorkitClient',
     'isUserRejection', 'passkeyCapabilities', 'publicKeyFromAttestation', 'resolveConfig', 'userMessage', 'validateRpId',
+    // Typed approval requests and time-based session expiry (#130).
+    'MAX_SESSION_SECONDS', 'PortalRefusedError', 'PortalReplyMismatchError', 'RequestOutOfDateError', 'TypedRequestTooLargeError',
 ];
 const REACT_ONLY = ['CONNECT_BUTTON_TEXT', 'ConnectButton', 'LazorkitProvider', 'connectButtonLabel', 'useWallet', 'useWalletStore'];
 const HOOKS = ['useLazorkitClient', 'useLazorkitState', 'useWallet', 'useWalletStatus', 'useWalletStore'];

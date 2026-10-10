@@ -24,6 +24,8 @@ export const RPC = 'http://rpc.test/';
 export const PAYMASTER = 'http://paymaster.test/';
 export const FEE_PAYER = Keypair.fromSeed(new Uint8Array(32).fill(7));
 const BLOCKHASH = Keypair.fromSeed(new Uint8Array(32).fill(9)).publicKey.toBase58();
+const CLOCK_SYSVAR = 'SysvarC1ock11111111111111111111111111111111';
+const SYSVAR_OWNER = 'Sysvar1111111111111111111111111111111111111';
 
 /**
  * The chain. `W` is the package under test (for its program ids and PDA
@@ -39,6 +41,8 @@ export function scriptedChain(W) {
         /** Extra history per address (newest first), as getSignaturesForAddress rows. */
         extraHistory: new Map(),
         slot: 5000,
+        /** The Clock sysvar's unix_timestamp, in seconds (sessions expire by it). */
+        unixTimestamp: 1_790_000_000n,
         /** Every RPC call: { method, params }. */
         rpcCalls: [],
         /** Every transaction the paymaster was asked to send. */
@@ -55,6 +59,15 @@ export function scriptedChain(W) {
             ? { data: [Buffer.from(a.data).toString('base64'), 'base64'], executable: false, lamports: a.lamports ?? 2_000_000, owner: a.owner, rentEpoch: 0, space: a.data.length }
             : null;
     const ctx = () => ({ slot: state.slot });
+
+    /** The Clock sysvar at the current slot: slot, epoch start, epoch, leader epoch, unix_timestamp. */
+    function clockAccount() {
+        const data = Buffer.alloc(40);
+        data.writeBigUInt64LE(BigInt(state.slot), 0);
+        data.writeBigInt64LE(state.unixTimestamp, 32);
+        return { owner: SYSVAR_OWNER, data };
+    }
+    const accountAt = (address) => (address === CLOCK_SYSVAR ? clockAccount() : state.accounts.get(address));
 
     function matches(account, filters = []) {
         return filters.every((f) => {
@@ -114,11 +127,11 @@ export function scriptedChain(W) {
             case 'getLatestBlockhash':
                 return reply(id, { context: ctx(), value: { blockhash: BLOCKHASH, lastValidBlockHeight: 1e9 } });
             case 'getAccountInfo':
-                return reply(id, { context: ctx(), value: accountJson(state.accounts.get(params[0])) });
+                return reply(id, { context: ctx(), value: accountJson(accountAt(params[0])) });
             case 'getBalance':
                 return reply(id, { context: ctx(), value: state.accounts.get(params[0])?.lamports ?? 0 });
             case 'getMultipleAccounts':
-                return reply(id, { context: ctx(), value: params[0].map((a) => accountJson(state.accounts.get(a))) });
+                return reply(id, { context: ctx(), value: params[0].map((a) => accountJson(accountAt(a))) });
             case 'getProgramAccounts': {
                 const rows = [...state.accounts]
                     .filter(([, a]) => a.owner === params[0] && matches(a, params[1]?.filters))
