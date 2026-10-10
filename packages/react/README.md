@@ -788,12 +788,13 @@ is not bounded at all, see the end of this section):
   their balance: owner, delegate, close authority and state stay as they were
   (`SessionTokenAuthorityChanged`, 3032).
 - A policy must fit in the transaction that registers it, beside the
-  passkey's response: at most 244 bytes of actions (and 16 actions). A SOL
+  passkey's response: at most 224 bytes of actions (and 16 actions). A SOL
   limit takes 19 bytes (`solRecurring` 43), a token's `lifetimeCap` or
   `perTxMax` 51 and its `recurring` 75. That is `solPerTxMax` with `perTxMax`
   and `lifetimeCap` for 2 mints (223 bytes), or `solPerTxMax` with `perTxMax`
   for 4 (223). The transaction holds 1232 bytes, and the passkey's
-  clientDataJSON, which the browser writes, takes up to about 300 of them.
+  clientDataJSON, which the browser writes, is sized at 320 of them (as
+  `@lazorkit/sdk-legacy` sizes it).
 
 A session made with `unrestricted: true` has no policy, and none of these
 bounds: it can move anything the wallet holds until it expires.
@@ -816,8 +817,8 @@ Each `tokens` entry takes `mint` (a `PublicKey` or base58) and at least one of
 `lifetimeCap`, `perTxMax` and `recurring: { limit, windowSeconds }`, as the SOL
 limits do. `createSession` checks the limits before anything is read or the
 passkey is asked: an entry with no limit, a mint named twice, an amount
-outside a u64, a window of 0 seconds, or more than 244 bytes of actions throws.
-`addAuthority` does not check a `policy`'s size: keep it within the same 244
+outside a u64, a window of 0 seconds, or more than 224 bytes of actions throws.
+`addAuthority` does not check a `policy`'s size: keep it within the same 224
 bytes, or the transaction may not fit once the passkey has signed. Nothing is
 added that you did not ask for: SOL limits alone let the session spend no
 token, and token limits alone no SOL. `spendingLimitsToActions(limits)` gives

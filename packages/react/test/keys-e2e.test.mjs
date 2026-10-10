@@ -433,20 +433,18 @@ test('createSession with token limits registers a SOL action and one for each mi
     ]);
 });
 
-test("the largest limits createSession takes fill its transaction exactly when the passkey's clientDataJSON is 300 bytes", async () => {
+test("the largest limits createSession takes fit its transaction with a clientDataJSON of 320 bytes, and fill it at 321", async () => {
     const W = await load();
     connect(W);
-    // The portal's, signed in its frame on an app's page, with the key Chrome adds at random: about 300 bytes.
-    clientDataBytes = 300;
-    const recurring = { limit: 10n, windowSeconds: 86_400n };
+    // @lazorkit/sdk-legacy sizes the clientDataJSON at 320 bytes (a cross-origin
+    // frame's topOrigin and the key Chrome adds at random included); one more
+    // byte fills the transaction exactly.
+    clientDataBytes = 321;
     await W.useWalletStore.getState().createSession({
-        // 244 bytes of actions: solRecurring (43), a lifetimeCap (51) and two recurring limits (75 each).
+        // 223 bytes of actions, the most a preset makes within 224: solPerTxMax (19) and four perTxMax (51 each).
         spendingLimits: {
-            solRecurring: recurring,
-            tokens: [
-                { mint: fixed(21), lifetimeCap: 1n, recurring },
-                { mint: fixed(22), recurring },
-            ],
+            solPerTxMax: 1n,
+            tokens: [21, 22, 23, 24].map((b) => ({ mint: fixed(b), perTxMax: 1n })),
         },
     });
     assert.equal(approvals.length, 1);

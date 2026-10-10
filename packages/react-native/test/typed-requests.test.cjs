@@ -401,15 +401,16 @@ test('actions that cannot fit in the CreateSession transaction are refused befor
   const mint = (byte) => fixed(byte);
   const tooMany = Array.from({ length: 17 }, () => sdk.Actions.solMaxPerTx(1n));
   await assert.rejects(createSession({ actions: tooMany }), /17 actions; a session holds at most 16/);
-  // Four recurring token limits: 4 x 75 = 300 bytes, over 244.
+  // Four recurring token limits: 4 x 75 = 300 bytes, over 224; three (225) are one byte over.
   const tooBig = [61, 62, 63, 64].map((b) => sdk.Actions.tokenRecurringLimit({ mint: mint(b), limit: 1n, windowSeconds: 86_400n }));
   assert.equal(sdk.serializeActions(tooBig).length, 300);
-  await assert.rejects(createSession({ actions: tooBig }), /300 bytes of actions; at most 244 fit/);
+  await assert.rejects(createSession({ actions: tooBig }), /300 bytes of actions; at most 224 fit/);
+  await assert.rejects(createSession({ actions: tooBig.slice(0, 3) }), /225 bytes of actions; at most 224 fit/);
   assert.equal(opened.length, 0, 'the portal never opened');
   assert.equal(sent.length, 0);
 
-  // Three fit (225 bytes).
-  await createSession({ actions: tooBig.slice(0, 3) });
+  // Two recurring limits and a per-transaction limit fit (201 bytes).
+  await createSession({ actions: [...tooBig.slice(0, 2), sdk.Actions.tokenMaxPerTx({ mint: mint(63), max: 1n })] });
   assert.equal(sent.length, 1);
 });
 

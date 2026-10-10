@@ -419,7 +419,7 @@ export interface CreateSessionPayload {
    * not name is not bounded at all, so token actions alone leave the
    * wallet's SOL unbounded.
    *
-   * At most 16 actions, and within 244 bytes (`serializeActions(actions)`),
+   * At most 16 actions, and within 224 bytes (`serializeActions(actions)`),
    * which is what fits in the transaction beside the passkey's response:
    * a `sol*` action takes 19 bytes (`solRecurringLimit` 43), `tokenMaxPerTx`
    * and `tokenLimit` 51, `tokenRecurringLimit` 75. More throws a RangeError
@@ -466,7 +466,7 @@ export interface AddAuthorityPayload {
    * policy does not name cannot leave the wallet (from the program release
    * that adds errors 3037 and 3038): name SOL with an `Actions.sol*` action
    * (rent the wallet pays counts) and each mint the key may spend with an
-   * `Actions.token*` action. Keep it within 244 bytes, as a session's
+   * `Actions.token*` action. Keep it within 224 bytes, as a session's
    * `actions`. v1 wallets have no policies: passing one for a v1 wallet
    * throws.
    */

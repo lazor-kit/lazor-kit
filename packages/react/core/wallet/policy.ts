@@ -14,22 +14,24 @@ import { PublicKey } from '@solana/web3.js';
 import { Actions, serializeActions, type SessionAction } from '../program';
 import { PROGRAM_ID_DEVNET, PROGRAM_ID_MAINNET } from '../program/utils';
 import { chainHasError, errorChain, errorChainText, isNamedError } from '../program/errorShape';
+import { MAX_PASSKEY_SESSION_ACTIONS_BYTES } from '@lazorkit/sdk-legacy/approval';
 import type { SpendingLimits } from '../types';
 
 /** The most actions the program accepts in one policy. */
 export const MAX_POLICY_ACTIONS = 16;
 
 /**
- * The most bytes of actions a preset may make. They travel in the transaction
- * that registers them (CreateSession, or AddAuthority for a delegate) beside
- * the passkey's WebAuthn response, and a transaction holds 1232 bytes. 688
- * of them are taken whatever the actions. The clientDataJSON the browser
- * writes takes about 175 for the portal's frame on an app's page, and about
- * 110 more when Chrome adds the extra key it adds at random. 244 bytes leave
- * room for a clientDataJSON of 300, so a preset that would not fit is refused
- * before the passkey is asked, not after.
+ * The most bytes of actions a preset may make: 224. They travel in the
+ * transaction that registers them (CreateSession, or AddAuthority for a
+ * delegate) beside the passkey's WebAuthn response, and a transaction holds
+ * 1232 bytes. The clientDataJSON the browser writes is known only once
+ * signed; `@lazorkit/sdk-legacy` sizes it at 320 bytes (a cross-origin
+ * frame's topOrigin and Chrome's random extra key included), and its
+ * `prepareCreateSession` refuses a typed request with more actions than fit
+ * then. The same bound here, so a preset that would not fit is refused before
+ * the passkey is asked, not after, with this message.
  */
-export const MAX_POLICY_ACTION_BYTES = 1232 - 688 - 300;
+export const MAX_POLICY_ACTION_BYTES = MAX_PASSKEY_SESSION_ACTIONS_BYTES;
 
 const U64_MAX = (1n << 64n) - 1n;
 
@@ -65,7 +67,7 @@ function windowSeconds(what: string, recurring: { windowSeconds?: unknown; windo
  * mint named twice, on an amount outside a u64, on a window of 0 seconds (or
  * one given as `windowSlots`, as releases that measured windows in slots took
  * it), on more than 16 actions in all (what the program accepts), and on actions of
- * more than 244 bytes (what fits in the transaction beside the passkey's
+ * more than 224 bytes (what fits in the transaction beside the passkey's
  * response; see `MAX_POLICY_ACTION_BYTES`). A SOL limit takes 19 bytes
  * (`solRecurring` 43), a token's `lifetimeCap` or `perTxMax` 51 and its
  * `recurring` 75.

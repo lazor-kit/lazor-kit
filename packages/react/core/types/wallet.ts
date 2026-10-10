@@ -78,7 +78,7 @@ export interface WalletState {
  * SOL unbounded.
  *
  * The limits must fit in the CreateSession transaction beside the passkey's
- * response: at most 244 bytes of actions. A SOL limit takes 19 bytes
+ * response: at most 224 bytes of actions. A SOL limit takes 19 bytes
  * (`solRecurring` 43), a token's `lifetimeCap` or `perTxMax` 51 and its
  * `recurring` 75. `createSession` refuses more before the passkey is asked.
  */
@@ -218,7 +218,7 @@ export interface AddAuthorityPayload {
      * asset the policy does not name cannot leave the wallet (from the
      * program release that adds errors 3037 and 3038): name SOL with a `sol*`
      * action (rent the wallet pays counts) and each mint the key may spend
-     * with a `token*` action. Keep it within 244 bytes, which is what fits in
+     * with a `token*` action. Keep it within 224 bytes, which is what fits in
      * the transaction beside the passkey's response; its size is not checked
      * before the prompt. v1 wallets have no policies: passing one for a v1
      * wallet throws.

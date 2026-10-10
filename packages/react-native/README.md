@@ -393,7 +393,7 @@ the program compares against), not by slot:
 An expiry the program would refuse throws before the portal opens. Recurring
 limits count seconds too: `Actions.solRecurringLimit({ limit, windowSeconds:
 86_400n })` is a day. Actions that cannot fit in the CreateSession
-transaction (more than 16, or more than 244 bytes of `serializeActions`) throw
+transaction (more than 16, or more than 224 bytes of `serializeActions`) throw
 before the portal opens, so the user is never asked to approve a session that
 cannot be sent.
 
@@ -494,12 +494,13 @@ bounded at all, see the end of this section):
   (`SessionTokenAuthorityChanged`, 3032).
 - A session or policy holds at most 16 actions, and at most one of each kind
   per mint, and they must fit in the transaction that registers them, beside
-  the passkey's response: keep them within 244 bytes. `Actions.solMaxPerTx`
+  the passkey's response: keep them within 224 bytes. `Actions.solMaxPerTx`
   and `solLimit` take 19 bytes (`solRecurringLimit` 43), `tokenMaxPerTx` and
   `tokenLimit` 51 and `tokenRecurringLimit` 75: `solMaxPerTx` with
   `tokenMaxPerTx` and `tokenLimit` for 2 mints (223 bytes), or `solMaxPerTx`
   with `tokenMaxPerTx` for 4 (223). The transaction holds 1232 bytes, and the
-  passkey's clientDataJSON takes up to about 300 of them. Nothing checks this
+  passkey's clientDataJSON is sized at 320 of them (as `@lazorkit/sdk-legacy`
+  sizes it). Nothing checks this
   before the portal opens: actions that do not fit fail after the user
   approved.
 

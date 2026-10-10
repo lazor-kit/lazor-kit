@@ -126,7 +126,7 @@ test('Embedded: createSession refuses a preset that names a mint with no limit, 
         chain.state.rpcCalls.length = 0;
         const failures = [];
         const error = await rejection(store().createSession({ spendingLimits, onFail: (e) => failures.push(e) }));
-        assert.match(error.message, /has no limit|createSession needs spendingLimits|at most 244 fit/);
+        assert.match(error.message, /has no limit|createSession needs spendingLimits|at most 224 fit/);
         assert.deepEqual(failures, [error]);
         assert.equal(authenticator.calls.length, 0, 'no passkey prompt');
         assert.equal(chain.state.rpcCalls.length, 0, 'nothing read');
