@@ -11,8 +11,10 @@
 // portal's refusals (`RequestOutOfDateError`, `PortalRefusedError`); the
 // session's expiry in seconds of the cluster clock (`expiresInSeconds`,
 // `expiresAt`, the deprecated `expiresInSlots`), refused before the portal
-// opens when out of range; the URL cap. A scripted chain, paymaster and
-// portal, no network. Run with `pnpm test`.
+// opens when out of range; the URL cap; a typed approval the user reads for
+// more than 60 s still lands; v1 wallets (no typed request, the prepared
+// challenge, slot expiry). A scripted chain, paymaster and portal, no
+// network. Run with `pnpm test`.
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import { test, beforeEach, after } from 'node:test';
@@ -20,7 +22,10 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { webcrypto } from 'node:crypto';
 import { JSDOM } from 'jsdom';
-import { Connection, Keypair, PublicKey, VersionedTransaction } from '@solana/web3.js';
+import { Connection, Keypair, PublicKey, SystemProgram, VersionedTransaction } from '@solana/web3.js';
+
+/** The real setTimeout, before any test speeds time up. */
+const realSetTimeout = globalThis.setTimeout;
 
 if (!globalThis.crypto) globalThis.crypto = webcrypto; // Node 18
 
@@ -59,7 +64,7 @@ console.info = () => {};
 const require = createRequire(import.meta.url);
 const W = await import('../dist/index.mjs');
 const A = require('@lazorkit/sdk-legacy/approval');
-const { serializeActions, Actions } = require('@lazorkit/sdk-legacy');
+const { serializeActions, Actions, legacyProgramIdFor } = require('@lazorkit/sdk-legacy');
 
 // ─── A scripted chain and paymaster ─────────────────────────────────────────
 
@@ -132,7 +137,8 @@ async function rpc(init) {
         case 'getProgramAccounts':
             return reply(
                 [...accounts]
-                    .filter(([, a]) => a.owner === PROGRAM.toBase58() && a.data?.length >= 113 && a.data[0] === 0x22 && a.data[1] === 1)
+                    // An Authority (v2 0x22, v1 2) of the program asked, secp256r1.
+                    .filter(([, a]) => a.owner === params[0] && a.data?.length >= 113 && (a.data[0] === 0x22 || a.data[0] === 2) && a.data[1] === 1)
                     .map(([pubkey, a]) => ({ pubkey, account: account(a) })),
             );
         case 'getSignatureStatuses':
@@ -163,23 +169,32 @@ const opened = [];
  * SIGNATURE_CREATED, or `{ error }` for a refusal. Defaults to a typed portal.
  */
 let answer;
+/** How long (real ms) the portal takes to answer: the time the user spends on its screen. */
+let answerDelayMs = 0;
 const answered = new Set();
 const portal = setInterval(() => {
-    const iframe = document.getElementById('lazorkit-iframe');
+    // Every portal frame: a dialog still closing keeps its frame in the page for a while.
+    for (const iframe of document.querySelectorAll('iframe')) answerFrame(iframe);
+}, 5);
+function answerFrame(iframe) {
     if (!iframe?.src || answered.has(iframe.src)) return;
     const url = new URL(iframe.src);
     if (url.searchParams.get('action') !== 'sign') return;
     answered.add(iframe.src);
     opened.push(url);
     const result = answer(url);
-    window.dispatchEvent(
-        new window.MessageEvent('message', {
-            origin: PORTAL,
-            source: iframe.contentWindow,
-            data: result.error ? { type: 'error', error: result.error } : { type: 'SIGNATURE_CREATED', data: result },
-        }),
-    );
-}, 5);
+    const source = iframe.contentWindow;
+    const post = () =>
+        window.dispatchEvent(
+            new window.MessageEvent('message', {
+                origin: PORTAL,
+                source,
+                data: result.error ? { type: 'error', error: result.error } : { type: 'SIGNATURE_CREATED', data: result },
+            }),
+        );
+    if (answerDelayMs > 0) realSetTimeout(post, answerDelayMs);
+    else post();
+}
 after(() => {
     clearInterval(portal);
     window.close();
@@ -224,6 +239,7 @@ beforeEach(() => {
     warnings.length = 0;
     // `answered` is kept: an iframe still closing from the last test is not a new request.
     answer = typedPortal();
+    answerDelayMs = 0;
     performanceSamples = [{ slot: 1, numSlots: 150, numTransactions: 1, samplePeriodSecs: 60 }];
     passkeyAuthority();
     store.setState({
@@ -482,9 +498,144 @@ test('removeAuthority sends a typed removeAuthority request and lands at the por
 
 test('signAndSendTransaction and addAuthority open the portal as 3.x did: no fragment', async () => {
     answer = legacyPortal();
+    await store.getState().signAndSendTransaction({
+        instructions: [SystemProgram.transfer({ fromPubkey: W.findVaultPda(WALLET, PROGRAM)[0], toPubkey: fixed(71), lamports: 1000 })],
+    });
     await store.getState().addAuthority({ role: W.ROLE_ADMIN });
-    assert.equal(opened.length, 1);
+    assert.equal(opened.length, 2);
     assert.equal(opened[0].hash, '');
+    assert.equal(opened[1].hash, '');
+    assert.equal(sent.length, 2);
+});
+
+// ─── Time to read ───────────────────────────────────────────────────────────
+
+/** Run `fn` with timers of a second or more 1,000 times faster: 60 s take 60 ms. */
+async function withFastTime(fn) {
+    globalThis.setTimeout = (handler, ms, ...rest) =>
+        realSetTimeout(handler, typeof ms === 'number' && ms >= 1000 ? ms / 1000 : ms, ...rest);
+    try {
+        return await fn();
+    } finally {
+        globalThis.setTimeout = realSetTimeout;
+    }
+}
+
+test('a typed approval the user reads for longer than 60 s still lands at the slot picked at Approve; other signing keeps 60 s', async () => {
+    await withFastTime(async () => {
+        // 90 s on the screen (more than 150 slots), then Approve: the portal signs at the slot it reads then.
+        answerDelayMs = 90;
+        answer = typedPortal({ slot: 9_999n });
+        await store.getState().createSession({ spendingLimits: limits });
+        assert.equal(sent.length, 1);
+        assert.ok(signedAt(sent[0], { slot: 9_999n, counter: STORED_COUNTER + 1, sysvarIxIndex: 6 }));
+
+        await store.getState().revokeSession({ sessionPda: fixed(32) });
+        await store.getState().removeAuthority(fixed(43).toBase58());
+        assert.equal(sent.length, 3);
+
+        // A portal that never answers a typed approval: given up on after 10 minutes, nothing sent.
+        answerDelayMs = 1_500;
+        await assert.rejects(store.getState().revokeSession({ sessionPda: fixed(33) }), /Approval timed out after 10 minutes/);
+
+        // An untyped signature keeps the 60 s it had.
+        answerDelayMs = 90;
+        answer = legacyPortal();
+        await assert.rejects(store.getState().addAuthority({ role: W.ROLE_ADMIN }), /Signing timed out after 60 seconds/);
+        assert.equal(sent.length, 3);
+    });
+});
+
+// ─── v1 wallets ─────────────────────────────────────────────────────────────
+
+const V1_PROGRAM = legacyProgramIdFor(PROGRAM);
+
+/** Connect a v1 wallet: its passkey authority, at the v1 program, with v1's discriminator (2). */
+function connectV1Wallet() {
+    accounts.clear();
+    const data = Buffer.alloc(120);
+    data[0] = 2;
+    data[1] = 1;
+    data.writeUInt32LE(STORED_COUNTER, 8);
+    WALLET.toBuffer().copy(data, 16);
+    Buffer.from(W.getCredentialHash(CREDENTIAL_ID)).copy(data, 48);
+    data[80] = 2;
+    data.fill(0x11, 81, 113);
+    accounts.set(fixed(61).toBase58(), { owner: V1_PROGRAM.toBase58(), data });
+    accounts.set(WALLET.toBase58(), { owner: V1_PROGRAM.toBase58() });
+    store.setState({ wallet: { ...store.getState().wallet, protocolVersion: 1 } });
+}
+
+/** Whether the sent transaction carries `value` as a little-endian u64 (a v1 session's expiry slot). */
+function carriesU64(tx, value) {
+    const bytes = Buffer.alloc(8);
+    bytes.writeBigUInt64LE(BigInt(value));
+    return tx.message.compiledInstructions.some((ix) => Buffer.from(ix.data).indexOf(bytes) >= 0);
+}
+
+test('v1 wallet: no typed request, the prepared challenge is checked, and the session expires at a slot (50,000 ahead by default)', async () => {
+    connectV1Wallet();
+    answer = legacyPortal();
+    // No slot-time samples: the default needs none.
+    performanceSamples = [];
+    await store.getState().createSession({ spendingLimits: limits });
+    assert.equal(opened.length, 1);
+    assert.equal(opened[0].hash, '', 'no typed request');
+    assert.equal(sent.length, 1);
+    assert.ok(carriesU64(sent[0], CHAIN_SLOT + 50_000), 'expires 50,000 slots ahead');
+    assert.equal(W.DEFAULTS.SESSION_EXPIRY_SLOTS, 50_000n);
+
+    // expiresInSlots as given, with no warning.
+    await store.getState().createSession({ spendingLimits: limits, expiresInSlots: 1_000n });
+    assert.ok(carriesU64(sent[1], CHAIN_SLOT + 1_000));
+    assert.equal(warnings.filter((w) => /deprecated/.test(w)).length, 0);
+
+    // A time needs the slot time; without it the error names what was passed.
+    await assert.rejects(
+        store.getState().createSession({ spendingLimits: limits, expiresInSeconds: 600 }),
+        /no performance samples\), so expiresInSeconds \(a v1 wallet's session expires at a slot\) cannot be converted\. Pass expiresInSlots instead\./,
+    );
+    // With it: 600 s at 0.4 s a slot is 1,500 slots.
+    performanceSamples = [{ slot: 1, numSlots: 150, numTransactions: 1, samplePeriodSecs: 60 }];
+    await store.getState().createSession({ spendingLimits: limits, expiresInSeconds: 600 });
+    assert.ok(carriesU64(sent[2], CHAIN_SLOT + 1_500));
+
+    // A recurring window, a day in seconds, is a day of slots for v1: 216,000 at 0.4 s.
+    const daily = { solRecurring: { limit: 20_000_000n, windowSeconds: 86_400n } };
+    await store.getState().createSession({ spendingLimits: daily });
+    assert.ok(carriesU64(sent[3], 216_000), 'the window in slots');
+    assert.ok(!carriesU64(sent[3], 86_400), 'not in seconds');
+    // Without the slot time it is refused, naming the window.
+    performanceSamples = [];
+    await assert.rejects(store.getState().createSession({ spendingLimits: daily }), /so a recurring limit's windowSeconds \(a v1 wallet counts the window in slots\) cannot be converted/);
+    performanceSamples = [{ slot: 1, numSlots: 150, numTransactions: 1, samplePeriodSecs: 60 }];
+
+    await store.getState().revokeSession({ sessionPda: fixed(34) });
+    await store.getState().removeAuthority(fixed(44).toBase58());
+    assert.equal(sent.length, 6);
+    assert.ok(opened.every((url) => url.hash === ''));
+});
+
+test('v1 wallet: a reply over another challenge, or with a typed block, is PortalReplyMismatchError; nothing is sent', async () => {
+    connectV1Wallet();
+    const mismatches = {
+        'another challenge': () => assertion(Buffer.alloc(32, 9).toString('base64url')),
+        'a typed block to an untyped request': (url) => ({
+            ...assertion(url.searchParams.get('message')),
+            typed: { v: 1, kind: 'createSession', slot: '7777', counter: STORED_COUNTER + 1, sysvarIxIndex: 6 },
+        }),
+    };
+    for (const [what, reply] of Object.entries(mismatches)) {
+        answer = reply;
+        await assert.rejects(store.getState().createSession({ spendingLimits: limits }), (error) => {
+            assert.ok(error instanceof W.PortalReplyMismatchError, `${what}: ${error.message}`);
+            return true;
+        });
+    }
+    answer = () => assertion(Buffer.alloc(32, 8).toString('base64url'));
+    await assert.rejects(store.getState().revokeSession({ sessionPda: fixed(35) }), (error) => error instanceof W.PortalReplyMismatchError);
+    await assert.rejects(store.getState().removeAuthority(fixed(45).toBase58()), (error) => error instanceof W.PortalReplyMismatchError);
+    assert.equal(sent.length, 0);
 });
 
 // ─── The cap ────────────────────────────────────────────────────────────────

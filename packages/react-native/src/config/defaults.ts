@@ -5,9 +5,15 @@ export const DEFAULTS = {
   RP_ID: 'portal.lazor.sh',
   /**
    * How long a session lasts when `createSession` is given no expiry: 5 hours
-   * of the cluster clock.
+   * of the cluster clock, for a v2 wallet.
    */
   SESSION_EXPIRY_SECONDS: 18_000,
+  /**
+   * How long a v1 wallet's session lasts when `createSession` is given no
+   * expiry: 50,000 slots, as before (v1 measures sessions in slots, about 5.5
+   * hours on mainnet and 3 on devnet). v2 wallets use SESSION_EXPIRY_SECONDS.
+   */
+  SESSION_EXPIRY_SLOTS: 50_000n,
   /**
    * Deferred execution: how many slots after TX1 (Authorize) the program still
    * accepts TX2, when the caller passes no `expiryOffset`. A slot has no fixed

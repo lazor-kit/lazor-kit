@@ -392,7 +392,16 @@ the program compares against), not by slot:
 
 An expiry the program would refuse throws before the portal opens. Recurring
 limits count seconds too: `Actions.solRecurringLimit({ limit, windowSeconds:
-86_400n })` is a day.
+86_400n })` is a day. Actions that cannot fit in the CreateSession
+transaction (more than 16, or more than 244 bytes of `serializeActions`) throw
+before the portal opens, so the user is never asked to approve a session that
+cannot be sent.
+
+A wallet made before LazorKit v2 (v1) still counts in slots: with no expiry
+its session ends `DEFAULTS.SESSION_EXPIRY_SLOTS` (50,000) slots ahead;
+`expiresAtSlot` is used as given; `expiresInSeconds` and `expiresAt` are
+converted to slots with the measured slot time. A recurring limit's
+`windowSeconds` is converted to slots the same way.
 
 To keep a session key across restarts, store it in the OS keystore with
 `expo-secure-store` (iOS Keychain, Android Keystore). Never store it in

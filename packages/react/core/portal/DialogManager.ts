@@ -62,6 +62,19 @@ export class PortalCancelledError extends Error {
  */
 const POPUP_CLOSED_GRACE_MS = 500;
 
+/** How long the portal has to answer a connect or a sign. */
+const PORTAL_TIMEOUT_MS = 60_000;
+
+/**
+ * How long the portal has to answer a typed approval (`openApproval`). The
+ * portal picks the slot the passkey signs at when the user taps Approve, so
+ * the time spent reading the screen does not count against the transaction;
+ * the SDK must not cut it short either. Closing the portal (X, Escape, a
+ * click outside, the popup closing, or the portal's own close) still ends the
+ * wait at once; this only bounds a portal that never answers.
+ */
+const APPROVAL_TIMEOUT_MS = 10 * 60_000;
+
 export interface SignResult {
   readonly signature: string;
   readonly clientDataJsonBase64: string;
@@ -179,7 +192,11 @@ export class DialogManager extends EventEmitter {
    * @param challenge - The challenge the SDK prepared, base64url.
    */
   async openApproval(challenge: string, credentialId: string, request: ApprovalRequest): Promise<SignResult> {
-    return this.openSignUrl(withApprovalFragment(this.signUrl(challenge, '', credentialId), request));
+    return this.openSignUrl(
+      withApprovalFragment(this.signUrl(challenge, '', credentialId), request),
+      APPROVAL_TIMEOUT_MS,
+      'Approval timed out after 10 minutes',
+    );
   }
 
   /** The portal's sign URL, as 3.x builds it. */
@@ -187,11 +204,20 @@ export class DialogManager extends EventEmitter {
     return `${this.config.portalUrl}?action=${API_ENDPOINTS.SIGN}&message=${encodeURIComponent(message)}&transaction=${encodeURIComponent(transaction)}&credentialId=${encodeURIComponent(credentialId)}`;
   }
 
-  private openSignUrl(signUrl: string): Promise<SignResult> {
-    return this.awaitPortal<SignResult>('sign-result', 'Signing timed out after 60 seconds', () => {
-      this._currentAction = API_ENDPOINTS.SIGN;
-      return this.shouldUsePopup('sign') ? this.openPopup(signUrl) : this.openSignDialog(signUrl);
-    });
+  private openSignUrl(
+    signUrl: string,
+    timeoutMs = PORTAL_TIMEOUT_MS,
+    timeoutMessage = 'Signing timed out after 60 seconds',
+  ): Promise<SignResult> {
+    return this.awaitPortal<SignResult>(
+      'sign-result',
+      timeoutMessage,
+      () => {
+        this._currentAction = API_ENDPOINTS.SIGN;
+        return this.shouldUsePopup('sign') ? this.openPopup(signUrl) : this.openSignDialog(signUrl);
+      },
+      timeoutMs,
+    );
   }
 
   /**
@@ -226,16 +252,22 @@ export class DialogManager extends EventEmitter {
 
   /**
    * Wait for the portal's answer to the action `open` starts: its result, its
-   * error, the user closing it (PortalCancelledError, at once), or 60 s.
+   * error, the user closing it (PortalCancelledError, at once), or
+   * `timeoutMs` (60 s unless given).
    */
-  private awaitPortal<T>(resultEvent: 'connect-result' | 'sign-result', timeoutMessage: string, open: () => Promise<void>): Promise<T> {
+  private awaitPortal<T>(
+    resultEvent: 'connect-result' | 'sign-result',
+    timeoutMessage: string,
+    open: () => Promise<void>,
+    timeoutMs: number = PORTAL_TIMEOUT_MS,
+  ): Promise<T> {
     // Destroyed (a disconnect mid-connect): open nothing more.
     if (this.isDestroyed) return Promise.reject(new PortalCancelledError());
     return new Promise<T>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         finish();
         reject(new Error(timeoutMessage));
-      }, 60000);
+      }, timeoutMs);
       const finish = () => {
         clearTimeout(timeoutId);
         this.off(resultEvent, onResult);
@@ -962,7 +994,7 @@ export class DialogManager extends EventEmitter {
 
     this.isDestroyed = true;
     // Whatever still waits on the dialog ends now — a portal action with
-    // PortalCancelledError, the chooser with null — rather than at the 60 s
+    // PortalCancelledError, the chooser with null — rather than at the
     // timeout, or never.
     this.pendingCancel?.();
     this.pendingChoice?.();

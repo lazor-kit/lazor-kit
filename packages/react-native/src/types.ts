@@ -403,6 +403,10 @@ export interface CreateSessionPayload {
    * it are converted to seconds with the cluster's measured slot time (recent
    * performance samples), and a warning is logged once. It throws when the
    * slot time cannot be read.
+   *
+   * A wallet made before LazorKit v2 (v1) expires sessions at a slot, as
+   * before: `expiresAtSlot` is used as given, and with no expiry the session
+   * ends `DEFAULTS.SESSION_EXPIRY_SLOTS` (50,000) slots ahead.
    */
   readonly expiresAtSlot?: bigint;
   /**
@@ -418,8 +422,8 @@ export interface CreateSessionPayload {
    * At most 16 actions, and within 244 bytes (`serializeActions(actions)`),
    * which is what fits in the transaction beside the passkey's response:
    * a `sol*` action takes 19 bytes (`solRecurringLimit` 43), `tokenMaxPerTx`
-   * and `tokenLimit` 51, `tokenRecurringLimit` 75. Not checked before the
-   * portal opens.
+   * and `tokenLimit` 51, `tokenRecurringLimit` 75. More throws a RangeError
+   * before the portal opens.
    */
   readonly actions?: SessionAction[];
   /**

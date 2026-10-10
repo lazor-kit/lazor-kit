@@ -129,6 +129,10 @@ export interface CreateSessionPayload {
      * `expiresInSeconds`. Still accepted: it is converted to seconds with the
      * cluster's measured slot time (recent performance samples), and a
      * warning is logged once. It throws when the slot time cannot be read.
+     *
+     * A wallet made before LazorKit v2 (v1) expires sessions at a slot, as
+     * before: `expiresInSlots` is used as given, and with no expiry the
+     * session lasts `DEFAULTS.SESSION_EXPIRY_SLOTS` (50,000) slots.
      */
     readonly expiresInSlots?: bigint;
     readonly spendingLimits?: SpendingLimits;

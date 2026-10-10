@@ -12,7 +12,9 @@
 // forged deep link included) is `PortalReplyMismatchError` and nothing is
 // sent; the portal's refusals (`type=error&code=…`); the session's expiry in
 // seconds of the cluster clock (`expiresInSeconds`, `expiresAt`, the
-// deprecated `expiresAtSlot`). Run with `pnpm test`.
+// deprecated `expiresAtSlot`); actions over the transaction's room, refused
+// before the portal opens; the URL cap; v1 wallets (no typed request, the
+// prepared challenge, slot expiry). Run with `pnpm test`.
 'use strict';
 const Module = require('module');
 const { test, beforeEach } = require('node:test');
@@ -391,4 +393,114 @@ test('other passkey actions open the portal as 2.x did: no fragment', async () =
   await store.getState().addAuthorityEd25519({ newEd25519Pubkey: fixed(51), role: M.ROLE_ADMIN }, { redirectUrl });
   assert.equal(opened.length, 1);
   assert.equal(opened[0].hash, '');
+});
+
+// ─── What fits ──────────────────────────────────────────────────────────────
+
+test('actions that cannot fit in the CreateSession transaction are refused before the portal opens', async () => {
+  const mint = (byte) => fixed(byte);
+  const tooMany = Array.from({ length: 17 }, () => sdk.Actions.solMaxPerTx(1n));
+  await assert.rejects(createSession({ actions: tooMany }), /17 actions; a session holds at most 16/);
+  // Four recurring token limits: 4 x 75 = 300 bytes, over 244.
+  const tooBig = [61, 62, 63, 64].map((b) => sdk.Actions.tokenRecurringLimit({ mint: mint(b), limit: 1n, windowSeconds: 86_400n }));
+  assert.equal(sdk.serializeActions(tooBig).length, 300);
+  await assert.rejects(createSession({ actions: tooBig }), /300 bytes of actions; at most 244 fit/);
+  assert.equal(opened.length, 0, 'the portal never opened');
+  assert.equal(sent.length, 0);
+
+  // Three fit (225 bytes).
+  await createSession({ actions: tooBig.slice(0, 3) });
+  assert.equal(sent.length, 1);
+});
+
+test('a portal URL over the cap is refused with TypedRequestTooLargeError before the browser opens', async () => {
+  store.setState({ config: { ...store.getState().config, portalUrl: `${PORTAL}/${'p'.repeat(16_000)}` } });
+  await assert.rejects(createSession(), (error) => {
+    assert.ok(error instanceof M.TypedRequestTooLargeError, error.message);
+    assert.equal(error.limit, 16_384);
+    return true;
+  });
+  assert.equal(opened.length, 0);
+  assert.equal(sent.length, 0);
+});
+
+// ─── v1 wallets ─────────────────────────────────────────────────────────────
+
+const V1_PROGRAM = sdk.legacyProgramIdFor(PROGRAM);
+
+/** Connect a v1 wallet: its passkey authority at the v1 program, with v1's discriminator (2). */
+function connectV1Wallet() {
+  const authority = authorityAccount();
+  authority.data[0] = 2;
+  authority.owner = V1_PROGRAM.toBase58();
+  accounts.set(AUTHORITY.toBase58(), authority);
+  accounts.set(WALLET.toBase58(), { owner: V1_PROGRAM.toBase58() });
+  store.setState({ wallet: { ...store.getState().wallet, protocolVersion: 1 } });
+}
+
+/** Whether the sent transaction carries `value` as a little-endian u64 (a v1 session's expiry slot). */
+function carriesU64(tx, value) {
+  const bytes = Buffer.alloc(8);
+  bytes.writeBigUInt64LE(BigInt(value));
+  return tx.message.compiledInstructions.some((ix) => Buffer.from(ix.data).indexOf(bytes) >= 0);
+}
+
+test('v1 wallet: no typed request, the prepared challenge is checked, and the session expires at a slot (50,000 ahead by default)', async () => {
+  connectV1Wallet();
+  answer = legacyPortal();
+  // No slot-time samples: the default needs none (nor does a limit without a window).
+  performanceSamples = [];
+  const perTx = [sdk.Actions.solMaxPerTx(2_000_000n)];
+  await createSession({ actions: perTx });
+  assert.equal(opened.length, 1);
+  assert.equal(opened[0].hash, '', 'no typed request');
+  assert.ok(carriesU64(sent[0], CHAIN_SLOT + 50_000), 'expires 50,000 slots ahead');
+  assert.equal(M.DEFAULTS.SESSION_EXPIRY_SLOTS, 50_000n);
+
+  // expiresAtSlot as given, with no warning.
+  await createSession({ actions: perTx, expiresAtSlot: BigInt(CHAIN_SLOT + 1_000) });
+  assert.ok(carriesU64(sent[1], CHAIN_SLOT + 1_000));
+  assert.equal(warnings.filter((w) => /deprecated/.test(w)).length, 0);
+
+  // A time, or a recurring window, needs the slot time; without it the error names what was passed.
+  await assert.rejects(createSession(), /so a recurring limit's windowSeconds \(a v1 wallet counts the window in slots\) cannot be converted/);
+  await assert.rejects(
+    createSession({ actions: perTx, expiresInSeconds: 600 }),
+    /no performance samples\), so expiresInSeconds \(a v1 wallet's session expires at a slot\) cannot be converted\. Pass expiresAtSlot instead\./,
+  );
+  // With it: 600 s at 0.4 s a slot is 1,500 slots.
+  performanceSamples = [{ slot: 1, numSlots: 150, numTransactions: 1, samplePeriodSecs: 60 }];
+  await createSession({ expiresInSeconds: 600 });
+  assert.ok(carriesU64(sent[2], CHAIN_SLOT + 1_500));
+  // The recurring window, a day in seconds, is a day of slots for v1: 216,000 at 0.4 s.
+  assert.ok(carriesU64(sent[2], 216_000), 'the window in slots');
+  assert.ok(!carriesU64(sent[2], 86_400), 'not in seconds');
+
+  await store.getState().revokeSession({ sessionPda: fixed(34) }, { redirectUrl });
+  await store.getState().removeAuthority({ targetAuthorityPda: fixed(44), refundDestination: fixed(45) }, { redirectUrl });
+  assert.equal(sent.length, 5);
+  assert.ok(opened.every((url) => url.hash === ''));
+});
+
+test('v1 wallet: a redirect over another challenge, or with typed parameters, is PortalReplyMismatchError; nothing is sent', async () => {
+  connectV1Wallet();
+  const typedParams = { typedV: '1', typedKind: 'createSession', typedSlot: '7777', typedCounter: String(STORED_COUNTER + 1), typedSysvarIx: '6' };
+  const mismatches = {
+    'another challenge': () => assertion(Buffer.alloc(32, 9).toString('base64url')),
+    'typed parameters to an untyped request': (url) => ({ ...assertion(url.searchParams.get('message')), ...typedParams }),
+  };
+  for (const [what, reply] of Object.entries(mismatches)) {
+    answer = reply;
+    await assert.rejects(createSession(), (error) => {
+      assert.ok(error instanceof M.PortalReplyMismatchError, `${what}: ${error.message}`);
+      return true;
+    });
+  }
+  answer = () => assertion(Buffer.alloc(32, 8).toString('base64url'));
+  await assert.rejects(store.getState().revokeSession({ sessionPda: fixed(35) }, { redirectUrl }), (error) => error instanceof M.PortalReplyMismatchError);
+  await assert.rejects(
+    store.getState().removeAuthority({ targetAuthorityPda: fixed(46), refundDestination: fixed(47) }, { redirectUrl }),
+    (error) => error instanceof M.PortalReplyMismatchError,
+  );
+  assert.equal(sent.length, 0);
 });

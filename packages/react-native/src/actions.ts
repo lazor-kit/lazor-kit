@@ -31,8 +31,8 @@ import {
 import { connectAbandoned, forgetCandidates, hasChooserHost } from './core/wallet/confirmation';
 import { type AuthorityTurn, withAuthority } from './core/wallet/sequence';
 import { deferredExpiryOffset, executeBeforeExpiry } from './core/wallet/deferred';
-import { toPolicyError } from './core/wallet/policy';
-import { sessionExpiresAt } from './core/wallet/sessionExpiry';
+import { checkSessionActionsFit, toPolicyError } from './core/wallet/policy';
+import { actionsForV1, sessionExpiresAt } from './core/wallet/sessionExpiry';
 import { logger } from './core/logger';
 import {
   isSignedMessageClientData,
@@ -631,6 +631,9 @@ export const createSessionAction = async (
             'unrestricted: true to mint one anyway.',
         );
       }
+      // What fits in the CreateSession transaction, before anything is read
+      // or the portal opens.
+      if (params.actions?.length) checkSessionActionsFit(params.actions);
 
       // Unix seconds of the cluster clock (a slot for a v1 wallet), checked
       // before the portal opens.
@@ -644,6 +647,12 @@ export const createSessionAction = async (
           expiresAtSlot: params.expiresAtSlot,
         },
       });
+      // A v1 wallet counts a recurring limit's window in slots.
+      const actions = params.actions?.length
+        ? version === 1
+          ? await actionsForV1(connection, params.actions)
+          : params.actions
+        : undefined;
 
       const { signature, sessionPda } = await withPasskey(connection, wallet!, async (secp256r1, turn) => {
         const prepared = await client.prepareCreateSession({
@@ -652,9 +661,7 @@ export const createSessionAction = async (
           secp256r1: { ...secp256r1, credentialId: credentialIdBytes(wallet!.credentialId) },
           sessionKey: params.sessionKey,
           expiresAt,
-          ...(params.actions?.length
-            ? { actions: params.actions }
-            : { unrestricted: true as const }),
+          ...(actions ? { actions } : { unrestricted: true as const }),
         });
 
         const { response, binding } = await approveViaPortal({

@@ -233,7 +233,7 @@ Errors:
 |---|---|
 | `WalletNeedsConfirmationError` | `onConfirmWallet: 'throw'` and the wallet needs the user. `credentialId`, `candidates: WalletChoice[]`. |
 | `WalletConfirmationDeclinedError` | The user chose none ("None of these", or your handler returned `null`). Nothing was saved. |
-| `PortalCancelledError` | The user closed the portal dialog (X, Escape, a click outside) or its popup window before it answered — on connect and on every signing action. Raised at once, not after the 60 s timeout. Also what a `connect` still running rejects with when `disconnect` is called: its portal or chooser closes and it connects nothing. |
+| `PortalCancelledError` | The user closed the portal dialog (X, Escape, a click outside) or its popup window before it answered — on connect and on every signing action. Raised at once, not after the timeout (60 s; 10 minutes for `createSession`, `revokeSession` and `removeAuthority` on a v2 wallet, whose screen the user may take time to read). Also what a `connect` still running rejects with when `disconnect` is called: its portal or chooser closes and it connects nothing. |
 
 If the chain cannot be read, `connect` fails; that is never taken as "no
 wallet". Portal errors carry the portal's own message.
@@ -681,6 +681,16 @@ An expiry the program would refuse throws before the passkey is asked.
 Recurring limits count seconds too: `solRecurring: { limit, windowSeconds:
 86_400n }` is a day, and a `windowSlots` from an earlier release throws
 rather than being read as seconds.
+
+A wallet made before LazorKit v2 (v1) still counts in slots: with no expiry
+its session lasts `DEFAULTS.SESSION_EXPIRY_SLOTS` (50,000 slots), as before;
+`expiresInSlots` is used as given; `expiresInSeconds` and `expiresAt` are
+converted to slots with the measured slot time. A recurring limit's
+`windowSeconds` is converted to slots the same way.
+
+The portal waits up to 10 minutes for the user on these three screens (other
+signing keeps its 60 seconds): the portal picks the slot it signs at when the
+user taps Approve, so time spent reading costs nothing.
 
 ### What a policy bounds
 

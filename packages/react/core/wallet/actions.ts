@@ -52,7 +52,7 @@ import { noteDisconnect } from './disconnects';
 import type { SignMessageResult } from '../message/signedMessage';
 import { parseTypedReply, type ApprovalKind, type ApprovalRequest } from '@lazorkit/sdk-legacy/approval';
 import { type ApprovalBinding, bindingForReply } from '../approval/typed';
-import { sessionExpiresAt } from './sessionExpiry';
+import { actionsForV1, sessionExpiresAt } from './sessionExpiry';
 
 export function randomBytes(size: number): Uint8Array {
     return globalThis.crypto.getRandomValues(new Uint8Array(size));
@@ -588,6 +588,8 @@ export const createSessionAction = async (
                 expiresInSlots: payload.expiresInSlots,
             },
         });
+        // A v1 wallet counts a recurring limit's window in slots.
+        const sessionActions = version === 1 ? await actionsForV1(connection, actions) : actions;
 
         const sessionPda = await withAuthority(authorityPda, async (turn) => {
             const prepared = await client.prepareCreateSession({
@@ -602,7 +604,7 @@ export const createSessionAction = async (
                 },
                 sessionKey: sessionPublicKey,
                 expiresAt,
-                ...(actions.length > 0 ? { actions } : { unrestricted: true as const }),
+                ...(sessionActions.length > 0 ? { actions: sessionActions } : { unrestricted: true as const }),
             });
 
             const dialogManager = createDialogManager(config);
