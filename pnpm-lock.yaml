@@ -196,8 +196,8 @@ importers:
   packages/react:
     dependencies:
       '@lazorkit/sdk-legacy':
-        specifier: ^1.3.0
-        version: 1.3.0(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@5.9.3))
+        specifier: ^1.3.1
+        version: 1.3.1(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@5.9.3))
       '@noble/curves':
         specifier: ^1.9.7
         version: 1.9.7
@@ -1354,6 +1354,12 @@ packages:
 
   '@lazorkit/sdk-legacy@1.3.0':
     resolution: {integrity: sha512-23YbTellX0KyBJTZbXNLIRC98WUO+kDLvvMuhAQpkeTD4JpecIYc4J1X8Y0C7Hg85KUaM2VbuBkDCra0IzroAA==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      '@solana/web3.js': ^1.95.0
+
+  '@lazorkit/sdk-legacy@1.3.1':
+    resolution: {integrity: sha512-zQMbRSIUYarQXxbSQ+l6pEi7yu4FdTkPy2RqOnCvUo6VIntLj0Uck6CCe/8Ij64xg1e28MWRt/R9k/rpD1i5IA==}
     engines: {node: '>=18'}
     peerDependencies:
       '@solana/web3.js': ^1.95.0
@@ -6461,6 +6467,13 @@ snapshots:
       buffer: 6.0.3
 
   '@lazorkit/sdk-legacy@1.3.0(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@5.9.3))':
+    dependencies:
+      '@noble/curves': 1.9.7
+      '@noble/hashes': 1.8.0
+      '@solana/web3.js': 1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      buffer: 6.0.3
+
+  '@lazorkit/sdk-legacy@1.3.1(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@5.9.3))':
     dependencies:
       '@noble/curves': 1.9.7
       '@noble/hashes': 1.8.0

@@ -426,7 +426,7 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
      */
     async disconnect(options?: LazorkitAdapterDisconnectOptions): Promise<void> {
         // First: a kept key a send loaded before this signs and sends nothing
-        // from here on, and the store disconnects (see react/store).
+        // from here on, and the store disconnects (see core/client/store).
         noteAdapterDisconnect();
         // A connect still running is abandoned: its portal or chooser closes,
         // and it connects nothing (see connect).

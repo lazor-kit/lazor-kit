@@ -53,9 +53,11 @@ jobs:
 
       - name: Verify web SDK dist
         run: |
-          test -f packages/react/dist/index.js
-          test -f packages/react/dist/index.mjs
-          test -f packages/react/dist/index.d.ts
+          for entry in index core hooks; do
+            test -f packages/react/dist/$entry.js
+            test -f packages/react/dist/$entry.mjs
+            test -f packages/react/dist/$entry.d.ts
+          done
 
       - name: Verify mobile adapter dist
         run: |

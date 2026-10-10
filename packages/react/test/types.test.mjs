@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 const FIXTURE = fileURLToPath(new URL('./types/add-authority.ts', import.meta.url));
+const PROVIDER_FIXTURE = fileURLToPath(new URL('./types/provider-mode.ts', import.meta.url));
 const OPTIONS = {
     strict: true,
     noEmit: true,
@@ -23,13 +24,13 @@ const OPTIONS = {
     esModuleInterop: true,
 };
 
-/** The diagnostics of `FIXTURE`, compiled with `source` as its content. */
-function compile(source) {
+/** The diagnostics of `fixture` (default `FIXTURE`), compiled with `source` as its content. */
+function compile(source, fixture = FIXTURE) {
     const host = ts.createCompilerHost(OPTIONS);
     const getSourceFile = host.getSourceFile;
     host.getSourceFile = (fileName, languageVersion, ...rest) =>
-        fileName === FIXTURE ? ts.createSourceFile(fileName, source, languageVersion, true) : getSourceFile.call(host, fileName, languageVersion, ...rest);
-    const program = ts.createProgram([FIXTURE], OPTIONS, host);
+        fileName === fixture ? ts.createSourceFile(fileName, source, languageVersion, true) : getSourceFile.call(host, fileName, languageVersion, ...rest);
+    const program = ts.createProgram([fixture], OPTIONS, host);
     return ts.getPreEmitDiagnostics(program).map((d) => ({
         line: d.file ? d.file.getLineAndCharacterOfPosition(d.start).line + 1 : 0,
         code: d.code,
@@ -57,4 +58,15 @@ test('addAuthority without a role does not compile, on the hook or the store; wi
             assert.match(error.text, /Property 'role' is missing/, call);
         }
     }
+});
+
+test('the provider needs a mode; Embedded needs rpId and appName; portal takes neither, nor confirm', () => {
+    const source = readFileSync(PROVIDER_FIXTURE, 'utf8');
+    assert.deepEqual(compile(source, PROVIDER_FIXTURE), [], 'every marked line fails to compile, and nothing else does');
+    const lines = source.split('\n');
+    const isMark = (line) => line.trimStart().startsWith('// @ts-expect-error');
+    const marked = lines.flatMap((line, i) => (isMark(line) ? [i + 2] : []));
+    assert.equal(marked.length, 5);
+    const errors = compile(lines.map((line) => (isMark(line) ? '' : line)).join('\n'), PROVIDER_FIXTURE);
+    assert.deepEqual([...new Set(errors.map((e) => e.line))].sort((a, b) => a - b), marked, JSON.stringify(errors, null, 1));
 });

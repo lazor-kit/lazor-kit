@@ -6,6 +6,7 @@ import {
 import { WalletInfo, WalletConfig } from '../storage';
 import type { OnConfirmWallet } from '../wallet/confirmation';
 import type { SignMessageResult } from '../message/signedMessage';
+import type { Availability, Step } from '../embedded/types';
 
 export interface WalletState {
     // Data
@@ -17,7 +18,15 @@ export interface WalletState {
     isLoading: boolean;
     isConnecting: boolean;
     isSigning: boolean;
+    /**
+     * Not a failure: a user rejection (`UserRejectedError`: a closed sheet or
+     * portal, "Not now", "None of these") leaves it alone.
+     */
     error: Error | null;
+    /** The phase of the connect or send that is running, `null` when none is. */
+    step: Step | null;
+    /** Whether passkeys can work on this page, as configure found it. */
+    availability: Availability;
 
     // State setters
     setConfig: (config: WalletConfig) => void;
@@ -37,7 +46,7 @@ export interface WalletState {
     // `true`: it belongs to the call that is running.
     connect: (options?: ConnectOptions & { feeMode?: 'paymaster' | 'user' }) => Promise<WalletInfo>;
     disconnect: (options?: DisconnectOptions) => Promise<void>;
-    signAndSendTransaction: (payload: SignAndSendTransactionPayload) => Promise<string>;
+    signAndSendTransaction: (payload: SignAndSendPayload) => Promise<string>;
     signMessage: (message: string, options?: SignMessageOptions) => Promise<SignMessageResult>;
 
     // Session key actions
@@ -274,6 +283,27 @@ export interface SignAndSendTransactionPayload {
     readonly instructions: TransactionInstruction[];
     readonly onSuccess?: (signature: string) => void;
     readonly onFail?: (error: Error) => void;
+}
+
+/**
+ * `signAndSend`'s payload: a send, plus what only the Easy send takes.
+ * Deferred and key-signed sends do not take these.
+ */
+export interface SignAndSendPayload extends SignAndSendTransactionPayload {
+    /**
+     * Called once with the signature as soon as the paymaster has sent the
+     * transaction, before it is confirmed (the promise resolves at
+     * confirmed). Never called when nothing was sent: a cancel, a refusal
+     * before sending, a lost answer with no signature. What it throws is
+     * logged and changes nothing.
+     */
+    readonly onSubmitted?: (signature: string) => void;
+    /**
+     * Embedded mode: show the review sheet (decoded instructions and a
+     * simulation) before the passkey prompt. Overrides the provider's
+     * `confirm` for this call. Ignored in portal mode.
+     */
+    readonly confirm?: boolean;
 }
 
 export interface SignOptions {

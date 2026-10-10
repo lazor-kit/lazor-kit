@@ -580,6 +580,17 @@ export async function withAuthority<T>(authority: PublicKey, fn: (turn: Authorit
  * was lost, the call rejects with `TransactionOutcomeUnknownError` (no
  * signature), and the passkey's next challenge waits until that transaction
  * can no longer land.
+ *
+ * - `onSubmitted`: called once with the signature as soon as it is known
+ *   (the paymaster's answer, or the signature it reported with an error),
+ *   before the wait for confirmation. Never for a send whose signature is
+ *   not known. What it throws is logged and changes nothing.
+ * - `checkSignature`: whether a signature the paymaster returned is this
+ *   transaction's (Embedded mode: the fee payer's signature over the message
+ *   built here). One that is not says nothing about this transaction, which
+ *   may still have been sent: the call rejects with
+ *   `TransactionOutcomeUnknownError`, as for a lost answer.
+ * - `onLanded`: the slot it landed in, for a send outside a passkey lane.
  */
 export async function sendAndConfirm(params: {
     connection: Connection;
@@ -588,6 +599,9 @@ export async function sendAndConfirm(params: {
     turn?: AuthorityTurn;
     createsAuthority?: PublicKey;
     simulateLogs?: () => Promise<readonly string[] | null | undefined>;
+    onSubmitted?: (signature: string) => void;
+    checkSignature?: (signature: string) => boolean;
+    onLanded?: (slot: number) => void;
 }): Promise<string> {
     let signature: string;
     try {
@@ -609,10 +623,27 @@ export async function sendAndConfirm(params: {
             throw error;
         }
     }
+    if (params.checkSignature && !params.checkSignature(signature)) {
+        params.turn?.sentUnknown(params.attempt);
+        throw new TransactionOutcomeUnknownError(
+            `The paymaster answered with signature ${signature}, which is not its signature of this transaction: ` +
+                'that is another transaction. This one may still have been sent, so its signature is not known. ' +
+                'Check the state it would change before sending it again.',
+            undefined,
+        );
+    }
+    if (params.onSubmitted) {
+        try {
+            params.onSubmitted(signature);
+        } catch (error) {
+            console.error('[LazorKit] onSubmitted threw:', error);
+        }
+    }
     const sent: SentTransaction = { signature, ...params.attempt };
     if (params.turn) return params.turn.confirm(params.connection, sent);
     const slot = await confirmOrThrow(params.connection, sent);
     if (params.createsAuthority) noteAuthorityLanded(params.createsAuthority, slot);
+    params.onLanded?.(slot);
     return signature;
 }
 

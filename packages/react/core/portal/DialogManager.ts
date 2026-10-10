@@ -9,6 +9,7 @@ import { CredentialManager } from './CredentialManager';
 import { getDialogStyles } from './styles/DialogStyles';
 import { ensureChoiceStyles, renderWalletChoices } from './WalletChoiceView';
 import { Logger } from '../../utils/logger';
+import { UserRejectedError, type UserRejectionReason } from '../errors';
 import type { WalletChoice } from '../wallet/confirmation';
 import {
   isSignedMessageClientData,
@@ -45,11 +46,16 @@ export interface DialogResult {
 /**
  * The user closed the portal — the dialog's X, Escape, a click outside it, or
  * the popup window — before it answered, or the app disconnected while a
- * connect was still going. Nothing was signed, and nothing was saved.
+ * connect was still going. Nothing was signed, and nothing was saved. A
+ * `UserRejectedError` (reason `'portal-closed'`, or `'abandoned'` for the
+ * disconnect), so it does not set the store's `error`.
  */
-export class PortalCancelledError extends Error {
-  constructor(message = 'The LazorKit portal was closed before it finished, so nothing was signed.') {
-    super(message);
+export class PortalCancelledError extends UserRejectedError {
+  constructor(
+    message = 'The LazorKit portal was closed before it finished, so nothing was signed.',
+    reason: UserRejectionReason = 'portal-closed',
+  ) {
+    super(reason, message);
     this.name = 'PortalCancelledError';
   }
 }
