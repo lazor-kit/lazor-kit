@@ -8,5 +8,8 @@
     "@lazorkit/wallet": "3.4.1",
     "@lazorkit/wallet-mobile-adapter": "2.4.0"
   },
-  "changesets": []
+  "changesets": [
+    "wallet-4",
+    "wallet-mobile-adapter-3"
+  ]
 }
