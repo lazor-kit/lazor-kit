@@ -14,6 +14,7 @@
 import { PublicKey } from '@solana/web3.js';
 import type { WalletFacts } from '../program';
 import { UserRejectedError } from '../errors';
+import { expiryIsSlot } from './sessionExpiry';
 
 /** A wallet the passkey is proven to hold, offered for the user to recognise. */
 export interface WalletChoice {
@@ -53,7 +54,12 @@ export interface WalletChoice {
         address: string;
         /** `null` when the session account is too short to read. */
         sessionKey: string | null;
-        /** Approximate expiry, ms since the epoch (400 ms a slot); `null` when unreadable. */
+        /**
+         * Approximate expiry, ms since the epoch: the session's own Unix time
+         * (v2), read on the cluster clock, or its slot at 400 ms a slot (v1,
+         * and a v2 session written before sessions were measured in
+         * seconds); `null` when unreadable.
+         */
         approxExpiresAt: number | null;
         /** The key is one of the app's `trustedAuthorities`. */
         trusted: boolean;
@@ -148,13 +154,25 @@ export class WalletConfirmationDeclinedError extends UserRejectedError {
     }
 }
 
-/** `expiresAtSlot` of an account too short to read: sdk-legacy counts it live, forever. */
-const UNREADABLE_SLOT = 0xffff_ffff_ffff_ffffn;
+/** The expiry of an account too short to read: sdk-legacy counts it live, forever. */
+const UNREADABLE_EXPIRY = 0xffff_ffff_ffff_ffffn;
 /** Target slot time. Only for an "until ~14:30" hint; slots run slower under load. */
 const SLOT_MS = 400;
 
-const approxExpiry = (expiresAtSlot: bigint, slot: bigint, now: number): number | null =>
-    expiresAtSlot === UNREADABLE_SLOT ? null : now + Number(expiresAtSlot - slot) * SLOT_MS;
+/** A slot's approximate time, ms since the epoch. */
+const approxSlotTime = (expiresAtSlot: bigint, slot: bigint, now: number): number | null =>
+    expiresAtSlot === UNREADABLE_EXPIRY ? null : now + Number(expiresAtSlot - slot) * SLOT_MS;
+
+/**
+ * A session's approximate expiry, ms since the epoch: a v2 session's Unix
+ * time, offset by how far this device's clock is from the cluster's; a slot
+ * (v1, or a v2 session from before time-based expiry) as `approxSlotTime`.
+ */
+function approxSessionExpiry(facts: WalletFacts, expiresAt: bigint, now: number): number | null {
+    if (expiresAt === UNREADABLE_EXPIRY) return null;
+    if (facts.version === 1 || expiryIsSlot(expiresAt)) return approxSlotTime(expiresAt, facts.slot, now);
+    return now + Number(expiresAt - facts.unixTimestamp) * 1000;
+}
 
 /** A described wallet as the UI sees it: base58 strings, times instead of slots. */
 export function toWalletChoice(facts: WalletFacts, now: number = Date.now()): WalletChoice {
@@ -177,12 +195,12 @@ export function toWalletChoice(facts: WalletFacts, now: number = Date.now()): Wa
             address: s.sessionPda.toBase58(),
             // An unreadable session reports the all-zero key; it is no key.
             sessionKey: s.sessionKey.equals(PublicKey.default) ? null : s.sessionKey.toBase58(),
-            approxExpiresAt: approxExpiry(s.expiresAtSlot, facts.slot, now),
+            approxExpiresAt: approxSessionExpiry(facts, s.expiresAt, now),
             trusted: s.trusted,
         })),
         pendingDeferred: facts.pendingDeferred.map((d) => ({
             address: d.deferredPda.toBase58(),
-            approxExpiresAt: approxExpiry(d.expiresAtSlot, facts.slot, now),
+            approxExpiresAt: approxSlotTime(d.expiresAtSlot, facts.slot, now),
         })),
         tokenGrants: facts.tokenGrants.map((g) => ({
             tokenAccount: g.tokenAccount.toBase58(),

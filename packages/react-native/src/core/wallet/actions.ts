@@ -46,6 +46,13 @@ import { getFeePayer, signAndExecuteTransaction } from '../paymaster';
 import { logger } from '../logger';
 import { type AuthorityTurn, sendAndConfirm } from './sequence';
 import { buildPreviewTransactionBase64 as previewTransactionBase64 } from './preview';
+import {
+  parseTypedReplyParams,
+  withApprovalFragment,
+  type ApprovalKind,
+  type ApprovalRequest,
+} from '@lazorkit/sdk-legacy/approval';
+import { bindingForReply, type ApprovalBinding } from '../approval/typed';
 
 /**
  * Factory that returns high-level wallet operations bound to a given
@@ -373,6 +380,12 @@ type PortalSignParams = {
   redirectUrl: string;
   previewBase64Tx?: string;
   clusterSimulation?: 'devnet' | 'mainnet';
+  /**
+   * A typed request (CreateSession, RevokeSession, RemoveAuthority on a v2
+   * wallet), sent in the URL fragment (`#/?lk1=…`) so the portal can show
+   * what the passkey approves. The query stays what 2.x sent.
+   */
+  request?: ApprovalRequest;
 };
 
 /** One portal sign, as its redirect reports it. */
@@ -390,9 +403,55 @@ async function openPortalSign(params: PortalSignParams): Promise<BrowserResult> 
   if (params.clusterSimulation) {
     signUrl += `&clusterSimulation=${params.clusterSimulation}`;
   }
+  // Last: everything after `#` is the fragment. Over the cap it throws
+  // `TypedRequestTooLargeError` before the browser opens; never truncated.
+  if (params.request) {
+    signUrl = withApprovalFragment(signUrl, params.request);
+  }
 
   const resultUrl = await openBrowser(signUrl, params.redirectUrl);
   return handleBrowserResult(resultUrl);
+}
+
+/**
+ * The passkey's approval of a CreateSession, RevokeSession or RemoveAuthority
+ * that `prepared` describes, through the portal, checked against what was
+ * prepared (see ../approval/typed): the WebAuthn response, and the slot and
+ * counter to finalize with (`binding`, undefined for the prepared ones).
+ *
+ * A v2 client's `prepared` carries `request`, the typed request (it is
+ * prepared with the credential id), which goes to the portal in the URL
+ * fragment, so it shows what the passkey approves and picks the slot when the
+ * user taps Approve. A v1 client's has none: the portal is opened as 2.x did.
+ * Either way the passkey must have signed this operation:
+ * `PortalReplyMismatchError` otherwise (a forged deep link included), here or
+ * when the caller finalizes with `binding`, and nothing is sent.
+ */
+export async function approveViaPortal(params: {
+  kind: ApprovalKind;
+  prepared: { challenge: Uint8Array; request?: ApprovalRequest };
+  credentialId: string;
+  portalUrl: string;
+  redirectUrl: string;
+}): Promise<{ response: WebAuthnResponse; binding: ApprovalBinding | undefined }> {
+  const { kind, prepared } = params;
+  const result = await openPortalSign({
+    challenge: prepared.challenge,
+    credentialId: params.credentialId,
+    portalUrl: params.portalUrl,
+    redirectUrl: params.redirectUrl,
+    request: prepared.request,
+  });
+  const typed = result.typed;
+  const binding = bindingForReply({
+    kind,
+    prepared,
+    clientDataJsonBase64: result.clientDataJsonBase64,
+    // Some typed parameters, or a malformed one, is a mismatch, never an
+    // older portal's reply.
+    typed: typed ? parseTypedReplyParams((name) => typed[name]) : undefined,
+  });
+  return { response: decodeWebAuthnResponse(result), binding };
 }
 
 /**

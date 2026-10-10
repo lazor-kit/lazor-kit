@@ -40,18 +40,31 @@ function amount(what: string, value: unknown): bigint {
     return value;
 }
 
-function windowSlots(what: string, value: unknown): bigint {
-    const slots = amount(what, value);
-    if (slots === 0n) throw new RangeError(`spendingLimits.${what} must be at least 1 slot`);
-    return slots;
+/**
+ * A recurring limit's window, in seconds of the cluster clock. A preset
+ * written for a release that measured windows in slots (`windowSlots`) is
+ * refused rather than read as seconds: 216,000 slots is a day on mainnet,
+ * 216,000 seconds two and a half.
+ */
+function windowSeconds(what: string, recurring: { windowSeconds?: unknown; windowSlots?: unknown }): bigint {
+    if (recurring.windowSeconds === undefined && recurring.windowSlots !== undefined) {
+        throw new TypeError(
+            `spendingLimits.${what}.windowSlots is no longer read: windows are measured in seconds of the ` +
+                `cluster clock. Pass windowSeconds (86_400n is a day).`,
+        );
+    }
+    const seconds = amount(`${what}.windowSeconds`, recurring.windowSeconds);
+    if (seconds === 0n) throw new RangeError(`spendingLimits.${what}.windowSeconds must be at least 1 second`);
+    return seconds;
 }
 
 /**
  * The session actions a `SpendingLimits` preset stands for: the SOL limits,
  * then each token's, in the order given. Throws, before anything is read or
  * prompted, on a token with no limit or a mint that is not a public key, on a
- * mint named twice, on an amount outside a u64, on a window of 0 slots, on
- * more than 16 actions in all (what the program accepts), and on actions of
+ * mint named twice, on an amount outside a u64, on a window of 0 seconds (or
+ * one given as `windowSlots`, as releases that measured windows in slots took
+ * it), on more than 16 actions in all (what the program accepts), and on actions of
  * more than 244 bytes (what fits in the transaction beside the passkey's
  * response; see `MAX_POLICY_ACTION_BYTES`). A SOL limit takes 19 bytes
  * (`solRecurring` 43), a token's `lifetimeCap` or `perTxMax` 51 and its
@@ -76,7 +89,7 @@ export function spendingLimitsToActions(limits: SpendingLimits | undefined): Ses
     if (limits.solRecurring) {
         actions.push(Actions.solRecurringLimit({
             limit: amount('solRecurring.limit', limits.solRecurring.limit),
-            window: windowSlots('solRecurring.windowSlots', limits.solRecurring.windowSlots),
+            windowSeconds: windowSeconds('solRecurring', limits.solRecurring),
         }));
     }
     const named = new Set<string>();
@@ -103,7 +116,7 @@ export function spendingLimitsToActions(limits: SpendingLimits | undefined): Ses
             actions.push(Actions.tokenRecurringLimit({
                 mint,
                 limit: amount(`${at}.recurring.limit`, token.recurring.limit),
-                window: windowSlots(`${at}.recurring.windowSlots`, token.recurring.windowSlots),
+                windowSeconds: windowSeconds(`${at}.recurring`, token.recurring),
             }));
         }
         if (actions.length === before) {
@@ -135,8 +148,8 @@ export function spendingLimitsToActions(limits: SpendingLimits | undefined): Ses
 /** `SpendingLimits` as the kept session key's record holds it: amounts as decimal text, mints as base58. */
 export function spendingLimitsRecord(limits: SpendingLimits | undefined) {
     if (!limits) return undefined;
-    const recurring = (r: { limit: bigint; windowSlots: bigint } | undefined) =>
-        r ? { limit: r.limit.toString(), windowSlots: r.windowSlots.toString() } : undefined;
+    const recurring = (r: { limit: bigint; windowSeconds: bigint } | undefined) =>
+        r ? { limit: r.limit.toString(), windowSeconds: r.windowSeconds.toString() } : undefined;
     return {
         solLifetimeCap: limits.solLifetimeCap?.toString(),
         solPerTxMax: limits.solPerTxMax?.toString(),

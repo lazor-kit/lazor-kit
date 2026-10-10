@@ -105,8 +105,25 @@ export interface WalletHookInterface extends EasyWallet {
   // the Advanced hooks a later 4.x adds to `@lazorkit/wallet/hooks`, with
   // the same names and parameters; they stay here until 5.0, and warn once
   // each when first called.
-  /** @deprecated Moves to `useSessions()` in `@lazorkit/wallet/hooks` in a later 4.x, with the same parameters. */
+  /**
+   * Creates a session with one passkey approval. The portal shows what it
+   * approves: the limits, and when it ends ("until about 6:50 PM").
+   *
+   * @deprecated Moves to `useSessions()` in `@lazorkit/wallet/hooks` in a later 4.x, with the same parameters.
+   */
   createSession: (payload?: {
+    /**
+     * How long the session lasts, in seconds of the cluster clock: more than
+     * 0 and at most 30 days. Default `DEFAULTS.SESSION_EXPIRY_SECONDS` (5
+     * hours). Give at most one of the three expiry fields.
+     */
+    expiresInSeconds?: number | bigint;
+    /** When the session ends, as a Unix time in seconds: within 30 days of the cluster clock. */
+    expiresAt?: number | bigint;
+    /**
+     * @deprecated Sessions expire by the cluster clock. Converted to seconds
+     * with the cluster's measured slot time; use `expiresInSeconds`.
+     */
     expiresInSlots?: bigint;
     spendingLimits?: SpendingLimits;
     /**

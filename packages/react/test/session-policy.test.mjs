@@ -50,22 +50,22 @@ const INNER = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 test('SpendingLimits names SOL and each listed mint: the actions, as the program reads them', () => {
     const parsed = (limits) =>
         parseActions(serializeActions(W.spendingLimitsToActions(limits))).map(
-            ({ type, limit, window, spent, lastReset, mint, expiresAt }) => ({
+            ({ type, limit, windowSeconds, spent, lastReset, mint, expiresAt }) => ({
                 type,
                 limit,
-                window,
+                windowSeconds,
                 spent,
                 lastReset,
                 mint: mint?.toBase58(),
                 expiresAt,
             }),
         );
-    const row = (type, limit, mint, window) => ({
+    const row = (type, limit, mint, windowSeconds) => ({
         type,
         limit,
-        window,
-        spent: window === undefined ? undefined : 0n,
-        lastReset: window === undefined ? undefined : 0n,
+        windowSeconds,
+        spent: windowSeconds === undefined ? undefined : 0n,
+        lastReset: windowSeconds === undefined ? undefined : 0n,
         mint: mint?.toBase58(),
         expiresAt: 0n,
     });
@@ -73,7 +73,7 @@ test('SpendingLimits names SOL and each listed mint: the actions, as the program
         parsed({
             solLifetimeCap: 9_000_000n,
             solPerTxMax: 1_000_000n,
-            solRecurring: { limit: 2_000_000n, windowSlots: 216_000n },
+            solRecurring: { limit: 2_000_000n, windowSeconds: 86_400n },
             tokens: [
                 { mint: USDC, lifetimeCap: 50_000_000n, perTxMax: 5_000_000n },
                 { mint: BONK.toBase58(), perTxMax: 7n },
@@ -82,7 +82,7 @@ test('SpendingLimits names SOL and each listed mint: the actions, as the program
         [
             row(SessionActionType.SolLimit, 9_000_000n),
             row(SessionActionType.SolMaxPerTx, 1_000_000n),
-            row(SessionActionType.SolRecurringLimit, 2_000_000n, undefined, 216_000n),
+            row(SessionActionType.SolRecurringLimit, 2_000_000n, undefined, 86_400n),
             row(SessionActionType.TokenLimit, 50_000_000n, USDC),
             row(SessionActionType.TokenMaxPerTx, 5_000_000n, USDC),
             row(SessionActionType.TokenMaxPerTx, 7n, BONK),
@@ -90,11 +90,11 @@ test('SpendingLimits names SOL and each listed mint: the actions, as the program
     );
     // All three limits on one mint (all of them on each of two mints do not fit: see below).
     assert.deepEqual(
-        parsed({ tokens: [{ mint: USDC, lifetimeCap: 50_000_000n, perTxMax: 5_000_000n, recurring: { limit: 10_000_000n, windowSlots: 9_000n } }] }),
+        parsed({ tokens: [{ mint: USDC, lifetimeCap: 50_000_000n, perTxMax: 5_000_000n, recurring: { limit: 10_000_000n, windowSeconds: 3_600n } }] }),
         [
             row(SessionActionType.TokenLimit, 50_000_000n, USDC),
             row(SessionActionType.TokenMaxPerTx, 5_000_000n, USDC),
-            row(SessionActionType.TokenRecurringLimit, 10_000_000n, USDC, 9_000n),
+            row(SessionActionType.TokenRecurringLimit, 10_000_000n, USDC, 3_600n),
         ],
     );
 });
@@ -136,8 +136,12 @@ test('the presets the program would refuse, or that name nothing, are refused', 
         [{ tokens: [{ mint: USDC, perTxMax: -1n }] }, /tokens\[0\]\.perTxMax must be a bigint from 0 to 2\^64 - 1/],
         [{ tokens: [{ mint: USDC, lifetimeCap: 1n << 64n }] }, /tokens\[0\]\.lifetimeCap must be a bigint/],
         [{ tokens: [{ mint: USDC, perTxMax: 5 }] }, /tokens\[0\]\.perTxMax must be a bigint/],
-        [{ tokens: [{ mint: USDC, recurring: { limit: 1n, windowSlots: 0n } }] }, /tokens\[0\]\.recurring\.windowSlots must be at least 1 slot/],
-        [{ solRecurring: { limit: 1n, windowSlots: 0n } }, /solRecurring\.windowSlots must be at least 1 slot/],
+        [{ tokens: [{ mint: USDC, recurring: { limit: 1n, windowSeconds: 0n } }] }, /tokens\[0\]\.recurring\.windowSeconds must be at least 1 second/],
+        [{ solRecurring: { limit: 1n, windowSeconds: 0n } }, /solRecurring\.windowSeconds must be at least 1 second/],
+        // A window written for the releases that counted slots is refused, never read as seconds.
+        [{ solRecurring: { limit: 1n, windowSlots: 216_000n } }, /solRecurring\.windowSlots is no longer read: .* Pass windowSeconds/],
+        [{ tokens: [{ mint: USDC, recurring: { limit: 1n, windowSlots: 9_000n } }] }, /tokens\[0\]\.recurring\.windowSlots is no longer read/],
+        [{ solRecurring: { limit: 1n } }, /solRecurring\.windowSeconds must be a bigint/],
         [{ solPerTxMax: 1 }, /solPerTxMax must be a bigint/],
     ];
     for (const [limits, message] of refused) {
@@ -146,12 +150,12 @@ test('the presets the program would refuse, or that name nothing, are refused', 
 
     // A policy holds at most 16 actions.
     const mints = (n) => Array.from({ length: n }, (_, i) => ({ mint: fixed(100 + i), perTxMax: 1n }));
-    const sol = { solLifetimeCap: 1n, solPerTxMax: 1n, solRecurring: { limit: 1n, windowSlots: 1n } };
+    const sol = { solLifetimeCap: 1n, solPerTxMax: 1n, solRecurring: { limit: 1n, windowSeconds: 1n } };
     assert.throws(() => W.spendingLimitsToActions({ ...sol, tokens: mints(14) }), /makes 17 actions; a policy holds at most 16/);
 });
 
 test("the actions must fit in the transaction that registers them, beside the passkey's response: 244 bytes at most", () => {
-    const window = { limit: 1n, windowSlots: 1n };
+    const window = { limit: 1n, windowSeconds: 1n };
     // solRecurring (43 bytes), a lifetimeCap (51) and two recurring limits (75 each): 244 bytes.
     const largest = {
         solRecurring: window,

@@ -38,6 +38,7 @@ import { clientFor, v1Client, v2Client } from '../program';
 import { chainHasError } from '../program/errorShape';
 import type { WalletState } from '../types';
 import { disconnectMark } from './disconnects';
+import { expiryIsSlot } from './sessionExpiry';
 
 /**
  * Why a kept key was not used:
@@ -195,21 +196,32 @@ function checkedSigner(signer: KeySigner, check: () => void): KeySigner {
 }
 
 /**
- * Deletes the stored session key once the chain is past its session's expiry
- * (the program refuses a session once the slot is past `expires_at`), and
- * throws. Read at the connection's commitment, which trails the tip: a key is
- * never deleted while its session can still sign.
+ * Deletes the stored session key once the chain is past its session's expiry,
+ * and throws. A v2 session expires by the cluster clock (the Clock sysvar's
+ * Unix time); a v1 session, and a record written before sessions were
+ * measured in seconds, by slot (a value below 2020-01-01 is a slot). Read at
+ * the connection's commitment, which trails the tip: a key is never deleted
+ * while its session can still sign.
  */
 async function pruneIfExpired(storage: KeyStorage, connection: Connection, stored: StoredKey<'session'>): Promise<void> {
     const { expiresAt, sessionPda } = stored.info;
     if (expiresAt === undefined || !/^\d+$/.test(expiresAt)) return;
-    const current = await connection.getSlot();
-    if (BigInt(current) <= BigInt(expiresAt)) return;
+    const expiry = BigInt(expiresAt);
+    let passed: string | null;
+    if (expiryIsSlot(expiry)) {
+        const current = await connection.getSlot();
+        passed = BigInt(current) > expiry ? `expired after slot ${expiresAt} (the chain is at slot ${current})` : null;
+    } else {
+        const { unixTimestamp } = await v2Client(connection).getClusterTime();
+        passed =
+            unixTimestamp > expiry
+                ? `expired at ${new Date(Number(expiry) * 1000).toISOString()} (the cluster clock reads ` +
+                  `${new Date(Number(unixTimestamp) * 1000).toISOString()})`
+                : null;
+    }
+    if (passed === null) return;
     await forgetKey(storage, 'session', (info) => info.sessionPda === sessionPda);
-    throw new Error(
-        `No session key found: the stored session ${sessionPda} expired after slot ${expiresAt} ` +
-            `(the chain is at slot ${current}), so its key was deleted. Create a session first.`,
-    );
+    throw new Error(`No session key found: the stored session ${sessionPda} ${passed}, so its key was deleted. Create a session first.`);
 }
 
 /**

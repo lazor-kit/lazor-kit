@@ -65,17 +65,23 @@ export interface SessionKeyInfo {
     readonly sessionPda: string;
     /** The wallet the session belongs to: its wallet PDA. */
     readonly walletPda: string;
-    /** The last slot the session signs in, as a decimal string. */
+    /**
+     * When the session ends, as a decimal string: a Unix time in seconds
+     * (a v2 session, from the release that measures sessions in seconds), or the
+     * last slot it signs in (a v1 session, and records written before it).
+     * A value below 2020-01-01 (1,577,836,800) is a slot.
+     */
     readonly expiresAt?: string;
     readonly spendingLimits?: {
         readonly solLifetimeCap?: string;
         readonly solPerTxMax?: string;
-        readonly solRecurring?: { readonly limit: string; readonly windowSlots: string };
+        /** `windowSeconds`; records written by releases that measured windows in slots hold `windowSlots`. */
+        readonly solRecurring?: { readonly limit: string; readonly windowSeconds?: string; readonly windowSlots?: string };
         readonly tokens?: readonly {
             readonly mint: string;
             readonly lifetimeCap?: string;
             readonly perTxMax?: string;
-            readonly recurring?: { readonly limit: string; readonly windowSlots: string };
+            readonly recurring?: { readonly limit: string; readonly windowSeconds?: string; readonly windowSlots?: string };
         }[];
     };
     /**

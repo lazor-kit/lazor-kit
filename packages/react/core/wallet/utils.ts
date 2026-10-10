@@ -18,12 +18,15 @@ import { isUserRejection } from '../errors';
 import { EmbeddedPrompt } from '../embedded/prompt';
 
 /** What the passkey actions need of a ceremony surface: the portal dialog, or Embedded mode's prompt. */
-export type PasskeyPrompt = Pick<DialogManager, 'openSign' | 'openSignMessage' | 'openWalletChoice' | 'destroy'>;
+export type PasskeyPrompt = Pick<
+    DialogManager,
+    'openSign' | 'openApproval' | 'openSignMessage' | 'openWalletChoice' | 'destroy'
+>;
 
 /**
  * The ceremony surface for `config`'s mode: Embedded mode's prompt (WebAuthn
  * in the app's page), or the portal dialog (`createPortalDialog`). The
- * actions call the same four methods either way.
+ * actions call the same methods either way.
  */
 export const createDialogManager = (config: WalletConfig): PasskeyPrompt => {
     return config.mode === 'embedded' ? new EmbeddedPrompt(config) : createPortalDialog(config);

@@ -304,7 +304,7 @@ Errors:
 |---|---|
 | `WalletNeedsConfirmationError` | `onConfirmWallet: 'throw'` and the wallet needs the user. `credentialId`, `candidates: WalletChoice[]`. |
 | `WalletConfirmationDeclinedError` | The user chose none ("None of these", or your handler returned `null`). Nothing was saved. |
-| `PortalCancelledError` | The user closed the portal dialog (X, Escape, a click outside) or its popup window before it answered — on connect and on every signing action. Raised at once, not after the 60 s timeout. Also what a `connect` still running rejects with when `disconnect` is called: its portal or chooser closes and it connects nothing. |
+| `PortalCancelledError` | The user closed the portal dialog (X, Escape, a click outside) or its popup window before it answered — on connect and on every signing action. Raised at once, not after the timeout (60 s; 10 minutes for `createSession`, `revokeSession` and `removeAuthority` on a v2 wallet, whose screen the user may take time to read). Also what a `connect` still running rejects with when `disconnect` is called: its portal or chooser closes and it connects nothing. |
 
 If the chain cannot be read, `connect` fails; that is never taken as "no
 wallet". Portal errors carry the portal's own message.
@@ -393,6 +393,10 @@ happened.
 | `DeferredExpiredError` | TX2 of a deferred execution (`authorizeAndExecute`, `executeDeferred`) came after its authorization expired (`DeferredAuthorizationExpired`, 3014), so nothing in it ran. `authorizeSignature` (TX1, when this call sent it), `deferredExecPda` (the account holding the paymaster's rent until the Authorize payer reclaims it) and `expiresAtSlot`. The passkey approval is spent: ask the user to approve again. An inner program's 3014 is not reported as this (see below). |
 | `UnlistedSolOutflowError` | A `signAndSendWithSession` or `signAndSendWithAuthority` transaction would have lowered the wallet's SOL balance (rent for a new account included), and the session's limits or the delegate's policy name no SOL (`ActionUnlistedSolOutflow`, 3037). Nothing in it ran, and it is not resent. Its message is "This session is not allowed to spend SOL" ("This key …" for a delegate); `signer` is `'session'` or `'authority'`, and `cause` the failure as it came. See [What a policy bounds](#what-a-policy-bounds). |
 | `UnlistedTokenOutflowError` | The same for a token whose mint the limits do not name (`ActionUnlistedTokenOutflow`, 3038): "This session is not allowed to spend this token". |
+| `PortalReplyMismatchError` | `createSession`, `revokeSession` or `removeAuthority`: the portal's reply does not match the request the wallet prepared (another operation, slot, counter or kind). Nothing was sent. `reason` says what differed. See [What the user approves](#what-the-user-approves-and-when-a-session-ends). |
+| `RequestOutOfDateError` | The portal refused a typed request with `stale-counter`: its view of the passkey's counter was behind. The passkey signed nothing; `retryable` is `true`. |
+| `PortalRefusedError` | The portal refused a typed request; the passkey signed nothing. `code`: `request-invalid` (it would fail on chain), `wrong-network`, `challenge-mismatch`, `typed-malformed`, `typed-unsupported` or `chain-unavailable`. |
+| `TypedRequestTooLargeError` | The typed request, or the portal URL carrying it, is over its cap (8,192 / 16,384 characters). Nothing was opened. |
 
 Every status read and paymaster request is bounded in time, so one that never
 answers cannot hold a passkey's queue. The slot the passkey's last transaction
@@ -543,9 +547,11 @@ try {
 
 A stored session key whose session has expired is deleted the next time it is
 read (a send, or `revokeSession()`), which then rejects with "No session key
-found: the stored session … expired after slot …". It is deleted once the
-chain, read at the connection's commitment, is past the session's
-`expiresAt`: never while the session can still sign. Revoke an expired
+found: the stored session … expired at …". It is deleted once the cluster
+clock (the Clock sysvar, read at the connection's commitment) is past the
+session's `expiresAt`: never while the session can still sign. (A key kept
+by a release that measured sessions in slots, or a v1 wallet's, is compared
+with the slot instead: "expired after slot …".) Revoke an expired
 session by its PDA (`revokeSession({ sessionPda })`) if you want its account
 closed.
 
@@ -692,6 +698,71 @@ tests check this byte for byte). Safari signs with a random nonce instead, so
 the same message gets a different signature each time. Each one is valid, and
 nothing in the SDK depends on the signature bytes.
 
+### What the user approves, and when a session ends
+
+`createSession`, `revokeSession` and `removeAuthority` send the portal the
+operation itself, not only its challenge: a *typed request* in the URL
+fragment (`#/?lk1=…`), next to the query earlier releases sent. A portal that
+reads it shows exactly what the passkey approves, for example "Let MyApp spend
+up to 0.002 SOL per payment and 5 USDC in total, until about 6:50 PM". It
+recomputes the challenge from what it shows, and picks the slot it signs when
+the user taps Approve. A portal that does not read typed requests signs the
+challenge in the query, as before. `signAndSendTransaction`, `addAuthority`
+and the deferred actions open the portal as before.
+
+Before anything is sent, the wallet checks the portal's reply against the
+request it prepared: the passkey must have signed this operation, at the slot
+and counter the portal names in its reply (`typed`), or at the prepared ones
+when it names none. A reply that does not match rejects with
+`PortalReplyMismatchError`, and nothing is sent. The portal's refusals mean
+the passkey signed nothing: `RequestOutOfDateError` (`stale-counter`, the
+portal's node was behind; `retryable: true`, a new request may go through) or
+`PortalRefusedError` with the portal's `code`. A request whose URL would be
+over 16,384 characters is refused with `TypedRequestTooLargeError` before the
+portal opens; it is never truncated. Wallets made before LazorKit v2 send no
+typed request.
+
+```ts
+import { PortalReplyMismatchError, RequestOutOfDateError } from '@lazorkit/wallet';
+
+try {
+  await createSession({ spendingLimits, expiresInSeconds: 3600 });
+} catch (error) {
+  if (error instanceof RequestOutOfDateError) {
+    // Nothing was signed: offer to try again.
+  } else throw error;
+}
+```
+
+A session ends by the **cluster clock** (the Clock sysvar's Unix time, which
+the program compares against), not by slot:
+
+- `expiresInSeconds`: how long it lasts, more than 0 and at most 30 days
+  (`MAX_SESSION_SECONDS`), counted from the cluster's time when
+  `createSession` reads it.
+- `expiresAt`: when it ends, as a Unix time in seconds, after the cluster's
+  time and at most 30 days ahead of it.
+- Neither: `DEFAULTS.SESSION_EXPIRY_SECONDS`, 5 hours.
+- `expiresInSlots` is deprecated. It is still accepted: it is converted to
+  seconds with the cluster's measured slot time (recent performance samples),
+  with a warning, and it throws when the slot time cannot be read. Give at
+  most one of the three.
+
+An expiry the program would refuse throws before the passkey is asked.
+Recurring limits count seconds too: `solRecurring: { limit, windowSeconds:
+86_400n }` is a day, and a `windowSlots` from an earlier release throws
+rather than being read as seconds.
+
+A wallet made before LazorKit v2 (v1) still counts in slots: with no expiry
+its session lasts `DEFAULTS.SESSION_EXPIRY_SLOTS` (50,000 slots), as before;
+`expiresInSlots` is used as given; `expiresInSeconds` and `expiresAt` are
+converted to slots with the measured slot time. A recurring limit's
+`windowSeconds` is converted to slots the same way.
+
+The portal waits up to 10 minutes for the user on these three screens (other
+signing keeps its 60 seconds): the portal picks the slot it signs at when the
+user taps Approve, so time spent reading costs nothing.
+
 ### What a policy bounds
 
 A session's `spendingLimits` and a delegate's `policy` name what may leave the
@@ -742,10 +813,10 @@ await createSession({
 ```
 
 Each `tokens` entry takes `mint` (a `PublicKey` or base58) and at least one of
-`lifetimeCap`, `perTxMax` and `recurring: { limit, windowSlots }`, as the SOL
+`lifetimeCap`, `perTxMax` and `recurring: { limit, windowSeconds }`, as the SOL
 limits do. `createSession` checks the limits before anything is read or the
 passkey is asked: an entry with no limit, a mint named twice, an amount
-outside a u64, a window of 0 slots, or more than 244 bytes of actions throws.
+outside a u64, a window of 0 seconds, or more than 244 bytes of actions throws.
 `addAuthority` does not check a `policy`'s size: keep it within the same 244
 bytes, or the transaction may not fit once the passkey has signed. Nothing is
 added that you did not ask for: SOL limits alone let the session spend no

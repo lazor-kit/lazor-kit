@@ -30,6 +30,7 @@ import {
     handleActionError,
     cleanupLegacyStorage,
     notify,
+    type PasskeyPrompt,
 } from './utils';
 import { clearPendingConfirmation, connectAbandoned, connectFreshWallet } from './resolveWallet';
 import {
@@ -47,7 +48,6 @@ import {
 } from '../program';
 import type { WalletConfig } from '../storage';
 import { spendingLimitsRecord, spendingLimitsToActions, toPolicyError } from './policy';
-import { DEFAULTS } from '../../config';
 import { type AuthorityTurn, sendAndConfirm, withAuthority } from './sequence';
 import { buildPreviewTransactionBase64 } from './preview';
 import { deferredExpiryOffset, executeBeforeExpiry } from './deferred';
@@ -64,6 +64,9 @@ import { emit } from '../embedded/events';
 import { EmbeddedPrompt } from '../embedded/prompt';
 import { buildReview, snapshotInstructions } from '../embedded/review';
 import type { Assertion } from '../embedded/webauthn';
+import { parseTypedReply, type ApprovalKind, type ApprovalRequest } from '@lazorkit/sdk-legacy/approval';
+import { type ApprovalBinding, bindingForReply } from '../approval/typed';
+import { actionsForV1, sessionExpiresAt } from './sessionExpiry';
 
 export function randomBytes(size: number): Uint8Array {
     return globalThis.crypto.getRandomValues(new Uint8Array(size));
@@ -572,12 +575,52 @@ export const signAndSendTransactionAction = async (
 
 // ─── Helpers for decoding WebAuthn dialog response ───────────────────
 
+/** A stored credential id (base64) as bytes: what a typed request names the passkey by. */
+function credentialIdBytes(credentialIdBase64: string): Uint8Array {
+    return new Uint8Array(Buffer.from(credentialIdBase64, 'base64'));
+}
+
 function decodeSignResult(signResult: SignResult) {
     const signature = new Uint8Array(Buffer.from(signResult.signature, 'base64'));
     const authenticatorData = new Uint8Array(Buffer.from(signResult.authenticatorDataBase64, 'base64'));
     const clientDataJsonRaw = Buffer.from(signResult.clientDataJsonBase64, 'base64');
     const clientDataJsonHash = new Uint8Array(sha256.arrayBuffer(clientDataJsonRaw));
     return { signature, authenticatorData, clientDataJsonHash, clientDataJson: new Uint8Array(clientDataJsonRaw) };
+}
+
+/**
+ * The passkey's approval of a CreateSession, RevokeSession or RemoveAuthority
+ * that `prepared` describes, through the portal, checked against what was
+ * prepared (see ../approval/typed): the WebAuthn response, and the slot and
+ * counter to finalize with (`binding`, undefined for the prepared ones).
+ *
+ * A v2 client's `prepared` carries `request`, the typed request (it is
+ * prepared with the credential id): the portal is opened with it
+ * (`openApproval`), so it shows what the passkey approves, and picks the slot
+ * when the user taps Approve. A v1 client's has none: the portal is opened
+ * as 3.x did. Either way the passkey must have signed this operation:
+ * `PortalReplyMismatchError` otherwise, here or when the caller finalizes
+ * with `binding`, and nothing is sent.
+ */
+async function approveWithPasskey(params: {
+    dialogManager: PasskeyPrompt;
+    kind: ApprovalKind;
+    prepared: { challenge: Uint8Array; request?: ApprovalRequest };
+    credentialId: string;
+}): Promise<{ response: ReturnType<typeof decodeSignResult>; binding: ApprovalBinding | undefined }> {
+    const { dialogManager, kind, prepared, credentialId } = params;
+    const challenge = toBase64Url(prepared.challenge);
+    const signResult = prepared.request
+        ? await dialogManager.openApproval(challenge, credentialId, prepared.request)
+        : await dialogManager.openSign(challenge, '', credentialId, undefined);
+    const binding = bindingForReply({
+        kind,
+        prepared,
+        clientDataJsonBase64: signResult.clientDataJsonBase64,
+        // A malformed block is a mismatch, never an older portal's reply.
+        typed: parseTypedReply(signResult.typed),
+    });
+    return { response: decodeSignResult(signResult), binding };
 }
 
 /**
@@ -682,30 +725,47 @@ export const createSessionAction = async (
             };
         }
 
-        const currentSlot = await connection.getSlot();
-        const expiresAt = BigInt(currentSlot) + (payload.expiresInSlots ?? DEFAULTS.SESSION_EXPIRY_SLOTS);
+        // Unix seconds of the cluster clock (a slot for a v1 wallet), checked
+        // before the passkey is asked.
+        const expiresAt = await sessionExpiresAt({
+            connection,
+            client,
+            version,
+            input: {
+                expiresInSeconds: payload.expiresInSeconds,
+                expiresAt: payload.expiresAt,
+                expiresInSlots: payload.expiresInSlots,
+            },
+        });
+        // A v1 wallet counts a recurring limit's window in slots.
+        const sessionActions = version === 1 ? await actionsForV1(connection, actions) : actions;
 
         const sessionPda = await withAuthority(authorityPda, async (turn) => {
             const prepared = await client.prepareCreateSession({
                 payer: feePayer,
                 walletPda,
-                secp256r1: { credentialIdHash, publicKeyBytes, authorityPda, ...(await turn.challengeReads(connection)) },
+                secp256r1: {
+                    credentialIdHash,
+                    credentialId: credentialIdBytes(wallet.credentialId),
+                    publicKeyBytes,
+                    authorityPda,
+                    ...(await turn.challengeReads(connection)),
+                },
                 sessionKey: sessionPublicKey,
                 expiresAt,
-                ...(actions.length > 0 ? { actions } : { unrestricted: true as const }),
+                ...(sessionActions.length > 0 ? { actions: sessionActions } : { unrestricted: true as const }),
             });
 
-            const encodedChallenge = toBase64Url(prepared.challenge);
             const dialogManager = createDialogManager(config);
             try {
-                const signResult: SignResult = await dialogManager.openSign(
-                    encodedChallenge,
-                    '',
-                    wallet.credentialId,
-                    undefined,
-                );
+                const { response, binding } = await approveWithPasskey({
+                    dialogManager,
+                    kind: 'createSession',
+                    prepared,
+                    credentialId: wallet.credentialId,
+                });
 
-                const { instructions } = client.finalizeCreateSession(prepared, decodeSignResult(signResult));
+                const { instructions } = client.finalizeCreateSession(prepared, response, binding);
 
                 await buildAndSendTx({ paymaster, connection, feePayer, instructions, turn });
                 return prepared.sessionPda;
@@ -800,21 +860,26 @@ export const revokeSessionAction = async (
             const prepared = await client.prepareRevokeSession({
                 payer: feePayer,
                 walletPda,
-                secp256r1: { credentialIdHash, publicKeyBytes, authorityPda, ...(await turn.challengeReads(connection)) },
+                secp256r1: {
+                    credentialIdHash,
+                    credentialId: credentialIdBytes(wallet.credentialId),
+                    publicKeyBytes,
+                    authorityPda,
+                    ...(await turn.challengeReads(connection)),
+                },
                 sessionPda,
             });
 
-            const encodedChallenge = toBase64Url(prepared.challenge);
             const dialogManager = createDialogManager(config);
             try {
-                const signResult: SignResult = await dialogManager.openSign(
-                    encodedChallenge,
-                    '',
-                    wallet.credentialId,
-                    undefined,
-                );
+                const { response, binding } = await approveWithPasskey({
+                    dialogManager,
+                    kind: 'revokeSession',
+                    prepared,
+                    credentialId: wallet.credentialId,
+                });
 
-                const { instructions } = client.finalizeRevokeSession(prepared, decodeSignResult(signResult));
+                const { instructions } = client.finalizeRevokeSession(prepared, response, binding);
 
                 await buildAndSendTx({ paymaster, connection, feePayer, instructions, turn });
             } finally {
@@ -1047,21 +1112,26 @@ export const removeAuthorityAction = async (
             const prepared = await client.prepareRemoveAuthority({
                 payer: feePayer,
                 walletPda,
-                secp256r1: { credentialIdHash, publicKeyBytes, authorityPda, ...(await turn.challengeReads(connection)) },
+                secp256r1: {
+                    credentialIdHash,
+                    credentialId: credentialIdBytes(wallet.credentialId),
+                    publicKeyBytes,
+                    authorityPda,
+                    ...(await turn.challengeReads(connection)),
+                },
                 targetAuthorityPda,
             });
 
-            const encodedChallenge = toBase64Url(prepared.challenge);
             const dialogManager = createDialogManager(config);
             try {
-                const signResult: SignResult = await dialogManager.openSign(
-                    encodedChallenge,
-                    '',
-                    wallet.credentialId,
-                    undefined,
-                );
+                const { response, binding } = await approveWithPasskey({
+                    dialogManager,
+                    kind: 'removeAuthority',
+                    prepared,
+                    credentialId: wallet.credentialId,
+                });
 
-                const { instructions } = client.finalizeRemoveAuthority(prepared, decodeSignResult(signResult));
+                const { instructions } = client.finalizeRemoveAuthority(prepared, response, binding);
 
                 await buildAndSendTx({ paymaster, connection, feePayer, instructions, turn });
             } finally {

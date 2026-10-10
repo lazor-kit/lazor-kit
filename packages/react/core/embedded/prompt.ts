@@ -1,7 +1,7 @@
 /**
- * Embedded mode's stand-in for the portal dialog: the same four methods the
- * actions call (`openSign`, `openSignMessage`, `openWalletChoice`,
- * `destroy`), done with WebAuthn in the app's own page. The actions do not
+ * Embedded mode's stand-in for the portal dialog: the same methods the
+ * actions call (`openSign`, `openApproval`, `openSignMessage`,
+ * `openWalletChoice`, `destroy`), done with WebAuthn in the app's own page. The actions do not
  * change between modes; `createDialogManager` picks this or the portal's
  * `DialogManager` by `config.mode`.
  *
@@ -12,6 +12,7 @@
  * credential that signed. A reply from another credential is refused
  * (`PasskeyMismatchError`); a closed sheet is `UserRejectedError`.
  */
+import type { ApprovalRequest } from '@lazorkit/sdk-legacy/approval';
 import type { SignResult } from '../portal';
 import type { WalletConfig } from '../storage';
 import type { WalletChoice } from '../wallet/confirmation';
@@ -66,6 +67,19 @@ export class EmbeddedPrompt {
         _clusterSimulation?: 'devnet' | 'mainnet',
     ): Promise<SignResult> {
         return signResultOf(await this.pinned('get:sign', fromB64Url(challenge), credentialId));
+    }
+
+    /**
+     * A typed approval (CreateSession, RevokeSession, RemoveAuthority): the
+     * passkey signs `challenge`, the one prepared with `request`, at the
+     * prepared slot and counter. With no portal there is no `typed` block in
+     * the reply, so the action checks the signature against the request
+     * itself (`bindingForReply` → `verifyApprovalReply`) exactly as it checks
+     * a portal's, and finalizes with what it prepared. The request is not
+     * shown yet: Embedded mode has no review sheet for these three.
+     */
+    async openApproval(challenge: string, credentialId: string, _request: ApprovalRequest): Promise<SignResult> {
+        return this.openSign(challenge, '', credentialId);
     }
 
     /**
