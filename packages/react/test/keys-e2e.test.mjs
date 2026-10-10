@@ -110,6 +110,17 @@ let requests = 0;
 /** Runs inside the next `getLatestBlockhash`, before it is answered; then cleared. */
 let onBlockhash = null;
 
+/** The Clock sysvar: the cluster clock a session's expiry is measured against. */
+const CLOCK_SYSVAR = 'SysvarC1ock11111111111111111111111111111111';
+/** 2026-10-10 12:00 UTC, in Unix seconds. */
+const CLUSTER_TIME = 1_791_633_600n;
+function clockAccount() {
+    const data = Buffer.alloc(40);
+    data.writeBigUInt64LE(5000n, 0);
+    data.writeBigInt64LE(CLUSTER_TIME, 32);
+    return { owner: 'Sysvar1111111111111111111111111111111111111', data };
+}
+
 async function rpc(init) {
     requests++;
     const { id, method, params } = JSON.parse(init.body);
@@ -125,7 +136,7 @@ async function rpc(init) {
         case 'getSlot':
             return reply(1000);
         case 'getAccountInfo': {
-            const found = accounts.get(params[0]);
+            const found = params[0] === CLOCK_SYSVAR ? clockAccount() : accounts.get(params[0]);
             return reply({ context: { slot: 5000 }, value: found ? account(found) : null });
         }
         case 'getMultipleAccounts':
@@ -394,7 +405,7 @@ test('createSession with token limits registers a SOL action and one for each mi
             solPerTxMax: 5_000n,
             tokens: [
                 { mint: USDC, lifetimeCap: 50_000_000n, perTxMax: 1_000_000n },
-                { mint: BONK.toBase58(), recurring: { limit: 10n, windowSlots: 216_000n } },
+                { mint: BONK.toBase58(), recurring: { limit: 10n, windowSeconds: 86_400n } },
             ],
         },
     });
@@ -404,7 +415,7 @@ test('createSession with token limits registers a SOL action and one for each mi
         W.Actions.solMaxPerTx(5_000n),
         W.Actions.tokenLimit({ mint: USDC, remaining: 50_000_000n }),
         W.Actions.tokenMaxPerTx({ mint: USDC, max: 1_000_000n }),
-        W.Actions.tokenRecurringLimit({ mint: BONK, limit: 10n, window: 216_000n }),
+        W.Actions.tokenRecurringLimit({ mint: BONK, limit: 10n, windowSeconds: 86_400n }),
     ]);
     const length = Buffer.alloc(2);
     length.writeUInt16LE(actions.length);
@@ -417,7 +428,7 @@ test('createSession with token limits registers a SOL action and one for each mi
     assert.equal(record.info.spendingLimits.solPerTxMax, '5000');
     assert.deepEqual(record.info.spendingLimits.tokens, [
         { mint: USDC.toBase58(), lifetimeCap: '50000000', perTxMax: '1000000', recurring: undefined },
-        { mint: BONK.toBase58(), lifetimeCap: undefined, perTxMax: undefined, recurring: { limit: '10', windowSlots: '216000' } },
+        { mint: BONK.toBase58(), lifetimeCap: undefined, perTxMax: undefined, recurring: { limit: '10', windowSeconds: '86400' } },
     ]);
 });
 
@@ -426,7 +437,7 @@ test("the largest limits createSession takes fill its transaction exactly when t
     connect(W);
     // The portal's, signed in its frame on an app's page, with the key Chrome adds at random: about 300 bytes.
     clientDataBytes = 300;
-    const recurring = { limit: 10n, windowSlots: 216_000n };
+    const recurring = { limit: 10n, windowSeconds: 86_400n };
     await W.useWalletStore.getState().createSession({
         // 244 bytes of actions: solRecurring (43), a lifetimeCap (51) and two recurring limits (75 each).
         spendingLimits: {

@@ -17,6 +17,8 @@ export default createRollupConfig({
         'crypto',
         // A subpath: `external` matches whole import ids, so the dependency's
         // name alone does not keep it out of the bundle.
-        '@noble/curves/nist.js'
+        '@noble/curves/nist.js',
+        // The typed-request module of @lazorkit/sdk-legacy, a subpath too.
+        '@lazorkit/sdk-legacy/approval'
     ]
 });

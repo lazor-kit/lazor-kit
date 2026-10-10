@@ -17,6 +17,8 @@ import {
   toBase64Url,
   type SignedMessageInput,
 } from '../message/signedMessage';
+import { withApprovalFragment, type ApprovalRequest } from '@lazorkit/sdk-legacy/approval';
+import { portalRefusal } from '../approval/errors';
 
 /** A WebAuthn assertion as the portal sends it (base64 fields, like a sign reply). */
 export interface PortalAssertion {
@@ -71,6 +73,12 @@ export interface SignResult {
    * `allowCredentials` entry) and names it back here.
    */
   readonly credentialId?: string;
+  /**
+   * The reply's `typed` block, as the portal sent it (unchecked): the slot
+   * and counter it signed, when it answered a typed request (see
+   * `openApproval`). Absent from a portal that does not read typed requests.
+   */
+  readonly typed?: unknown;
 }
 
 export interface DialogManagerConfig {
@@ -147,11 +155,39 @@ export class DialogManager extends EventEmitter {
    * @returns Promise that resolves with signature result
    */
   async openSign(message: string, transaction: string, credentialId: string, clusterSimulation?: 'devnet' | 'mainnet'): Promise<SignResult> {
-    const encodedMessage = encodeURIComponent(message);
-    let signUrl = `${this.config.portalUrl}?action=${API_ENDPOINTS.SIGN}&message=${encodedMessage}&transaction=${encodeURIComponent(transaction)}&credentialId=${encodeURIComponent(credentialId)}`;
+    let signUrl = this.signUrl(message, transaction, credentialId);
     if (clusterSimulation) {
       signUrl += `&clusterSimulation=${clusterSimulation}`;
     }
+    return this.openSignUrl(signUrl);
+  }
+
+  /**
+   * Open the portal to approve a typed request: CreateSession, RevokeSession
+   * or RemoveAuthority, with the operation's parameters (`request`, from the
+   * protocol SDK's `prepareX`) in the URL fragment (`#/?lk1=…`), so the
+   * portal can show what the passkey approves. The query is `openSign`'s, so
+   * a portal that does not read typed requests signs `challenge` as before.
+   * Throws `TypedRequestTooLargeError` before opening anything when the
+   * request is over the cap.
+   *
+   * The reply is not checked here: its `typed` block names the slot and
+   * counter the portal signed, which the caller checks against what it
+   * prepared (see core/approval/typed.ts) before sending anything.
+   *
+   * @internal Not a stable API.
+   * @param challenge - The challenge the SDK prepared, base64url.
+   */
+  async openApproval(challenge: string, credentialId: string, request: ApprovalRequest): Promise<SignResult> {
+    return this.openSignUrl(withApprovalFragment(this.signUrl(challenge, '', credentialId), request));
+  }
+
+  /** The portal's sign URL, as 3.x builds it. */
+  private signUrl(message: string, transaction: string, credentialId: string): string {
+    return `${this.config.portalUrl}?action=${API_ENDPOINTS.SIGN}&message=${encodeURIComponent(message)}&transaction=${encodeURIComponent(transaction)}&credentialId=${encodeURIComponent(credentialId)}`;
+  }
+
+  private openSignUrl(signUrl: string): Promise<SignResult> {
     return this.awaitPortal<SignResult>('sign-result', 'Signing timed out after 60 seconds', () => {
       this._currentAction = API_ENDPOINTS.SIGN;
       return this.shouldUsePopup('sign') ? this.openPopup(signUrl) : this.openSignDialog(signUrl);
@@ -768,7 +804,7 @@ export class DialogManager extends EventEmitter {
       const { type, data, error } = event.data;
 
       if (error) {
-        this.emit('error', new Error(portalErrorText(event.data)));
+        this.emit('error', portalError(event.data));
         return;
       }
 
@@ -806,12 +842,13 @@ export class DialogManager extends EventEmitter {
             authenticatorDataBase64: data.authenticatorDataReturn,
             signedPayload: data.msg,
             credentialId: typeof data.credentialId === 'string' && data.credentialId ? data.credentialId : undefined,
+            ...(data.typed !== undefined && data.typed !== null ? { typed: data.typed } : {}),
           };
           this.emit('sign-result', transformedDataSignResult);
           this.closeDialog();
           break;
         case 'error':
-          this.emit('error', new Error(portalErrorText(event.data)));
+          this.emit('error', portalError(event.data));
           break;
         case 'close':
           // The portal closed itself without an answer.
@@ -934,6 +971,17 @@ export class DialogManager extends EventEmitter {
     this.removeAllListeners();
     this.logger.debug('Destroyed dialog manager');
   }
+}
+
+/**
+ * The error for a portal's error message: a typed-request refusal by its
+ * `code` (`{ type: 'error', error: { code, message } }`), as
+ * `RequestOutOfDateError` or `PortalRefusedError`; anything else as an
+ * `Error` with the portal's words.
+ */
+function portalError(message: { error?: unknown; details?: unknown; data?: { message?: unknown } }): Error {
+  const code = (message.error as { code?: unknown } | undefined)?.code;
+  return portalRefusal(code, portalErrorText(message)) ?? new Error(portalErrorText(message));
 }
 
 /**
