@@ -78,10 +78,13 @@ export interface SpendingLimits {
     solLifetimeCap?: bigint;
     /** Max SOL per single execute in lamports */
     solPerTxMax?: bigint;
-    /** SOL cap that resets every `windowSlots` slots */
+    /**
+     * SOL cap that resets every `windowSeconds` seconds of the cluster clock
+     * (`86_400n` is a day), counted from the first payment in each window.
+     */
     solRecurring?: {
         limit: bigint;
-        windowSlots: bigint;
+        windowSeconds: bigint;
     };
     /**
      * The tokens the session may spend, one entry per mint, each with at
@@ -99,14 +102,38 @@ export interface TokenSpendingLimit {
     lifetimeCap?: bigint;
     /** Max per single execute. */
     perTxMax?: bigint;
-    /** Cap that resets every `windowSlots` slots. */
+    /** Cap that resets every `windowSeconds` seconds of the cluster clock (`86_400n` is a day). */
     recurring?: {
         limit: bigint;
-        windowSlots: bigint;
+        windowSeconds: bigint;
     };
 }
 
 export interface CreateSessionPayload {
+    /**
+     * How long the session lasts, in seconds of the cluster clock (the
+     * Clock sysvar's Unix time, which the program compares against): more
+     * than 0 and at most 30 days (`MAX_SESSION_SECONDS`). Defaults to
+     * `DEFAULTS.SESSION_EXPIRY_SECONDS` (5 hours). Give at most one of
+     * `expiresInSeconds`, `expiresAt` and `expiresInSlots`.
+     */
+    readonly expiresInSeconds?: number | bigint;
+    /**
+     * When the session ends, as a Unix time in seconds: after the cluster
+     * clock and at most 30 days ahead of it. The portal shows it to the user
+     * ("until about 6:50 PM") before the passkey signs.
+     */
+    readonly expiresAt?: number | bigint;
+    /**
+     * @deprecated Sessions expire by the cluster clock now, not by slot. Use
+     * `expiresInSeconds`. Still accepted: it is converted to seconds with the
+     * cluster's measured slot time (recent performance samples), and a
+     * warning is logged once. It throws when the slot time cannot be read.
+     *
+     * A wallet made before LazorKit v2 (v1) expires sessions at a slot, as
+     * before: `expiresInSlots` is used as given, and with no expiry the
+     * session lasts `DEFAULTS.SESSION_EXPIRY_SLOTS` (50,000) slots.
+     */
     readonly expiresInSlots?: bigint;
     readonly spendingLimits?: SpendingLimits;
     /**

@@ -2,7 +2,16 @@ export const DEFAULTS = {
   PORTAL_URL: 'https://portal.lazor.sh',
   PAYMASTER_URL: 'https://kora.devnet.lazorkit.com',
   RPC_ENDPOINT: 'https://api.devnet.solana.com',
-  /** Session keys expire after this many slots (~5h at 400ms/slot) if `expiresInSlots` isn't provided. */
+  /**
+   * How long a session lasts when `createSession` is given no expiry: 5 hours
+   * of the cluster clock, for a v2 wallet.
+   */
+  SESSION_EXPIRY_SECONDS: 18_000,
+  /**
+   * How long a v1 wallet's session lasts when `createSession` is given no
+   * expiry: 50,000 slots, as before (v1 measures sessions in slots, about 5.5
+   * hours on mainnet and 3 on devnet). v2 wallets use SESSION_EXPIRY_SECONDS.
+   */
   SESSION_EXPIRY_SLOTS: 50_000n,
   /**
    * Deferred execution: how many slots after TX1 (Authorize) the program still

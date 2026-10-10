@@ -64,7 +64,23 @@ export interface WalletHookInterface {
   verifyMessage: (args: { signedPayload: Uint8Array, signature: Uint8Array, publicKey: Uint8Array }) => Promise<boolean>;
 
   // Session key actions
+  /**
+   * Creates a session with one passkey approval. The portal shows what it
+   * approves: the limits, and when it ends ("until about 6:50 PM").
+   */
   createSession: (payload?: {
+    /**
+     * How long the session lasts, in seconds of the cluster clock: more than
+     * 0 and at most 30 days. Default `DEFAULTS.SESSION_EXPIRY_SECONDS` (5
+     * hours). Give at most one of the three expiry fields.
+     */
+    expiresInSeconds?: number | bigint;
+    /** When the session ends, as a Unix time in seconds: within 30 days of the cluster clock. */
+    expiresAt?: number | bigint;
+    /**
+     * @deprecated Sessions expire by the cluster clock. Converted to seconds
+     * with the cluster's measured slot time; use `expiresInSeconds`.
+     */
     expiresInSlots?: bigint;
     spendingLimits?: SpendingLimits;
     /**
