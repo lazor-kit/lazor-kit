@@ -500,8 +500,10 @@ bounded at all, see the end of this section):
   `tokenMaxPerTx` and `tokenLimit` for 2 mints (223 bytes), or `solMaxPerTx`
   with `tokenMaxPerTx` for 4 (223). The transaction holds 1232 bytes, and the
   passkey's clientDataJSON is sized at 320 of them (as `@lazorkit/sdk-legacy`
-  sizes it). Nothing checks this
-  before the portal opens: actions that do not fit fail after the user
+  sizes it). `createSession` checks a session's actions (more than 16, or
+  more than 224 bytes of `serializeActions`, throws a RangeError) before
+  anything is read or the portal opens. Nothing checks an
+  `addAuthorityEd25519` policy: one that does not fit fails after the user
   approved.
 
 A session made with `unrestricted: true` (no actions) has none of these

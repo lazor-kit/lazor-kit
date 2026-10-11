@@ -1224,7 +1224,11 @@ identity, so pass the same object and function again.
 6. **The stored config is never read back.** The provider's props are the
    config from the first render; 3.x put the config it had stored in the
    state until the provider's effect replaced it. What is stored is unchanged.
-7. **`@lazorkit/sdk-legacy` 1.3.1 or later.**
+7. **`@lazorkit/sdk-legacy` 2.0.0 or later.** This package depends on it
+   directly (`^2.0.0`, up from 3.x's `^1.3.0`), so it is installed with it.
+   An app that imports `@lazorkit/sdk-legacy` itself moves to `^2.0.0` too:
+   `Actions.solRecurringLimit` / `tokenRecurringLimit` take `windowSeconds`
+   instead of `window`.
 
 **New:** `status`, `address`, `signAndSend`, `onSubmitted`, `ConnectButton`,
 `useWalletStatus`, `createLazorkitClient`, `errorKind`, `userMessage`, `onEvent`,
