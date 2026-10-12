@@ -47,8 +47,21 @@ export function scriptedChain(W) {
         rpcCalls: [],
         /** Every transaction the paymaster was asked to send. */
         sent: [],
-        /** `null`, or 'fail' (refuse every send), 'foreign-signature' (land it, return another signature), 'rpc-down' (every RPC 500). */
+        /**
+         * `null`, or 'fail' (refuse every send), 'foreign-signature' (land it,
+         * return another signature), 'rpc-down' (every RPC 500), 'lose-answer'
+         * (land it, then answer 502: the answer is lost), 'drop' (do not land
+         * it, and answer 502).
+         */
         mode: null,
+        /**
+         * Scripted answers to `signAndSendTransaction`, used up one per send
+         * attempt before `mode` applies: each `(tx) => Response`, or `null` for
+         * "behave as usual".
+         */
+        paymasterScript: [],
+        /** What `getBlockHeight` answers (blockhashes here are valid to 1e9). */
+        blockHeight: 1,
         /** What `simulateTransaction` answers: { err, logs, vaultLamportsAfter }. */
         simulation: { err: null, logs: [] },
     };
@@ -122,6 +135,8 @@ export function scriptedChain(W) {
         switch (method) {
             case 'getSlot':
                 return reply(id, state.slot);
+            case 'getBlockHeight':
+                return reply(id, state.blockHeight);
             case 'getEpochInfo':
                 return reply(id, { absoluteSlot: state.slot, blockHeight: 1, epoch: 1, slotIndex: 1, slotsInEpoch: 432000, transactionCount: 1 });
             case 'getLatestBlockhash':
@@ -244,7 +259,10 @@ export function scriptedChain(W) {
         if (method !== 'signAndSendTransaction') throw new Error(`unscripted paymaster ${method}`);
         const tx = VersionedTransaction.deserialize(Buffer.from(params.transaction, 'base64'));
         state.sent.push(tx);
+        const scripted = state.paymasterScript.length ? state.paymasterScript.shift() : null;
+        if (scripted) return scripted(tx, { answer });
         if (state.mode === 'fail') return answer({ error: { code: -32000, message: 'the paymaster refused this transaction' } });
+        if (state.mode === 'drop') return new Response('', { status: 502, statusText: 'Bad Gateway' });
         tx.sign([FEE_PAYER]);
         try {
             land(tx);
@@ -252,6 +270,7 @@ export function scriptedChain(W) {
             return answer({ error: { code: -32002, message: `Transaction simulation failed: ${error.message}` } });
         }
         const signature = record(tx);
+        if (state.mode === 'lose-answer') return new Response('', { status: 502, statusText: 'Bad Gateway' });
         if (state.mode === 'foreign-signature') {
             // Its own transfer, landed, reported as this one.
             const other = new VersionedTransaction(
@@ -378,6 +397,8 @@ export function scriptedChain(W) {
             state.rpcCalls.length = 0;
             state.sent.length = 0;
             state.mode = null;
+            state.paymasterScript.length = 0;
+            state.blockHeight = 1;
             state.simulation = { err: null, logs: [] };
         },
         /** RPC calls of `method` so far. */

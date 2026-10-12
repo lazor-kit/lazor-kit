@@ -68,6 +68,13 @@ export interface ResolveWalletParams {
    * and this rejects with `PortalCancelledError`.
    */
   signal?: AbortSignal;
+  /**
+   * The wallet PDA (base58) of a creation for this passkey whose outcome was
+   * not known (see ./pendingCreation). Found, proven and controlled by this
+   * passkey alone, it is adopted without asking: it is the wallet this
+   * connect's own retry would create.
+   */
+  justCreated?: string;
 }
 
 /**
@@ -103,6 +110,23 @@ export async function resolveWallet(params: ResolveWalletParams): Promise<Wallet
 
   // None proven, or all of them dead (a migrated v1 wallet leaves authorities behind).
   if (!facts.length) return null;
+
+  // The wallet an earlier connect created for this passkey, whose answer was
+  // lost: never signed for yet, so pickOwnWallet would ask the user about it.
+  // It is adopted only as the one proven wallet, with no other key, session
+  // or grant on it.
+  if (params.justCreated && facts.length === 1) {
+    const [mine] = facts;
+    if (
+      mine.walletPda.toBase58() === params.justCreated &&
+      mine.controlledAlone &&
+      mine.otherAuthorities.length === 0 &&
+      mine.liveSessions.length === 0 &&
+      mine.pendingDeferred.length === 0
+    ) {
+      return mine;
+    }
+  }
 
   const { adopt, needsConfirmation } = pickOwnWallet(facts);
   if (adopt) return adopt;
@@ -155,6 +179,13 @@ export interface KeyToCreateParams {
   credentialId: string;
   /** The key the connect reply reported, if any (not evidence: any app can send that deep link on Android). */
   reported?: Uint8Array;
+  /**
+   * The reported key is the passkey's own: the portal registered the passkey
+   * just now, and its reply came back through the iOS authentication session,
+   * which no other app can answer (see `SaveWalletOptions.createdInAuthSession`).
+   * It is used as it is, with no ownership proof: no second portal trip.
+   */
+  reportedIsOwn?: boolean;
   /** The assertion the connect reply carried, over the connect URL's challenge, if any. */
   connectProof?: OwnershipProof;
   /** The connect's ownership proof — the same one the wallet lookup used, made now if it was not needed there. */
@@ -203,6 +234,7 @@ export interface KeyToCreateParams {
  */
 export async function keyToCreate(params: KeyToCreateParams): Promise<Uint8Array> {
   const { rpId, credentialId, reported, connectProof } = params;
+  if (params.reportedIsOwn && reported?.length === 33) return reported;
   const proof = await params.prove();
   refuseOtherPasskey(proof, credentialId);
   if (reported?.length === 33 && verifyOwnershipProof([{ publicKey: reported }], proof, rpId).length) {

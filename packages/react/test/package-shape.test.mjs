@@ -66,12 +66,16 @@ const NEW_IN_4 = [
     'isUserRejection', 'passkeyCapabilities', 'publicKeyFromAttestation', 'resolveConfig', 'userMessage', 'validateRpId',
     // Typed approval requests and time-based session expiry (#130).
     'MAX_SESSION_SECONDS', 'PortalRefusedError', 'PortalReplyMismatchError', 'RequestOutOfDateError', 'TypedRequestTooLargeError',
+    // Plain-language errors and the send status.
+    'describeError', 'sendStatusOf',
+    // A passkey approval sent too late (3007).
+    'SIGNATURE_TOO_OLD_CODE', 'SignatureTooOldError', 'isSignatureTooOldError',
 ];
 const REACT_ONLY = ['CONNECT_BUTTON_TEXT', 'ConnectButton', 'LazorkitProvider', 'connectButtonLabel', 'useWallet', 'useWalletStore'];
-const HOOKS = ['useLazorkitClient', 'useLazorkitState', 'useWallet', 'useWalletStatus', 'useWalletStore'];
+const HOOKS = ['useAuthorities', 'useDeferred', 'useLazorkitClient', 'useLazorkitState', 'useSessions', 'useWallet', 'useWalletStatus', 'useWalletStore'];
 const names = (module) => Object.keys(module).filter((k) => k !== '__esModule' && k !== 'default').sort();
 
-test("each entry exports exactly its names: the root 3.4.1's plus 4.0's, /core the root's without React, /hooks its five (ESM, CJS, types)", async () => {
+test("each entry exports exactly its names: the root 3.4.1's plus 4.0's, /core the root's without React, /hooks its eight (ESM, CJS, types)", async () => {
     const root = [...new Set([...V341, ...NEW_IN_4])].sort();
     const core = root.filter((n) => !REACT_ONLY.includes(n));
     for (const [entry, expected] of [

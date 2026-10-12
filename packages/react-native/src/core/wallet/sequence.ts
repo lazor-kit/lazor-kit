@@ -129,8 +129,13 @@ export class PreviousTransactionPendingError extends Error {
 const POLL_MS = 400;
 const EXPIRY_CHECK_EVERY_MS = 2_000;
 const MAX_WAIT_MS = 120_000;
-/** Settling a send whose own wait already ran out: this long, then `PreviousTransactionPendingError`. */
-const SETTLE_RETRY_MS = 15_000;
+/**
+ * How long a new call waits for the passkey's previous send to settle before
+ * it gives up with `PreviousTransactionPendingError` (which says to try again
+ * shortly). The send itself keeps being followed by its own call; a new call
+ * does not hold a spinner for the rest of that send's two minutes.
+ */
+const SETTLE_WAIT_MS = 20_000;
 /** One RPC request. Past this it counts as a failed read, and the next poll sends a new one. */
 const REQUEST_TIMEOUT_MS = 10_000;
 /**
@@ -528,9 +533,10 @@ async function settle(lane: Lane, connection: Connection): Promise<void> {
   await restore(lane);
   const pending = lane.unsettled;
   if (!pending) return;
-  // Up to two minutes from its send, and at least a short while more for a
-  // send whose own wait already ran out.
-  const deadline = Math.max(pending.since + MAX_WAIT_MS, Date.now() + SETTLE_RETRY_MS);
+  // A short while: long enough for a blockhash that is about to expire (or a
+  // status that is about to show), short enough that the next tap after a
+  // lost answer is not a two-minute spinner.
+  const deadline = Date.now() + SETTLE_WAIT_MS;
   const outcome = await watch(connection, pending, deadline);
   if (!settleWith(lane, pending, outcome)) throw new PreviousTransactionPendingError(pending.signature);
 }

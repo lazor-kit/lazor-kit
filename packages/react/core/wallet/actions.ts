@@ -50,6 +50,8 @@ import type { WalletConfig } from '../storage';
 import { spendingLimitsRecord, spendingLimitsToActions, toPolicyError } from './policy';
 import { type AuthorityTurn, sendAndConfirm, withAuthority } from './sequence';
 import { buildPreviewTransactionBase64 } from './preview';
+import { checkComputeUnitLimit, withComputeUnitLimit } from './computeBudget';
+import { blockhashStillValid } from './blockhash';
 import { deferredExpiryOffset, executeBeforeExpiry } from './deferred';
 import { type KeySigner, type KeyStorage, forgetKey, generateKey, saveKey, wipeKey, wipeMark } from '../keys';
 import { keyForConnectedWallet, walletOfKey } from './keyBinding';
@@ -164,11 +166,16 @@ async function buildAndSendTx(params: {
     verifyFeePayer?: boolean;
     /** The slot the transaction landed in, when it is not a passkey lane's. */
     onLanded?: (slot: number) => void;
+    /** `transactionOptions.computeUnitLimit`: `SetComputeUnitLimit` first (see ./computeBudget). */
+    computeUnitLimit?: number;
 }): Promise<string> {
-    const { paymaster, connection, feePayer, instructions } = params;
+    const { paymaster, connection, feePayer } = params;
+    const instructions = withComputeUnitLimit(params.instructions, params.computeUnitLimit);
     const signers = params.signers ?? [];
     const txVersion = params.txVersion ?? 'v0';
     const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+    // A retry resends the same bytes, and only while they can still land.
+    const sendOptions = { canResend: () => blockhashStillValid(connection, lastValidBlockHeight) };
 
     let send: () => Promise<string>;
     let simulateLogs: () => Promise<readonly string[] | null | undefined>;
@@ -183,7 +190,7 @@ async function buildAndSendTx(params: {
         tx.feePayer = feePayer;
         for (const signer of signers) await signer.signTransaction(tx);
         message = new Uint8Array(tx.serializeMessage());
-        send = () => paymaster.signAndSend(tx);
+        send = () => paymaster.signAndSend(tx, undefined, undefined, sendOptions);
         simulateLogs = async () => (await connection.simulateTransaction(tx)).value.logs;
     } else {
         const v0Message = new TransactionMessage({
@@ -194,7 +201,7 @@ async function buildAndSendTx(params: {
         const tx = new VersionedTransaction(v0Message);
         for (const signer of signers) await signer.signTransaction(tx);
         message = v0Message.serialize();
-        send = () => paymaster.signAndSendVersionedTransaction(tx);
+        send = () => paymaster.signAndSendVersionedTransaction(tx, undefined, undefined, sendOptions);
         simulateLogs = async () =>
             (await connection.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true })).value.logs;
     }
@@ -368,13 +375,13 @@ export const connectAction = async (
             onConfirmWallet: options?.onConfirmWallet ?? config.onConfirmWallet,
             confirmWallet: options?.confirmWallet,
             openPortal: () => createPortalDialog(config),
-            createWallet: async (owner) => {
+            createWallet: async (owner, userSeed) => {
                 const client = clientFor(2, connection);
                 const paymaster = paymasterFor(config, 2);
                 const feePayer = await paymaster.getPayer();
                 const { instructions, walletPda, authorityPda } = await client.createWallet({
                     payer: feePayer,
-                    userSeed: randomBytes(32),
+                    userSeed,
                     owner: { type: 'secp256r1', ...owner },
                 });
                 await buildAndSendTx({ paymaster, connection, feePayer, instructions, createsAuthority: authorityPda });
@@ -478,6 +485,7 @@ export const signAndSendTransactionAction = async (
     }
 
     set({ isSigning: true, error: null, ...(embedded ? { step: 'preparing' as const } : {}) });
+    const computeUnitLimit = payload.transactionOptions?.computeUnitLimit;
     // Embedded: what the sheet shows is what is signed and sent, whatever the
     // app does to its instruction objects meanwhile.
     const instructions = embedded ? snapshotInstructions(payload.instructions) : payload.instructions;
@@ -493,6 +501,8 @@ export const signAndSendTransactionAction = async (
     };
 
     try {
+        // Refused before anything is read or prompted.
+        checkComputeUnitLimit(computeUnitLimit);
         const { client, version, walletPda, authorityPda, publicKeyBytes, credentialIdHash } =
             await resolvePasskeyWallet(wallet, connection, config);
         const paymaster = paymasterFor(config, version);
@@ -516,14 +526,12 @@ export const signAndSendTransactionAction = async (
         }
 
         const txSignature = await withAuthority(authorityPda, async (turn) => {
-            const prepared = await client.prepareExecute({
-                payer: feePayer,
-                walletPda,
-                secp256r1: { credentialIdHash, publicKeyBytes, authorityPda, ...(await turn.challengeReads(connection)) },
-                instructions,
-            });
-            const encodedChallenge = toBase64Url(prepared.challenge);
-
+            // Everything that does not need the challenge first. The challenge
+            // names the slot it is read at, and the program accepts the
+            // signature for only 150 slots after it (about 35 s), approval
+            // included: so the slot is read last, right before the portal
+            // opens with it.
+            const reads = await turn.challengeReads(connection);
             // A display-only v0 transaction so the portal can render the ixs,
             // compiled with the caller's lookup tables like the one sent.
             // Embedded mode reviewed them already.
@@ -535,6 +543,13 @@ export const signAndSendTransactionAction = async (
                       instructions,
                       addressLookupTables: lookupTables,
                   });
+            const prepared = await client.prepareExecute({
+                payer: feePayer,
+                walletPda,
+                secp256r1: { credentialIdHash, publicKeyBytes, authorityPda, ...reads },
+                instructions,
+            });
+            const encodedChallenge = toBase64Url(prepared.challenge);
 
             const dialogManager = createDialogManager(config);
             try {
@@ -557,6 +572,7 @@ export const signAndSendTransactionAction = async (
                     turn,
                     onSubmitted,
                     verifyFeePayer: embedded,
+                    computeUnitLimit,
                 });
             } finally {
                 dialogManager.destroy();

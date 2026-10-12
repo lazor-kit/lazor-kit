@@ -7,16 +7,14 @@
  */
 import { Buffer } from 'buffer';
 import {
-  ComputeBudgetProgram,
   Keypair,
   PublicKey,
   SystemProgram,
-  TransactionInstruction,
 } from '@solana/web3.js';
 import { sha256 } from 'js-sha256';
 
-import { handleAuthRedirect, readConnectAssertion } from './core/auth/handleRedirect';
-import { openBrowser } from './core/browser/open';
+import { handleAuthRedirect, readConnectAssertion, readConnectKind } from './core/auth/handleRedirect';
+import { openBrowser, openBrowserSession } from './core/browser/open';
 import {
   approveViaPortal,
   buildPreviewTransactionBase64,
@@ -32,6 +30,7 @@ import { connectAbandoned, forgetCandidates, hasChooserHost } from './core/walle
 import { type AuthorityTurn, withAuthority } from './core/wallet/sequence';
 import { deferredExpiryOffset, executeBeforeExpiry } from './core/wallet/deferred';
 import { checkSessionActionsFit, toPolicyError } from './core/wallet/policy';
+import { checkComputeUnitLimit, withComputeUnitLimit } from './core/wallet/computeBudget';
 import { actionsForV1, sessionExpiresAt } from './core/wallet/sessionExpiry';
 import { logger } from './core/logger';
 import {
@@ -353,7 +352,8 @@ const connectWallet = async (
       `${config.portalUrl}/${API_ENDPOINTS.CONNECT}&redirect_url=${encodeURIComponent(redirectUrl)}` +
       `&challenge=${encodeURIComponent(toBase64Url(challenge))}`;
 
-    const resultUrl = await openBrowser(connectUrl, redirectUrl);
+    const reply = await openBrowserSession(connectUrl, redirectUrl);
+    const resultUrl = reply.url;
     if (attempt.signal.aborted) throw connectAbandoned();
     const walletInfo = handleAuthRedirect(resultUrl);
     if (!walletInfo) {
@@ -364,6 +364,9 @@ const connectWallet = async (
     const savedWallet = await saveWallet(walletInfo, {
       redirectUrl,
       proof: readConnectAssertion(resultUrl, challenge),
+      // iOS: a passkey registered just now, reported through the auth session
+      // (no other app can answer it): its key needs no second portal trip.
+      createdInAuthSession: reply.authSession && readConnectKind(resultUrl) === 'created',
       confirmWallet: options.confirmWallet,
       onConfirmWallet: options.onConfirmWallet,
       openChooser: (request) => openWalletChooser(get, set, request),
@@ -503,24 +506,31 @@ async function performPasskeyExecute(
   options: SignOptions,
 ): Promise<string> {
   const { connection, wallet, config } = requireWalletAndConnection(get);
+  // Refused before anything is read or the browser opens.
+  checkComputeUnitLimit(payload.transactionOptions?.computeUnitLimit);
   const { client, version } = await buildClient(get);
   const feePayer = await feePayerFor(config, version);
 
   const walletPda = new PublicKey(wallet!.walletPda);
 
   return withPasskey(connection, wallet!, async (secp256r1, turn) => {
-    const prepared = await client.prepareExecute({
-      payer: feePayer,
-      walletPda,
-      secp256r1,
-      instructions: payload.instructions,
-    });
-
+    // Everything that does not need the challenge first. The challenge names
+    // the slot it is read at, and the program accepts the signature for only
+    // 150 slots after it (about 35 s), the trip through the browser and the
+    // approval included: so the slot is read last, right before the browser
+    // opens with it.
     const previewBase64Tx = await buildPreviewTransactionBase64({
       connection,
       feePayer,
       instructions: payload.instructions,
       addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
+    });
+
+    const prepared = await client.prepareExecute({
+      payer: feePayer,
+      walletPda,
+      secp256r1,
+      instructions: payload.instructions,
     });
 
     const webAuthnResponse = await signChallengeViaPortal({
@@ -533,15 +543,8 @@ async function performPasskeyExecute(
     });
 
     const { instructions } = client.finalizeExecute(prepared, webAuthnResponse);
-    const executeInstructions: TransactionInstruction[] = [];
-    if (payload.transactionOptions?.computeUnitLimit) {
-      executeInstructions.push(
-        ComputeBudgetProgram.setComputeUnitLimit({
-          units: payload.transactionOptions.computeUnitLimit,
-        }),
-      );
-    }
-    executeInstructions.push(...instructions);
+    // SetComputeUnitLimit first, before any precompile (see core/wallet/computeBudget).
+    const executeInstructions = withComputeUnitLimit(instructions, payload.transactionOptions?.computeUnitLimit);
 
     // Resolves once confirmed; rejects if it failed on chain.
     return sendInstructionsViaPaymaster({
@@ -775,15 +778,8 @@ export const signAndSendWithSessionAction = async (
         instructions: payload.instructions,
       });
 
-      const allInstructions: TransactionInstruction[] = [];
-      if (payload.transactionOptions?.computeUnitLimit) {
-        allInstructions.push(
-          ComputeBudgetProgram.setComputeUnitLimit({
-            units: payload.transactionOptions.computeUnitLimit,
-          }),
-        );
-      }
-      allInstructions.push(...instructions);
+      // SetComputeUnitLimit first, before any precompile (see core/wallet/computeBudget).
+      const allInstructions = withComputeUnitLimit(instructions, payload.transactionOptions?.computeUnitLimit);
 
       const signature = await sendInstructionsViaPaymaster({
         instructions: allInstructions,
@@ -1041,15 +1037,8 @@ export const authorizeAndExecuteAction = async (
           deferredPayload,
         });
 
-        const tx2Instructions: TransactionInstruction[] = [];
-        if (payload.transactionOptions?.computeUnitLimit) {
-          tx2Instructions.push(
-            ComputeBudgetProgram.setComputeUnitLimit({
-              units: payload.transactionOptions.computeUnitLimit,
-            }),
-          );
-        }
-        tx2Instructions.push(...executeIxs);
+        // SetComputeUnitLimit first, before any precompile (see core/wallet/computeBudget).
+        const tx2Instructions = withComputeUnitLimit(executeIxs, payload.transactionOptions?.computeUnitLimit);
 
         return executeBeforeExpiry({
           connection,
@@ -1181,15 +1170,8 @@ export const executeDeferredAction = async (
         refundDestination: payload.refundDestination,
       });
 
-      const allInstructions: TransactionInstruction[] = [];
-      if (payload.transactionOptions?.computeUnitLimit) {
-        allInstructions.push(
-          ComputeBudgetProgram.setComputeUnitLimit({
-            units: payload.transactionOptions.computeUnitLimit,
-          }),
-        );
-      }
-      allInstructions.push(...instructions);
+      // SetComputeUnitLimit first, before any precompile (see core/wallet/computeBudget).
+      const allInstructions = withComputeUnitLimit(instructions, payload.transactionOptions?.computeUnitLimit);
 
       // An expired authorization is refused before it is sent, or its 3014
       // reported, as `DeferredExpiredError`.

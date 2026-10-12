@@ -101,15 +101,15 @@ export interface WalletHookInterface extends EasyWallet {
    */
   verifyMessage: (args: { signedPayload: Uint8Array, signature: Uint8Array, publicKey: Uint8Array }) => Promise<boolean>;
 
-  // Session key actions. The session, authority and deferred actions move to
-  // the Advanced hooks a later 4.x adds to `@lazorkit/wallet/hooks`, with
-  // the same names and parameters; they stay here until 5.0, and warn once
-  // each when first called.
+  // Session key actions. The session, authority and deferred actions are in
+  // the Advanced hooks of `@lazorkit/wallet/hooks` (`useSessions`,
+  // `useAuthorities`, `useDeferred`), with the same names and parameters;
+  // they stay here until 5.0, and warn once each when first called.
   /**
    * Creates a session with one passkey approval. The portal shows what it
    * approves: the limits, and when it ends ("until about 6:50 PM").
    *
-   * @deprecated Moves to `useSessions()` in `@lazorkit/wallet/hooks` in a later 4.x, with the same parameters.
+   * @deprecated Use `useSessions()` from `@lazorkit/wallet/hooks`, with the same parameters. Removed from `useWallet()` in 5.0.
    */
   createSession: (payload?: {
     /**
@@ -149,7 +149,7 @@ export interface WalletHookInterface extends EasyWallet {
    * which must be the connected wallet's (`KeyWalletMismatchError` otherwise,
    * before the passkey prompt).
    */
-  /** @deprecated Moves to `useSessions()` in `@lazorkit/wallet/hooks` in a later 4.x, with the same parameters. */
+  /** @deprecated Use `useSessions()` from `@lazorkit/wallet/hooks`, with the same parameters. Removed from `useWallet()` in 5.0. */
   revokeSession: (payload?: { sessionPda?: PublicKey | string; onSuccess?: () => void; onFail?: (error: Error) => void }) => Promise<void>;
   /**
    * Signs with the session key the SDK keeps, no passkey prompt. Only while
@@ -157,7 +157,7 @@ export interface WalletHookInterface extends EasyWallet {
    * `KeyWalletMismatchError`, and nothing is signed or sent. A key whose
    * session has expired is deleted, and the call rejects.
    */
-  /** @deprecated Moves to `useSessions()` in `@lazorkit/wallet/hooks` in a later 4.x, with the same parameters. */
+  /** @deprecated Use `useSessions()` from `@lazorkit/wallet/hooks`, with the same parameters. Removed from `useWallet()` in 5.0. */
   signAndSendWithSession: (payload: SendTxPayload & ActionCallbacks<string>) => Promise<string>;
 
   // Ed25519 authority actions
@@ -169,7 +169,7 @@ export interface WalletHookInterface extends EasyWallet {
    * within its `policy` (required on v2). For an app key use `ROLE_SPENDER`
    * with a policy. A missing or unknown role throws before the prompt.
    */
-  /** @deprecated Moves to `useAuthorities()` in `@lazorkit/wallet/hooks` in a later 4.x, with the same parameters. */
+  /** @deprecated Use `useAuthorities()` from `@lazorkit/wallet/hooks`, with the same parameters. Removed from `useWallet()` in 5.0. */
   addAuthority: (payload: {
     role: number;
     policy?: Uint8Array;
@@ -177,26 +177,26 @@ export interface WalletHookInterface extends EasyWallet {
     onSuccess?: (authorityPda: string, authorityPublicKey: string) => void;
     onFail?: (error: Error) => void;
   }) => Promise<{ authorityPda: string; authorityPublicKey: string }>;
-  /** @deprecated Moves to `useAuthorities()` in `@lazorkit/wallet/hooks` in a later 4.x, with the same parameters. */
+  /** @deprecated Use `useAuthorities()` from `@lazorkit/wallet/hooks`, with the same parameters. Removed from `useWallet()` in 5.0. */
   removeAuthority: (targetAuthorityPda: string, options?: RemoveAuthorityOptions) => Promise<void>;
   /**
    * Signs with the authority key the SDK keeps, no passkey prompt. Only while
    * the wallet the authority was added to is connected: otherwise it rejects
    * with `KeyWalletMismatchError`, and nothing is signed or sent.
    */
-  /** @deprecated Moves to `useAuthorities()` in `@lazorkit/wallet/hooks` in a later 4.x, with the same parameters. */
+  /** @deprecated Use `useAuthorities()` from `@lazorkit/wallet/hooks`, with the same parameters. Removed from `useWallet()` in 5.0. */
   signAndSendWithAuthority: (payload: SendTxPayload & ActionCallbacks<string>) => Promise<string>;
 
   // Deferred execution
-  /** @deprecated Moves to `useDeferred()` in `@lazorkit/wallet/hooks` in a later 4.x, with the same parameters. */
+  /** @deprecated Use `useDeferred()` from `@lazorkit/wallet/hooks`, with the same parameters. Removed from `useWallet()` in 5.0. */
   authorizeAndExecute: (payload: DeferredTxPayload & ActionCallbacks<string>) => Promise<string>;
   /** TX1 only: the passkey signs, and the serialized deferredPayload for TX2 comes back. */
-  /** @deprecated Moves to `useDeferred()` in `@lazorkit/wallet/hooks` in a later 4.x, with the same parameters. */
+  /** @deprecated Use `useDeferred()` from `@lazorkit/wallet/hooks`, with the same parameters. Removed from `useWallet()` in 5.0. */
   authorizeDeferred: (
     payload: DeferredTxPayload & ActionCallbacks<{ signature: string; deferredPayload: string }>,
   ) => Promise<{ signature: string; deferredPayload: string }>;
   /** TX2 only: sent from a serialized deferredPayload. No passkey needed. */
-  /** @deprecated Moves to `useDeferred()` in `@lazorkit/wallet/hooks` in a later 4.x, with the same parameters. */
+  /** @deprecated Use `useDeferred()` from `@lazorkit/wallet/hooks`, with the same parameters. Removed from `useWallet()` in 5.0. */
   executeDeferred: (payload: ExecuteDeferredHookPayload & ActionCallbacks<string>) => Promise<string>;
 }
 
@@ -257,8 +257,8 @@ function deprecatedCall(name: string, hook: string): void {
   if (warned.has(name)) return;
   warned.add(name);
   console.warn(
-    `[LazorKit] useWallet().${name} is deprecated: it moves to ${hook} in @lazorkit/wallet/hooks in a later 4.x, ` +
-      'with the same parameters, and leaves useWallet() in 5.0. It still works.',
+    `[LazorKit] useWallet().${name} is deprecated: use ${hook} from @lazorkit/wallet/hooks, ` +
+      'with the same parameters. It leaves useWallet() in 5.0, and still works until then.',
   );
 }
 

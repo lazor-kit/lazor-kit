@@ -92,7 +92,7 @@ test('D11: Embedded on mainnet without its own paymaster throws; a LazorKit paym
     W.resolveConfig({ ...mainnet, paymasterConfig: { paymasterUrl: 'https://kora.mainnet.lazorkit.com' } });
     assert.match(warnings.join('\n'), /LazorKit relayer on mainnet/);
     // Devnet: LazorKit's relayer is the default.
-    assert.equal(W.resolveConfig({ ...mainnet, cluster: 'devnet' }).paymasterConfig.paymasterUrl, 'https://kora.devnet.lazorkit.com');
+    assert.equal(W.resolveConfig({ ...mainnet, cluster: 'devnet' }).paymasterConfig.paymasterUrl, 'https://kora-devnet-production.up.railway.app');
 });
 
 test('a localhost rpId on mainnet throws: every local dev server shares it', () => {

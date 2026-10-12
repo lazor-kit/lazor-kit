@@ -176,7 +176,50 @@ test('the session, authority and deferred functions on useWallet still run, and 
     }
     const deprecations = warnings.filter((w) => /is deprecated/.test(w)).map((w) => w.match(/useWallet\(\)\.(\w+)/)[1]);
     assert.deepEqual(deprecations.sort(), Object.keys(calls).sort(), 'one warning per function');
-    assert.match(warnings.find((w) => w.includes('createSession')), /useSessions\(\) in @lazorkit\/wallet\/hooks/);
+    assert.match(warnings.find((w) => w.includes('createSession')), /use useSessions\(\) from @lazorkit\/wallet\/hooks/);
+    assert.match(warnings.find((w) => w.includes('addAuthority')), /use useAuthorities\(\) from @lazorkit\/wallet\/hooks/);
+    assert.match(warnings.find((w) => w.includes('executeDeferred')), /use useDeferred\(\) from @lazorkit\/wallet\/hooks/);
+    await unmount();
+});
+
+test('/hooks: useSessions, useAuthorities and useDeferred, which the warnings name, exist and run the same actions, without a warning', async () => {
+    globalThis.fetch = (url, init) => chain.fetch(url, init);
+    const [R, H] = await freshPages('index.mjs', 'hooks.mjs');
+    warnings.length = 0;
+    let sessions;
+    let authorities;
+    let deferred;
+    let wallet;
+    function Probe() {
+        sessions = H.useSessions();
+        authorities = H.useAuthorities();
+        deferred = H.useDeferred();
+        wallet = R.useWallet();
+        return null;
+    }
+    const { unmount } = await mount(h(R.LazorkitProvider, embeddedProps(), h(Probe)));
+    const calls = {
+        createSession: [() => sessions.createSession({ unrestricted: true }), () => wallet.createSession({ unrestricted: true })],
+        revokeSession: [() => sessions.revokeSession(), () => wallet.revokeSession()],
+        signAndSendWithSession: [() => sessions.signAndSendWithSession({ instructions: [] }), () => wallet.signAndSendWithSession({ instructions: [] })],
+        addAuthority: [() => authorities.addAuthority({ role: 2 }), () => wallet.addAuthority({ role: 2 })],
+        removeAuthority: [() => authorities.removeAuthority('11111111111111111111111111111111'), () => wallet.removeAuthority('11111111111111111111111111111111')],
+        signAndSendWithAuthority: [() => authorities.signAndSendWithAuthority({ instructions: [] }), () => wallet.signAndSendWithAuthority({ instructions: [] })],
+        authorizeAndExecute: [() => deferred.authorizeAndExecute({ instructions: [] }), () => wallet.authorizeAndExecute({ instructions: [] })],
+        authorizeDeferred: [() => deferred.authorizeDeferred({ instructions: [] }), () => wallet.authorizeDeferred({ instructions: [] })],
+        executeDeferred: [() => deferred.executeDeferred({ deferredPayload: 'x' }), () => wallet.executeDeferred({ deferredPayload: 'x' })],
+    };
+    for (const [name, [advanced]] of Object.entries(calls)) {
+        // Disconnected: each runs, and refuses as useWallet()'s does.
+        const error = await advanced().then(() => null, (e) => e);
+        assert.ok(error instanceof Error, `${name} ran and refused`);
+    }
+    assert.equal(warnings.filter((w) => /is deprecated/.test(w)).length, 0, 'the Advanced hooks never warn');
+    for (const [name, [advanced, old]] of Object.entries(calls)) {
+        const a = await advanced().then(() => null, (e) => e);
+        const b = await old().then(() => null, (e) => e);
+        assert.equal(a?.message, b?.message, `${name}: the same refusal as useWallet().${name}`);
+    }
     await unmount();
 });
 

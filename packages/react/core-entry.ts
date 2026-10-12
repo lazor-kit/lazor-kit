@@ -34,6 +34,10 @@ export {
   userMessage,
 } from './core/errors';
 export type { ErrorKind, UserRejectionReason, LazorkitConfigProblem } from './core/errors';
+// What to show a person, in plain English (`describeError`), and where a send
+// stands once it has ended (`sendStatusOf`): 'checking' is never 'failed'.
+export { describeError, sendStatusOf } from './core/describeError';
+export type { ErrorDescription, ErrorDescriptionCode, SendStatus } from './core/describeError';
 
 // Embedded mode's building blocks.
 export {
@@ -163,6 +167,13 @@ export {
   SignatureReusedError,
   isSignatureReusedError,
   SIGNATURE_REUSED_CODE,
+} from './core/program';
+// A passkey approval sent more than 150 slots (about 35 s) after its
+// challenge was prepared (3007): never resent; ask the user to try again.
+export {
+  SignatureTooOldError,
+  isSignatureTooOldError,
+  SIGNATURE_TOO_OLD_CODE,
 } from './core/program';
 export {
   TransactionFailedError,

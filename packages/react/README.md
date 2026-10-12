@@ -130,6 +130,15 @@ function WalletContent() {
 Everything below about connecting, sending, keys and messages applies to both
 modes unless it says otherwise.
 
+**The relayer.** On devnet `paymasterConfig` may be left out: the default is
+LazorKit's devnet relayer, `https://kora-devnet-production.up.railway.app`
+(`DEFAULTS.PAYMASTER_URL`), which sponsors the v2 program. Until its domain
+moves, `kora.devnet.lazorkit.com` still serves the old relayer, which allows
+only the v1 program and refuses every v2 transaction; 4.0.0-next.0 defaulted
+to it. Pass `paymasterConfig={{ paymasterUrl: … }}` to use any other relayer
+(on mainnet you must). A v1 wallet's sends go to `v1PaymasterConfig` when you
+set it (see [Wallets made before LazorKit v2](#wallets-made-before-lazorkit-v2)).
+
 ## Wallets made before LazorKit v2
 
 LazorKit v2 runs at its own program id; v1 keeps its old one until it is
@@ -390,7 +399,8 @@ happened.
 | `ConfirmationTimeoutError` | A `TransactionOutcomeUnknownError`: no outcome within two minutes, and it may still land. Check `signature` before sending again. |
 | `PreviousTransactionPendingError` | Nothing was signed or sent: the passkey's previous transaction (`pendingSignature`) still has no known outcome, and a new signature could be bound to the counter it may use. Try again later. |
 | `SignatureReusedError` | LazorKit rejected the passkey signature (3006): its counter was already used. Left for the same passkey signing somewhere else at the same moment, or a paymaster reading older state than the wallet. That signature can never be valid, so it is not resent, and no new prompt opens on its own: ask the user to sign again. An inner program's error with the same code (Anchor's `AccountNotMutable`) is told apart by the logs and reported as the failure it is. |
-| `PaymasterError` | The paymaster refused the transaction: `code` and `data` of its JSON-RPC error, or `httpStatus`. |
+| `SignatureTooOldError` | LazorKit refused the passkey approval with `InvalidSignatureAge` (3007): it was sent more than 150 slots (about 35 s at today's slot times) after its challenge was prepared. Nothing was sent, and no counter was used. It is never resent, and no new prompt opens on its own: offer "Try again", which calls the same action again and asks for a new approval (see [Retry after "Approval took too long"](#retry-after-approval-took-too-long)). `isSignatureTooOldError` recognises it, and a raw 3007 whose logs name LazorKit (or no program). |
+| `PaymasterError` | The paymaster refused the transaction: `code` and `data` of its JSON-RPC error, or `httpStatus` (and `retryAfterMs` for a 429 that said). `offline` when the device was offline, so no request was made and nothing was sent. |
 | `DeferredExpiredError` | TX2 of a deferred execution (`authorizeAndExecute`, `executeDeferred`) came after its authorization expired (`DeferredAuthorizationExpired`, 3014), so nothing in it ran. `authorizeSignature` (TX1, when this call sent it), `deferredExecPda` (the account holding the paymaster's rent until the Authorize payer reclaims it) and `expiresAtSlot`. The passkey approval is spent: ask the user to approve again. An inner program's 3014 is not reported as this (see below). |
 | `UnlistedSolOutflowError` | A `signAndSendWithSession` or `signAndSendWithAuthority` transaction would have lowered the wallet's SOL balance (rent for a new account included), and the session's limits or the delegate's policy name no SOL (`ActionUnlistedSolOutflow`, 3037). Nothing in it ran, and it is not resent. Its message is "This session is not allowed to spend SOL" ("This key …" for a delegate); `signer` is `'session'` or `'authority'`, and `cause` the failure as it came. See [What a policy bounds](#what-a-policy-bounds). |
 | `UnlistedTokenOutflowError` | The same for a token whose mint the limits do not name (`ActionUnlistedTokenOutflow`, 3038): "This session is not allowed to spend this token". |
@@ -398,6 +408,63 @@ happened.
 | `RequestOutOfDateError` | The portal refused a typed request with `stale-counter`: its view of the passkey's counter was behind. The passkey signed nothing; `retryable` is `true`. |
 | `PortalRefusedError` | The portal refused a typed request; the passkey signed nothing. `code`: `request-invalid` (it would fail on chain), `wrong-network`, `challenge-mismatch`, `typed-malformed`, `typed-unsupported` or `chain-unavailable`. |
 | `TypedRequestTooLargeError` | The typed request, or the portal URL carrying it, is over its cap (8,192 / 16,384 characters). Nothing was opened. |
+
+**Retries and time limits.** A send is tried again only when trying again can
+change the answer, and always with the same bytes, so it lands at most once:
+- A refusal that would come back the same is not sent again: a program error
+  (LazorKit's 3007, 3008, 3009, 3024, 3025, …, or an inner program's), a
+  relayer's allowlist refusal ("Program … is not in the allowed list"),
+  insufficient funds, a failed simulation, any other 4xx.
+- A rate limit (HTTP 429) is waited out, `Retry-After` honoured up to 10 s,
+  and sent again for as long as the send's time allows.
+- A network error, a timeout, a 5xx or a blockhash the relayer's RPC has not
+  seen yet is sent again (three attempts in all), but only while the
+  transaction's blockhash is still valid: bytes that can no longer land are
+  not resent.
+- One attempt waits at most 30 s for the relayer's answer, and the whole send,
+  retries and waits included, at most 60 s. A relayer that hangs ends the
+  send in about a minute (4.0.0-next.0 could wait about 4.5), as
+  `TransactionOutcomeUnknownError`: the transaction may still land.
+
+`Paymaster.signAndSend` and `signAndSendVersionedTransaction` take these as a
+fourth argument, `{ canResend, budgetMs }`.
+
+**Offline.** A device that says it is offline (`navigator.onLine === false`)
+when a send is about to go makes no request, and the call rejects with a
+`PaymasterError` whose `offline` is `true`: `describeError` says "Can't reach
+the network" (`network`), never "may have been sent", and the passkey's next
+send does not wait on it. A connection that drops while a request is in
+flight is still reported as maybe sent: the request may have reached the
+relayer.
+
+**A new call after an unknown outcome** waits at most 20 s for the passkey's
+previous send to settle (its blockhash to expire, or its status to show), then
+rejects with `PreviousTransactionPendingError` ("Still checking your last
+transaction"): try again shortly. It no longer holds a spinner for the rest of
+that send's two minutes.
+
+**Approval time.** LazorKit accepts a passkey approval for 150 slots after the
+slot its challenge names: about 35 s at today's slot times (about 230 ms),
+not the 60 s older docs said, and that includes the portal loading and the
+user reading and approving. For `signAndSend` (an untyped Execute) the wallet
+reads that slot last: the wallet, the relayer's fee payer and the preview's
+blockhash are read first, and the slot right before the portal opens with the
+challenge. An approval that still comes too late is refused with 3007,
+`SignatureTooOldError`. The full fix, the portal picking the slot when the
+user taps Approve as it already does for `createSession`, `revokeSession` and
+`removeAuthority`, needs a typed Execute request and is the next step.
+
+**Compute budget.** `transactionOptions.computeUnitLimit` (a whole number from
+1 to 1,400,000) puts a `SetComputeUnitLimit` instruction first in the
+transaction, before the secp256r1 precompile: a ComputeBudget instruction
+between the precompile and LazorKit's instruction fails with
+`InvalidInstruction` (3003), because LazorKit reads the signature from the
+instruction right before its own. It is not part of what the passkey signs.
+None is set unless you pass one, which costs nothing today: no LazorKit send
+carries a compute-unit price, so no priority fee is charged on the default
+reservation (about 400,000 CU for a passkey send, which uses about
+15,000–30,000). If you know what your instructions cost, measured × 1.15 is a
+sane limit. Anything else is refused before the passkey is asked.
 
 Every status read and paymaster request is bounded in time, so one that never
 answers cannot hold a passkey's queue. The slot the passkey's last transaction
@@ -466,6 +533,179 @@ Only a payload over the 1232-byte limit is compiled with the lookup tables the
 transaction is sent with (`transactionOptions.addressLookupTableAccounts`, or
 those of a dApp's v0 transaction), and a preview still over the limit no longer
 fails the call before the prompt.
+
+## Showing errors to users
+
+`describeError(error)` turns any error the SDK throws into words for someone
+who has never used a crypto wallet. It never says "failed" about a
+transaction that may still land.
+
+```ts
+import { describeError, sendStatusOf, type ErrorDescription, type SendStatus } from '@lazorkit/wallet';
+
+const { title, message, action, retryable, maybeSent, code } = describeError(error);
+```
+
+| Field | |
+|---|---|
+| `title` | A short heading: "Cancelled", "Still checking…", "Not enough funds". |
+| `message` | One or two sentences: what happened, and what did not. |
+| `action` | What the person can do next, when there is something ("Add funds or try a smaller amount."). |
+| `retryable` | Trying the same thing again may work. Never `true` when `maybeSent` is. |
+| `maybeSent` | The transaction may have been sent and may still land. Show it as pending, never as failed, and do not let the person pay again until it has settled. |
+| `code` | A stable name to branch on and to count (below). |
+| `programError` | The LazorKit program's name for the error, when it is one (`'InvalidSessionDuration'`), from `ERROR_NAMES`. |
+
+```tsx
+function PayButton({ instructions }: { instructions: TransactionInstruction[] }) {
+  const { signAndSend } = useWallet();
+  const [status, setStatus] = useState<SendStatus>('idle');
+  const [problem, setProblem] = useState<ErrorDescription | null>(null);
+
+  const pay = async () => {
+    setStatus('signing');
+    setProblem(null);
+    try {
+      await signAndSend({ instructions, onSubmitted: () => setStatus('submitted') });
+      setStatus('confirmed');
+    } catch (error) {
+      setStatus(sendStatusOf(error)); // 'cancelled' | 'checking' | 'failed'
+      setProblem(describeError(error));
+    }
+  };
+
+  if (status === 'checking') return <p>{problem?.title} {problem?.message} {problem?.action}</p>;
+  return (
+    <>
+      <button onClick={pay} disabled={status === 'signing' || status === 'submitted'}>Pay</button>
+      {status === 'failed' && problem && (
+        <p role="alert">
+          <strong>{problem.title}</strong> {problem.message} {problem.action}
+        </p>
+      )}
+    </>
+  );
+}
+```
+
+### Retry after "Approval took too long"
+
+A passkey approval is good for about 35 s. When it comes too late the send
+rejects with `SignatureTooOldError` (`code: 'program-3007'`, "Approval took
+too long", `retryable: true`); nothing was sent and nothing is sent again on
+its own. Offer one tap to try again: calling the same action asks for a new
+approval over a fresh challenge.
+
+```tsx
+const [retry, setRetry] = useState<(() => void) | null>(null);
+
+const pay = async () => {
+  setRetry(null);
+  try {
+    await signAndSend({ instructions });
+  } catch (error) {
+    const problem = describeError(error);
+    setProblem(problem);
+    // Only when nothing was sent and trying again can work: never after 'checking'.
+    if (problem.retryable && !problem.maybeSent) setRetry(() => pay);
+  }
+};
+
+{retry && <button onClick={retry}>Try again</button>}
+```
+
+**Sends: 'checking' is not 'failed'.** A send is `'idle'`, then
+`'reviewing'` (the review sheet, Embedded mode) and `'signing'` while the
+`signAndSend` call runs, `'submitted'` once `onSubmitted` is called, and `'confirmed'` when its promise resolves. When it rejects,
+`sendStatusOf(error)` says where it stands:
+
+- `'cancelled'`: the person said no. Nothing was signed or sent; show nothing
+  alarming.
+- `'checking'`: the outcome is not known (`TransactionOutcomeUnknownError`,
+  `ConfirmationTimeoutError`, or a paymaster answer that was lost). It may
+  still land. Say "Still checking…, don't pay again", check the balance or the
+  signature, and do not offer a resend.
+- `'failed'`: it was not sent, or it landed and failed. Nothing in it
+  happened; `retryable` says whether trying again may work.
+
+The `SendStatus` type names all of these.
+
+Any value is accepted, from either copy of the package (ESM and CJS), and
+through what wraps it (`cause`, a wallet-adapter `WalletError`'s `error`). A
+program error is read from the simulation logs, Kora's text (`Custom(3008)`)
+or a landed TransactionError, and named with the program's own list
+(`ERROR_NAMES`): `custom program error: 0xbc0` is 3008,
+`InvalidSessionDuration`. A code whose logs name another program as the first
+to fail is that program's (`tx-failed`), and so is a 3014 with no logs.
+
+| `code` | Title | Retryable | maybeSent | From |
+|---|---|---|---|---|
+| `user-rejected` | Cancelled | yes | no | UserRejectedError, PortalCancelledError, WalletConfirmationDeclinedError |
+| `outcome-unknown` | Still checking… | no | **yes** | TransactionOutcomeUnknownError, ConfirmationTimeoutError, PaymasterError with maybeSent or a reported signature |
+| `previous-pending` | Still checking your last transaction | yes | no | PreviousTransactionPendingError |
+| `tx-expired` | It didn't go through | yes | no | TransactionExpiredError |
+| `tx-failed` | It didn't go through | yes | no | TransactionFailedError, or another program's error |
+| `insufficient-funds` | Not enough funds | no | no | "insufficient lamports / funds", InsufficientFundsForRent in the logs |
+| `wrong-network` | Wrong network | no | no | PortalRefusedError('wrong-network'), a program that does not exist on this cluster |
+| `rate-limited` | The network is busy | yes | no | HTTP 429, "Too Many Requests" |
+| `timeout` | Taking too long | yes | no | a request with no answer in time (not a send), MinContextSlotNotReachedError |
+| `network` | Can't reach the network | yes | no | NetworkError, fetch failures, HTTP 5xx (not a send), a PaymasterError with `offline` (nothing was sent) |
+| `paymaster` | Couldn't send right now | yes | no | PaymasterError with no program error (an allowlist refusal, "not in the allowed list": "Couldn't send this", not retryable) |
+| `popup-blocked` | Pop-up blocked | yes | no | portal popup blocked (web) |
+| `browser-failed` | Couldn't open the approval page | yes | no | the portal browser did not open, or did not answer in time: PortalTimeoutError (mobile) |
+| `busy` | Already in progress | yes | no | "Already signing", "Already connecting", "still in progress" |
+| `not-connected` | Not connected | no | no | "No wallet connected" |
+| `passkey-unavailable` | Passkeys don't work here | no | no | PasskeyUnavailableError |
+| `passkey-mismatch` | A different passkey was used | yes | no | PasskeyMismatchError |
+| `key-recovery` | Couldn't finish setting up | yes | no | KeyRecoveryError |
+| `key-mismatch` | This key doesn't match your wallet | no | no | KeyWalletMismatchError (title by reason) |
+| `wallet-mismatch` | Couldn't set up your wallet | yes | no | WalletVerificationError |
+| `wallet-needs-confirmation` | Choose your wallet | yes | no | WalletNeedsConfirmationError |
+| `wallet-chooser-not-shown` | Couldn't show your wallets | yes | no | WalletChooserNotShownError (mobile) |
+| `request-too-large` | Request too large | no | no | TypedRequestTooLargeError |
+| `transaction-too-large` | Transaction too large | no | no | TransactionTooLargeError |
+| `request-out-of-date` | Please try again | yes | no | RequestOutOfDateError (portal 'stale-counter') |
+| `portal-reply-mismatch` | Approval didn't match | yes | no | PortalReplyMismatchError |
+| `portal-request-invalid` | This can't be approved | no | no | PortalRefusedError('request-invalid') |
+| `portal-challenge-mismatch` | Please try again | yes | no | PortalRefusedError('challenge-mismatch') |
+| `portal-chain-unavailable` | Can't reach the network | yes | no | PortalRefusedError('chain-unavailable') |
+| `portal-unsupported` | Update needed | no | no | PortalRefusedError('typed-malformed' / 'typed-unsupported') |
+| `portal-refused` | This wasn't approved | no | no | PortalRefusedError, any other code |
+| `v1-retired` | Wallet needs an upgrade | no | no | V1WalletRetiredError, 4018 RetiredDeployment |
+| `v1-migrated` | Your wallet was upgraded | no | no | V1WalletMigratedError |
+| `config` | This app isn't set up correctly | no | no | LazorkitConfigError |
+| `unknown` | Something went wrong | no | no | anything else |
+
+LazorKit program errors (`retryable` as given, `maybeSent` never):
+
+| `code` | Program error | Title | Retryable |
+|---|---|---|---|
+| `program-3002` | 3002 PermissionDenied | Not allowed | no |
+| `program-3006` | 3006 SignatureReused | Please approve again | yes |
+| `program-3007` | 3007 InvalidSignatureAge, SignatureTooOldError | Approval took too long | yes |
+| `program-3008` | 3008 InvalidSessionDuration | Session length isn't allowed | no |
+| `program-3009` | 3009 SessionExpired | Session ended | no |
+| `program-3016` | 3016 InvalidExpiryWindow | Time limit isn't allowed | no |
+| `program-3021` | 3021 ActionProgramNotWhitelisted | Needs your passkey | no |
+| `program-3022` | 3022 ActionProgramBlacklisted | Needs your passkey | no |
+| `program-3023` | 3023 ActionSolMaxPerTxExceeded | Over the per-payment limit | no |
+| `program-3024` | 3024 ActionSolLimitExceeded | Spending limit reached | no |
+| `program-3025` | 3025 ActionSolRecurringLimitExceeded | Spending limit reached for now | no |
+| `program-3026` | 3026 ActionTokenLimitExceeded | Spending limit reached | no |
+| `program-3027` | 3027 ActionTokenRecurringLimitExceeded | Spending limit reached for now | no |
+| `program-3029` | 3029 ActionTokenMaxPerTxExceeded | Over the per-payment limit | no |
+| `program-3030` | 3030 SessionVaultOwnerChanged | Blocked to protect your wallet | no |
+| `program-3031` | 3031 SessionVaultDataLenChanged | Blocked to protect your wallet | no |
+| `program-3032` | 3032 SessionTokenAuthorityChanged | Blocked to protect your wallet | no |
+| `program-3037` | 3037 ActionUnlistedSolOutflow | Needs your passkey | no |
+| `program-3038` | 3038 ActionUnlistedTokenOutflow | Needs your passkey | no |
+| `program-3039` | 3039 RefundDestinationMismatch (also `RefundDestinationMismatchError` from `@lazorkit/sdk-legacy`) | Refund can't go there | no |
+| `program-4005` | 4005 InsufficientFeeBalance | Couldn't cover the fee | no |
+| `v1-retired` | 4018 RetiredDeployment | Wallet needs an upgrade | no |
+
+Every other code of `ERROR_NAMES` (3001, 3003 to 3005, 3010 to 3013, 3015,
+3017 to 3020, 3028, 3033 to 3036, 4001 to 4017) is `program-<code>`, "Your
+wallet couldn't approve this", not retryable.
 
 ## Session and authority keys
 
@@ -888,14 +1128,22 @@ server that takes the key from the request accepts anyone's passkey for any
 wallet they name. `verifyWalletMessage` does the lookup:
 
 ```ts
-import { Connection } from '@solana/web3.js';
-import { verifyWalletMessage } from '@lazorkit/wallet';
-
 // In the app
 const result = await signMessage('Sign in to example.com\nNonce: 8f2c…');
 // send { wallet: wallet.vaultPda, credentialId: wallet.credentialId, ...result }
+```
 
-// On the server
+On the server, import it from **`@lazorkit/wallet/core`**: the package root is
+a client module (`'use client'`), so in a Next.js route handler or server
+action `verifyWalletMessage` from `'@lazorkit/wallet'` builds and then fails at
+runtime ("Attempted to call verifyWalletMessage() from the server but
+verifyWalletMessage is on the client").
+
+```ts
+// On the server (a route handler, an API endpoint)
+import { Connection } from '@solana/web3.js';
+import { verifyWalletMessage } from '@lazorkit/wallet/core';
+
 const ok = await verifyWalletMessage({
   connection: new Connection(RPC_URL),
   cluster: 'mainnet',              // when RPC_URL does not say which cluster
@@ -1087,7 +1335,9 @@ passkey prompt itself shows nothing about the transaction.
 ### Errors
 
 Every error has a kind, `errorKind(error)`, and words to show,
-`userMessage(error, 'connect' | 'send')`:
+`userMessage(error, 'connect' | 'send')`. For a title, an action and the
+send's status as well, see [Showing errors to users](#showing-errors-to-users).
+
 
 | Kind | Class | `userMessage` |
 |---|---|---|
@@ -1096,11 +1346,11 @@ Every error has a kind, `errorKind(error)`, and words to show,
 | `key-recovery` | `KeyRecoveryError` | "Nothing was created; try again." |
 | `unavailable` | `PasskeyUnavailableError` | "Passkeys don't work in this browser view. Open this page in Safari or Chrome." |
 | `config` | `LazorkitConfigError` (`problem` says which) | The developer message |
-| `network` | `NetworkError`, `PaymasterError` without a program error | "Couldn't reach the network. Nothing was created." (or "sent") |
+| `network` | `NetworkError`, `PaymasterError` without a program error, that cannot have sent anything | "Couldn't reach the network. Nothing was created." (or "sent") |
 | `wallet-mismatch` | `WalletVerificationError` | "The wallet that was created isn't this passkey's. Nothing was saved; try again." |
 | `tx-failed` | `TransactionFailedError` | "The transaction failed: …. Nothing else changed." |
 | `tx-expired` | `TransactionExpiredError` | "It didn't go through. It's safe to try again." |
-| `tx-unknown` | `TransactionOutcomeUnknownError`, `ConfirmationTimeoutError` | "Checking whether it went through. Don't send it again yet." |
+| `tx-unknown` | `TransactionOutcomeUnknownError`, `ConfirmationTimeoutError`, a `PaymasterError` with `maybeSent` or a reported `signature` (whatever else it carries) | "Checking whether it went through. Don't send it again yet." |
 | `previous-pending` | `PreviousTransactionPendingError` | "Your previous transaction is still pending. Nothing was signed." |
 | `signature-reused` | `SignatureReusedError` | "Nothing was sent. Try again." |
 | `v1-retired` | `V1WalletRetiredError` | "This wallet's old version is retired. Move it to the new version to continue." |
@@ -1163,8 +1413,8 @@ Your domain holds your users' wallets. Read this before shipping:
 | Import | What | React |
 |---|---|---|
 | `@lazorkit/wallet` | Easy: `LazorkitProvider`, `ConnectButton`, `useWallet`, and everything in `/core` | yes (client module) |
-| `@lazorkit/wallet/hooks` | Advanced: `useWallet`, `useWalletStore`, `useLazorkitClient`, `useWalletStatus` | yes (client module) |
-| `@lazorkit/wallet/core` | No React: `createLazorkitClient`, the errors, `verifyWalletMessage`, the protocol helpers, the adapter | no |
+| `@lazorkit/wallet/hooks` | Advanced: `useWallet`, `useWalletStore`, `useLazorkitClient`, `useWalletStatus`, `useLazorkitState`, and `useSessions` (`createSession`, `revokeSession`, `signAndSendWithSession`), `useAuthorities` (`addAuthority`, `removeAuthority`, `signAndSendWithAuthority`), `useDeferred` (`authorizeAndExecute`, `authorizeDeferred`, `executeDeferred`): the same actions as `useWallet()`'s, without its deprecation warning | yes (client module) |
+| `@lazorkit/wallet/core` | No React: `createLazorkitClient`, the errors and `describeError`, `verifyWalletMessage`, the protocol helpers, the adapter | no |
 
 All three share one store and one client per page. The React entries start
 with `'use client'`. Server code, such as a route handler that checks a signed
@@ -1227,16 +1477,17 @@ identity, so pass the same object and function again.
 7. **`@lazorkit/sdk-legacy` 1.3.1 or later.**
 
 **New:** `status`, `address`, `signAndSend`, `onSubmitted`, `ConnectButton`,
-`useWalletStatus`, `createLazorkitClient`, `errorKind`, `userMessage`, `onEvent`,
-`/core` and `/hooks`. `react` and `react-dom` are optional peers, for apps
+`useWalletStatus`, `createLazorkitClient`, `errorKind`, `userMessage`,
+`describeError`, `sendStatusOf`, `onEvent`, `/core` and `/hooks`. `react` and `react-dom` are optional peers, for apps
 that use only `/core`.
 
 **Deprecated:**
 - `isLoading`, `isConnecting` and `isSigning`: use `status`. They warn once,
   and are removed in 5.0.
-- The session, authority and deferred functions on `useWallet`: they move to
-  hooks in `/hooks` in a later 4.x, with the same names and parameters. They
-  still work, and warn once each when first called.
+- The session, authority and deferred functions on `useWallet`: use
+  `useSessions()`, `useAuthorities()` and `useDeferred()` from
+  `@lazorkit/wallet/hooks`, with the same names and parameters. They still
+  work on `useWallet` until 5.0, and warn once each when first called.
 
 **Unchanged:**
 - portal mode's flows and its stored bytes;
@@ -1336,7 +1587,7 @@ function. In Embedded mode the review sheet comes first (see
 | `payload.instructions` | `TransactionInstruction[]` | Instructions |
 | `payload.transactionOptions` | `object` | Optional config |
 | `transactionOptions.feeToken` | `string` | Token address for gas fees (e.g. USDC). |
-| `transactionOptions.computeUnitLimit` | `number` | Max compute units. |
+| `transactionOptions.computeUnitLimit` | `number` | A `SetComputeUnitLimit` put first in the transaction (1 to 1,400,000). None by default. See [Sending transactions](#sending-transactions). |
 | `transactionOptions.addressLookupTableAccounts` | `AddressLookupTableAccount[]` | Lookup tables for v0 txs (the portal preview uses them too). |
 | `transactionOptions.clusterSimulation` | `'devnet' \| 'mainnet'` | Portal mode: network for the portal's simulation. Embedded mode simulates on the provider's cluster. |
 | `payload.onSubmitted` | `(signature: string) => void` | Called once, as soon as the transaction is sent, before it is confirmed. Never for one that was not sent. What it throws is logged. |

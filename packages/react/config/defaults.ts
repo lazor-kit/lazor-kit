@@ -1,6 +1,11 @@
 export const DEFAULTS = {
   PORTAL_URL: 'https://portal.lazor.sh',
-  PAYMASTER_URL: 'https://kora.devnet.lazorkit.com',
+  /**
+   * LazorKit's devnet relayer, used when the app passes no paymaster. It
+   * sponsors the v2 program (kora.devnet.lazorkit.com is still the old
+   * relayer, which allows only v1). Devnet only: on mainnet pass your own.
+   */
+  PAYMASTER_URL: 'https://kora-devnet-production.up.railway.app',
   RPC_ENDPOINT: 'https://api.devnet.solana.com',
   /**
    * How long a session lasts when `createSession` is given no expiry: 5 hours

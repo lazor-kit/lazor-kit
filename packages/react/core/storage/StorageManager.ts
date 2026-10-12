@@ -143,24 +143,27 @@ export const syncStorage = {
 };
 
 /**
- * Web storage implementation using localStorage
+ * Web storage implementation using localStorage: portal mode's wallet record.
+ * Never throws, like `syncStorage`: where storage is denied (Safari's "Block
+ * All Cookies", some privacy browsers, sandboxed embeds) it reads as empty,
+ * a write that fails leaves the wallet connected for this page only, and a
+ * removal that fails still lets `disconnect` reset the state.
  */
 export const storage = {
-  getItem: async (name: string): Promise<string | null> => {
-    if (typeof window === 'undefined') return null;
-    return localStorage.getItem(name);
-  },
-
-  setItem: async (name: string, value: string): Promise<void> => {
-    if (typeof window === 'undefined') return;
-    localStorage.setItem(name, value);
-  },
-
-  removeItem: async (name: string): Promise<void> => {
-    if (typeof window === 'undefined') return;
-    localStorage.removeItem(name);
-  },
+  getItem: async (name: string): Promise<string | null> => syncStorage.getItem(name),
+  setItem: async (name: string, value: string): Promise<void> => syncStorage.setItem(name, value),
+  removeItem: async (name: string): Promise<void> => syncStorage.removeItem(name),
 };
+
+/** JSON from storage, or null for nothing or for what is not JSON (an entry someone else wrote). */
+function parseStored<T>(raw: string | null): T | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Storage Manager Class
@@ -178,9 +181,7 @@ export class StorageManager {
   }
 
   static async getWallet(): Promise<WalletInfo | null> {
-    const walletData = await storage.getItem(STORAGE_KEYS.WALLET);
-    if (!walletData) return null;
-    return JSON.parse(walletData) as WalletInfo;
+    return parseStored<WalletInfo>(await storage.getItem(STORAGE_KEYS.WALLET));
   }
 
   static async saveConfig(config: WalletConfig): Promise<void> {
@@ -188,9 +189,7 @@ export class StorageManager {
   }
 
   static async getConfig(): Promise<WalletConfig | null> {
-    const configData = await storage.getItem('lazorkit-config');
-    if (!configData) return null;
-    return JSON.parse(configData) as WalletConfig;
+    return parseStored<WalletConfig>(await storage.getItem('lazorkit-config'));
   }
 
   static async clearWallet(): Promise<void> {
