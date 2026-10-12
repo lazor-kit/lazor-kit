@@ -57,6 +57,15 @@ export const handleAuthRedirect = (url: string): WalletInfo | null => {
   }
 };
 
+/** The connect reply's `kind` (`created`: registered just now; `asserted`: signed in), when it says. */
+export const readConnectKind = (url: string): string | undefined => {
+  try {
+    return new URL(url).searchParams.get('kind') ?? undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 /**
  * The assertion a connect reply carries when the portal signed the
  * `challenge` the connect URL asked for — the same fields, base64 like a sign

@@ -9,7 +9,6 @@ import 'react-native-get-random-values';
 import { Buffer } from 'buffer';
 import {
   AddressLookupTableAccount,
-  ComputeBudgetProgram,
   Connection,
   Keypair,
   PublicKey,
@@ -31,6 +30,8 @@ import {
   type ProtocolVersion,
   type WalletFacts,
   type WebAuthnResponse,
+  findAuthorityPda,
+  findWalletPda,
   v2Client,
   verifyOwnershipProof,
   versionOf,
@@ -39,12 +40,15 @@ import {
 import { createOwnershipChallenge } from '../message/ownershipProof';
 import { connectAbandoned, rememberCandidates, takeRememberedCandidate } from './confirmation';
 import { keyToCreate, resolveWallet, type PortalProof } from './resolveWallet';
+import { forgetCreation, pendingCreation, rememberCreation } from './pendingCreation';
 import { API_ENDPOINTS, DEFAULTS } from '../../config';
-import { openBrowser } from '../browser/open';
+import { APPROVAL_TIMEOUT_MS, openBrowser } from '../browser/open';
 import { handleBrowserResult } from '../browser/parseResult';
 import { getFeePayer, signAndExecuteTransaction } from '../paymaster';
 import { logger } from '../logger';
-import { type AuthorityTurn, sendAndConfirm } from './sequence';
+import { type AuthorityTurn, noteAuthorityLanded, sendAndConfirm } from './sequence';
+import { blockhashStillValid } from './blockhash';
+import { withComputeUnitLimit } from './computeBudget';
 import { buildPreviewTransactionBase64 as previewTransactionBase64 } from './preview';
 import {
   parseTypedReplyParams,
@@ -123,6 +127,11 @@ export const createWalletActions = (
                 return proveViaPortal({ credentialId: data.credentialId, portalUrl: config.portalUrl, redirectUrl });
               }));
 
+      // A creation for this passkey whose answer was lost: its seed is used
+      // again, and the wallet it made is adopted (see ./pendingCreation).
+      const programId = v2Client(connection).programId;
+      const pending = pendingCreation(programId.toBase58(), credentialIdHash, rpId);
+
       // A v1 wallet made before LazorKit v2 keeps being used as it is: a fresh
       // v2 wallet would show that user an empty account while their funds sit
       // in the v1 one. Only a passkey that owns neither gets a new, v2, wallet.
@@ -143,8 +152,14 @@ export const createWalletActions = (
         // wait for an answer that cannot be given.
         onAsking: (asking) => setLoading(!asking),
         signal,
+        justCreated: pending?.walletPda,
       });
-      if (own) return walletInfoOf(data, own);
+      if (own) {
+        if (pending && own.walletPda.toBase58() === pending.walletPda) {
+          forgetCreation(programId.toBase58(), credentialIdHash, rpId);
+        }
+        return walletInfoOf(data, own);
+      }
       checkAbandoned();
 
       const client = v2Client(connection);
@@ -157,6 +172,7 @@ export const createWalletActions = (
         rpId,
         credentialId: data.credentialId,
         reported: new Uint8Array(data.passkeyPubkey),
+        reportedIsOwn: options.createdInAuthSession === true,
         connectProof: options.proof,
         prove: () => prove(),
         signFresh: () =>
@@ -174,8 +190,17 @@ export const createWalletActions = (
 
       // The last moment a disconnect can still stop the creation.
       checkAbandoned();
-      const userSeed = new Uint8Array(32);
-      crypto.getRandomValues(userSeed);
+      // The seed of an earlier creation for this very key whose outcome was
+      // not known, else a new one. Kept until the creation lands.
+      const owner = { type: 'secp256r1' as const, credentialIdHash, compressedPubkey, rpId };
+      const reuse = pending && bytesEqual(pending.compressedPubkey, compressedPubkey) ? pending : null;
+      let userSeed: Uint8Array;
+      if (reuse) {
+        userSeed = reuse.seed;
+      } else {
+        userSeed = new Uint8Array(32);
+        crypto.getRandomValues(userSeed);
+      }
 
       const {
         instructions,
@@ -185,29 +210,41 @@ export const createWalletActions = (
       } = await client.createWallet({
         payer: feePayer,
         userSeed,
-        owner: {
-          type: 'secp256r1',
-          credentialIdHash,
-          compressedPubkey,
-          rpId,
-        },
+        owner,
       });
+      const [expected] = findWalletPda(userSeed, programId);
 
-      // Resolves once confirmed; the first signature for the new passkey
-      // authority is then read at or past its creation.
-      const signature = await sendInstructionsViaPaymaster({
-        instructions,
-        connection,
-        feePayer,
-        config,
-        createsAuthority: authorityPda,
-      });
-      if (!signature) {
-        logger.error('Create wallet relayer error:', {
-          paymasterUrl: config.configPaymaster.paymasterUrl,
+      if (!(reuse && (await createdAlready(connection, expected, owner, config.watchMints, programId.toBase58())))) {
+        rememberCreation(programId.toBase58(), credentialIdHash, rpId, {
+          seed: userSeed,
+          walletPda: expected.toBase58(),
+          compressedPubkey,
         });
-        throw new Error('Create wallet relayer error');
+        try {
+          // Resolves once confirmed; the first signature for the new passkey
+          // authority is then read at or past its creation.
+          const signature = await sendInstructionsViaPaymaster({
+            instructions,
+            connection,
+            feePayer,
+            config,
+            createsAuthority: authorityPda,
+          });
+          if (!signature) {
+            logger.error('Create wallet relayer error:', {
+              paymasterUrl: config.configPaymaster.paymasterUrl,
+            });
+            throw new Error('Create wallet relayer error');
+          }
+        } catch (error) {
+          // A send of the same seed fails once an earlier one has landed.
+          const landed = await createdAlready(connection, expected, owner, config.watchMints, programId.toBase58()).catch(
+            () => false,
+          );
+          if (!landed) throw error;
+        }
       }
+      forgetCreation(programId.toBase58(), credentialIdHash, rpId);
 
       // Saved as created, never looked up again: until its first transaction
       // a lookup would offer it for confirmation like any wallet never signed for.
@@ -245,15 +282,8 @@ export const createWalletActions = (
       const webAuthnResponse = decodeWebAuthnResponse(browserResult);
       const { instructions } = finalize(webAuthnResponse);
 
-      const allInstructions: TransactionInstruction[] = [];
-      if (transactionOptions?.computeUnitLimit) {
-        allInstructions.push(
-          ComputeBudgetProgram.setComputeUnitLimit({
-            units: transactionOptions.computeUnitLimit,
-          }),
-        );
-      }
-      allInstructions.push(...instructions);
+      // SetComputeUnitLimit first, before the precompile (see ./computeBudget).
+      const allInstructions = withComputeUnitLimit(instructions, transactionOptions?.computeUnitLimit);
 
       const alts = transactionOptions?.addressLookupTableAccounts ?? [];
       return await sendInstructionsViaPaymaster({
@@ -277,6 +307,41 @@ export const createWalletActions = (
 
   return { saveWallet, adoptRemembered, executeWallet };
 };
+
+/**
+ * Whether the wallet at `walletPda` (the pending creation's) exists and is
+ * this passkey's alone: exactly one authority, this key at Owner rank,
+ * nothing else that can spend from it (sdk-legacy's
+ * `vetMigrationDestination`). One that exists and is not throws, creating
+ * nothing, and its seed is forgotten.
+ */
+async function createdAlready(
+  connection: Connection,
+  walletPda: PublicKey,
+  owner: { type: 'secp256r1'; credentialIdHash: Uint8Array; compressedPubkey: Uint8Array; rpId: string },
+  watchMints: readonly string[] | undefined,
+  programId: string,
+): Promise<boolean> {
+  const { value, context } = await connection.getAccountInfoAndContext(walletPda);
+  if (!value) return false;
+  const client = v2Client(connection);
+  const problem = await client.vetMigrationDestination(walletPda, owner, {
+    watchMints: [...(watchMints ?? [])],
+  });
+  if (problem === null) {
+    // As a creation confirmed here would: the passkey's first challenge is
+    // read at or past the slot it was seen at.
+    noteAuthorityLanded(findAuthorityPda(walletPda, owner.credentialIdHash, client.programId)[0], context.slot);
+    return true;
+  }
+  forgetCreation(programId, owner.credentialIdHash, owner.rpId);
+  throw new Error(
+    `A wallet already exists at ${walletPda.toBase58()}, where this passkey's wallet was being created, and it is ` +
+      `not this passkey's alone (${problem}). Nothing was created. Connect again.`,
+  );
+}
+
+const bytesEqual = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]);
 
 /** The wallet to save for the passkey of connect reply `data`, from its facts. */
 function walletInfoOf(data: WalletInfo, own: WalletFacts): WalletInfo {
@@ -409,7 +474,11 @@ async function openPortalSign(params: PortalSignParams): Promise<BrowserResult> 
     signUrl = withApprovalFragment(signUrl, params.request);
   }
 
-  const resultUrl = await openBrowser(signUrl, params.redirectUrl);
+  // A typed approval's portal picks the slot at Approve: the user may read it
+  // as long as they like. Anything else is bounded by the browser timeout.
+  const resultUrl = await openBrowser(signUrl, params.redirectUrl, {
+    timeoutMs: params.request ? APPROVAL_TIMEOUT_MS : undefined,
+  });
   return handleBrowserResult(resultUrl);
 }
 
@@ -518,6 +587,8 @@ export async function sendInstructionsViaPaymaster(params: {
         params.feePayer.toBase58(),
         paymaster.apiKey,
         params.feeToken,
+        // A retry resends the same bytes, and only while they can still land.
+        { canResend: () => blockhashStillValid(params.connection, lastValidBlockHeight) },
       ),
     turn: params.turn,
     createsAuthority: params.createsAuthority,

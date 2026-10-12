@@ -41,6 +41,7 @@ export const LazorKitProvider = ({
   onConfirmWallet = 'builtin',
   trustedAuthorities,
   watchMints,
+  browserOptions,
   isDebug = false,
   children,
 }: LazorKitProviderProps): React.JSX.Element => {
@@ -64,6 +65,8 @@ export const LazorKitProvider = ({
   // new array each render must not reset the config each render.
   const trustedKeysKey = (trustedAuthorities ?? []).join(',');
   const watchMintsKey = (watchMints ?? []).join(',');
+  const preferEphemeralSession = browserOptions?.preferEphemeralSession;
+  const browserTimeoutMs = browserOptions?.timeoutMs;
   // And for a handler passed inline: the config holds one stable function
   // that calls whichever handler the app passed last.
   const handlerRef = useRef<ConfirmWalletHandler | null>(null);
@@ -102,6 +105,7 @@ export const LazorKitProvider = ({
         onConfirmWallet: confirmMode === 'handler' ? callHandler : confirmMode,
         trustedAuthorities: trustedKeysKey ? trustedKeysKey.split(',') : [],
         watchMints: watchMintsKey ? watchMintsKey.split(',') : [],
+        browser: { preferEphemeralSession, timeoutMs: browserTimeoutMs },
       });
     } catch (error) {
       logger.error('Failed to initialize wallet store:', error, {
@@ -126,6 +130,8 @@ export const LazorKitProvider = ({
     callHandler,
     trustedKeysKey,
     watchMintsKey,
+    preferEphemeralSession,
+    browserTimeoutMs,
     isDebug,
     setConnection,
     setConfig,

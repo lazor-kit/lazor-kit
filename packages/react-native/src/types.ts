@@ -85,6 +85,37 @@ export interface WalletConfig {
    * USDC, USDT and devnet USDC.
    */
   readonly watchMints?: readonly string[];
+  /** How the portal is opened in the system browser. See BrowserOptions. */
+  readonly browser?: BrowserOptions;
+}
+
+/**
+ * How the adapter opens the portal in the system browser.
+ */
+export interface BrowserOptions {
+  /**
+   * iOS: open the portal in an ephemeral authentication session
+   * (`ASWebAuthenticationSession` with `prefersEphemeralWebBrowserSession`).
+   * Default `true`. iOS then skips the "“App” Wants to Use “…” to Sign In"
+   * alert it shows before every non-ephemeral session, so each approval is
+   * one step shorter. The trade-off: the session shares no cookies or website
+   * data with Safari, and keeps none after it closes. The portal needs
+   * neither (passkeys live in the iCloud Keychain, not in the browser), so
+   * nothing is lost there; it only means the portal remembers nothing between
+   * approvals (its "last used passkey" hint, say). Pass `false` for a shared
+   * session. Ignored on Android.
+   */
+  readonly preferEphemeralSession?: boolean;
+  /**
+   * How long the browser may stay open without the portal answering, in ms,
+   * before the call rejects with `PortalTimeoutError` and the browser is
+   * closed. Default 120,000 (2 minutes). A typed approval (createSession,
+   * revokeSession, removeAuthority, whose portal picks the slot when the user
+   * taps Approve) gets at least 10 minutes. Without a bound, a browser that
+   * never opened (iOS ignores a session that fails to start) left connect and
+   * signing waiting forever.
+   */
+  readonly timeoutMs?: number;
 }
 
 /**
@@ -211,6 +242,8 @@ export interface LazorKitProviderProps {
   readonly trustedAuthorities?: readonly string[];
   /** SPL Token mints your app receives, base58. See WalletConfig. */
   readonly watchMints?: readonly string[];
+  /** How the portal is opened in the system browser. See BrowserOptions. */
+  readonly browserOptions?: BrowserOptions;
   readonly isDebug?: boolean;
   readonly children:
   | React.JSX.Element
@@ -686,6 +719,16 @@ export interface SaveWalletOptions {
    * created or returned, and the call rejects with `PortalCancelledError`.
    */
   readonly signal?: AbortSignal;
+  /**
+   * The connect reply came back through the iOS authentication session
+   * (`ASWebAuthenticationSession`), which hands its callback to the session
+   * that opened it and to no other app, and says the portal registered the
+   * passkey just now (`kind=created`): the key it reports is the passkey's
+   * own, as on web. A wallet is then created for it with no second portal
+   * trip for an ownership proof. Never set for a reply that came as a deep
+   * link (Android), which any app can send.
+   */
+  readonly createdInAuthSession?: boolean;
 }
 
 /**
@@ -740,6 +783,24 @@ export class PortalCancelledError extends LazorKitError {
   constructor(message = 'The LazorKit portal was closed before it answered; nothing was signed.') {
     super(message, 'PORTAL_CANCELLED');
     this.name = 'PortalCancelledError';
+  }
+}
+
+/**
+ * The system browser did not come back with the portal's answer in time
+ * (`BrowserOptions.timeoutMs`): it never opened (iOS ignores an
+ * authentication session that fails to start, say, right after another one
+ * closed), or the portal never answered. The browser is closed, and nothing
+ * was signed. Try again.
+ */
+export class PortalTimeoutError extends LazorKitError {
+  constructor(readonly timeoutMs: number) {
+    super(
+      `The approval page did not open, or did not answer, within ${Math.round(timeoutMs / 1000)} s, so nothing was ` +
+        'signed. Try again.',
+      'PORTAL_TIMEOUT',
+    );
+    this.name = 'PortalTimeoutError';
   }
 }
 
