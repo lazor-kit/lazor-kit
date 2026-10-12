@@ -19,7 +19,10 @@
 const Module = require('module');
 const { test, beforeEach, before } = require('node:test');
 const assert = require('node:assert/strict');
-const { createHash, generateKeyPairSync, sign } = require('node:crypto');
+const { createHash, generateKeyPairSync, sign, webcrypto } = require('node:crypto');
+
+// Node 18 has no global crypto; an app has react-native-get-random-values.
+if (!globalThis.crypto) globalThis.crypto = webcrypto;
 const { readFileSync } = require('node:fs');
 const path = require('node:path');
 
