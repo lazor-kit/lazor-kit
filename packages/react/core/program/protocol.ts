@@ -176,6 +176,67 @@ export function isSignatureReusedError(error: unknown): boolean {
 }
 
 /**
+ * The LazorKit program's `InvalidSignatureAge`: a passkey signature names the
+ * slot its challenge was prepared at, and the program accepts it for 150
+ * slots after that (about 35 s at today's slot times). Seen as
+ * `custom program error: 0xbbf`.
+ */
+export const SIGNATURE_TOO_OLD_CODE = 3007;
+
+/**
+ * The passkey approval was sent too late: LazorKit refused it with
+ * `InvalidSignatureAge` (3007), because more than 150 slots (about 35 s)
+ * passed between the moment its challenge was prepared and the moment it ran.
+ *
+ * Nothing was sent, and no counter was used. Those bytes can never pass, so
+ * the wallet does not send them again, and it does not open a new approval on
+ * its own. Offer the user a "Try again" that calls the same action again: it
+ * prepares a fresh challenge and asks for a new approval.
+ */
+export class SignatureTooOldError extends Error {
+    readonly code = SIGNATURE_TOO_OLD_CODE;
+    constructor(cause?: unknown) {
+        super(
+            'Approval took too long: LazorKit refused the passkey signature with InvalidSignatureAge (3007), ' +
+                'because it was sent more than 150 slots (about 35 s) after its challenge was prepared. Nothing ' +
+                'was sent, and it is not sent again. Ask the user to try again: calling the same action again ' +
+                'asks for a new approval.',
+        );
+        this.name = 'SignatureTooOldError';
+        if (cause !== undefined) (this as { cause?: unknown }).cause = cause;
+    }
+}
+
+/**
+ * Whose `InvalidSignatureAge` (3007) this error is, as far as the error itself
+ * says: `'lazorkit'` when the logs name LazorKit as the first program to fail
+ * with it, `'other'` when it is not a 3007 or the logs name another program
+ * (Anchor's `AccountOwnedByWrongProgram` is 3007 too), `'unknown'` for a 3007
+ * with no logs that say (Kora's text). Read like `signatureReusedVerdict`.
+ */
+export function signatureTooOldVerdict(error: unknown): 'lazorkit' | 'other' | 'unknown' {
+    const text = errorChainText(error);
+    if (!/custom program error: 0xbbf\b/i.test(text) && !/"Custom":\s*3007\b/.test(text) && !/Custom\(\s*3007\s*\)/.test(text)) {
+        return 'other';
+    }
+    const firstFailure = /Program (\w{32,44}) failed: custom program error: 0xbbf\b/i.exec(text);
+    if (!firstFailure) return 'unknown';
+    return isLazorKitProgramId(firstFailure[1]) ? 'lazorkit' : 'other';
+}
+
+/**
+ * True for a `SignatureTooOldError` (also one from another copy of this
+ * package, by `name` and `code`, and one wrapped in `cause` or `error`), and
+ * for LazorKit's raw `InvalidSignatureAge` (3007): one whose logs name
+ * LazorKit, or one with no logs at all. A 3007 whose logs name another
+ * program first is not.
+ */
+export function isSignatureTooOldError(error: unknown): boolean {
+    if (chainHasError(error, SignatureTooOldError, 'SignatureTooOldError', SIGNATURE_TOO_OLD_CODE)) return true;
+    return signatureTooOldVerdict(error) !== 'other';
+}
+
+/**
  * The connected v1 wallet no longer exists: it has been migrated to v2 (or
  * otherwise closed). Connect again to pick up the passkey's v2 wallet.
  */

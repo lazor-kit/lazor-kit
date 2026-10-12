@@ -10,7 +10,7 @@ import {
     type ProtocolVersion,
 } from '../program/protocol';
 import { isNamedError } from '../program/errorShape';
-import { walletRecords } from '../storage';
+import { syncStorage, walletRecords } from '../storage';
 import { DialogManager } from '../portal';
 import { WalletConfig } from '../storage';
 import type { ActionCallbacks, WalletState } from '../types';
@@ -143,12 +143,13 @@ export function notify<A>(callback: ((arg: A) => void) | undefined, arg: A): voi
  */
 export const cleanupLegacyStorage = (): void => {
     if (typeof window === 'undefined') return;
-    const oldZustandData = localStorage.getItem('lazorkit-wallet');
+    // Storage may be denied: then there is nothing to clean up either.
+    const oldZustandData = syncStorage.getItem('lazorkit-wallet');
     if (oldZustandData) {
         try {
             const parsed = JSON.parse(oldZustandData);
             if (parsed.state && parsed.version !== undefined) {
-                localStorage.removeItem('lazorkit-wallet');
+                syncStorage.removeItem('lazorkit-wallet');
             }
         } catch (e) {
             // Ignore parse errors

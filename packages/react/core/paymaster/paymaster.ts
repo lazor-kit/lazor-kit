@@ -10,23 +10,42 @@ import { Logger } from '../../utils/logger';
 import { Buffer } from 'buffer';
 import {
     SignatureReusedError,
+    SignatureTooOldError,
     V1WalletRetiredError,
     hasRetiredDeploymentCode,
     isRetiredDeploymentError,
     isSignatureReusedError,
+    signatureTooOldVerdict,
     type ProtocolVersion,
 } from '../program/protocol';
-import { hasDeferredExpiredCode } from '../wallet/deferred';
-import { hasSolMaxPerTxExceededCode, hasUnlistedOutflowCode } from '../wallet/policy';
+import {
+    MIN_ATTEMPT_MS,
+    SEND_ATTEMPT_TIMEOUT_MS,
+    SEND_BUDGET_MS,
+    isOffline,
+    parseRetryAfter,
+    retryDelayMs,
+    sendFailureKind,
+} from './sendPolicy';
 export interface PaymasterConfig {
     paymasterUrl: string;
     apiKey?: string;
 }
 
-/** How long a `signAndSendTransaction` request may take: a paymaster may hold it until the transaction is confirmed. */
-const SEND_TIMEOUT_MS = 90_000;
-/** How long any other request may take. */
+/** How long any request but a send may take. */
 const REQUEST_TIMEOUT_MS = 30_000;
+
+/** How one send is bounded and when it is tried again (see ./sendPolicy). */
+export interface PaymasterSendOptions {
+    /**
+     * Whether the transaction's blockhash is still valid. Asked before every
+     * retry: once it says `false`, the bytes are not sent again (they could
+     * not land). A check that throws does not stop the retry.
+     */
+    canResend?: () => Promise<boolean>;
+    /** The whole send's time budget, retries and waits included. Default `SEND_BUDGET_MS` (60 s). */
+    budgetMs?: number;
+}
 
 /**
  * A paymaster request that returned no result.
@@ -52,10 +71,25 @@ export class PaymasterError extends Error {
      * resend of the same bytes found them already processed.
      */
     maybeSent: boolean;
+    /**
+     * Nothing was sent: the device was offline (`navigator.onLine === false`)
+     * when the request was to be made, so it was not made.
+     */
+    readonly offline?: boolean;
+    /** A rate-limited answer's `Retry-After`, in milliseconds, when it gave one. */
+    readonly retryAfterMs?: number;
 
     constructor(
         message: string,
-        details: { code?: number; data?: unknown; httpStatus?: number; maybeSent?: boolean; cause?: unknown } = {},
+        details: {
+            code?: number;
+            data?: unknown;
+            httpStatus?: number;
+            maybeSent?: boolean;
+            offline?: boolean;
+            retryAfterMs?: number;
+            cause?: unknown;
+        } = {},
     ) {
         super(message);
         this.name = 'PaymasterError';
@@ -63,6 +97,8 @@ export class PaymasterError extends Error {
         this.data = details.data;
         this.httpStatus = details.httpStatus;
         this.maybeSent = details.maybeSent ?? false;
+        if (details.offline) this.offline = true;
+        if (details.retryAfterMs !== undefined) this.retryAfterMs = details.retryAfterMs;
         const reported = (details.data as { signature?: unknown } | undefined)?.signature;
         if (typeof reported === 'string' && /^[1-9A-HJ-NP-Za-km-z]{64,88}$/.test(reported)) this.signature = reported;
         if (details.cause !== undefined) (this as { cause?: unknown }).cause = details.cause;
@@ -128,10 +164,14 @@ export class Paymaster {
     /**
      * One JSON-RPC call, bounded in time. Throws `PaymasterError`; for a send,
      * `maybeSent` is set when the request may have reached the paymaster and
-     * its answer was lost.
+     * its answer was lost. On a device that says it is offline the request is
+     * not made at all: `offline`, and never `maybeSent`.
      */
     private async call<T>(method: string, params: unknown, failure: string, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
         const sending = method === 'signAndSendTransaction';
+        if (isOffline()) {
+            throw new PaymasterError(`${failure}: this device is offline, so nothing was sent`, { offline: true });
+        }
         const abort = new AbortController();
         const timer = setTimeout(() => abort.abort(), timeoutMs);
         let response: Response;
@@ -156,6 +196,7 @@ export class Paymaster {
         // wrote itself with a success status (a signature it reports is kept
         // apart, in `signature`).
         const lost = sending && !response.ok && (response.status >= 500 || response.status === 408);
+        const retryAfterMs = response.ok ? undefined : parseRetryAfter(response.headers?.get?.('retry-after'));
         try {
             let body: { result?: T; error?: { code?: number; message?: string; data?: unknown } } | undefined;
             try {
@@ -169,12 +210,14 @@ export class Paymaster {
                     data: body.error.data,
                     httpStatus: response.ok ? undefined : response.status,
                     maybeSent: lost,
+                    retryAfterMs,
                 });
             }
             if (!response.ok) {
                 throw new PaymasterError(`${failure}: ${response.statusText || response.status}`, {
                     httpStatus: response.status,
                     maybeSent: lost,
+                    retryAfterMs,
                 });
             }
             if (!body || body.result === undefined) {
@@ -260,6 +303,8 @@ export class Paymaster {
             } catch (error) {
                 // The same bytes get the same 4018 every time.
                 if (hasRetiredDeploymentCode(error)) throw this.retiredDeploymentFailure(error);
+                // And the same refusal: a program error, an allowlist, no funds (see ./sendPolicy).
+                if (error instanceof PaymasterError && sendFailureKind(error) === 'final') throw error;
                 if (attempt === maxRetries) {
                     this.logger.error('All sign retry attempts failed', error);
                     throw error;
@@ -276,9 +321,10 @@ export class Paymaster {
     }
 
     /**
-     * `signAndSendTransaction` with retries. Resolves with the signature when
-     * the paymaster answers, which may be before the transaction has executed:
-     * callers that need its outcome confirm it themselves.
+     * `signAndSendTransaction` with retries (see ./sendPolicy). Resolves with
+     * the signature when the paymaster answers, which may be before the
+     * transaction has executed: callers that need its outcome confirm it
+     * themselves.
      *
      * Each attempt, retries included, first runs this paymaster's
      * `beforeAttempt` (see the constructor). When that throws, nothing more is
@@ -287,63 +333,65 @@ export class Paymaster {
      * `maybeSent`, its message saying why the bytes were not sent again.
      *
      * A retry sends the same bytes, so a transaction can land at most once.
+     * Only a transient failure (a network error, a timeout, a 5xx, a blockhash
+     * the relayer's RPC has not seen yet) is retried, up to `maxRetries`
+     * attempts, and a rate limit (429) is waited out (`Retry-After`, capped);
+     * both only while the send's budget (`options.budgetMs`, 60 s) lasts and,
+     * when `options.canResend` is given, while the blockhash is valid. One
+     * attempt waits at most `SEND_ATTEMPT_TIMEOUT_MS` (30 s) for its answer.
+     *
      * It stops, and throws, when:
      * - the paymaster reports the transaction's signature with its error:
      *   `PaymasterError.signature` (confirm that signature for the outcome);
-     * - the same bytes turn out to be already processed, or every attempt
-     *   failed after one whose answer was lost: `PaymasterError.maybeSent`;
-     * - LazorKit rejected the passkey signature (3006) and no earlier attempt
-     *   may have been sent: `SignatureReusedError`. Those bytes are bound to a
-     *   counter already used and can never succeed.
-     * - the simulation failed with 3014 (an ExecuteDeferred whose
-     *   authorization expired, or an inner program's error with that code)
-     *   and no earlier attempt may have been sent: the `PaymasterError`.
-     *   Whose 3014 it was is told by the caller (`executeBeforeExpiry`).
-     * - the simulation failed with 3037 or 3038 (a session or delegate moving
-     *   an asset its policy does not name, or an inner program's error with
-     *   that code) and no earlier attempt may have been sent: the
-     *   `PaymasterError`. The same bytes move the same assets.
-     * - the simulation failed with 3023 (a session or delegate moving more
-     *   SOL in one transaction than its `SolMaxPerTx` allows, or an inner
-     *   program's error with that code) and no earlier attempt may have been
-     *   sent: the `PaymasterError`. The same bytes move the same amount.
-     * - the paymaster answered with a 4018 (`RetiredDeployment`: a retired
-     *   v1 program answers every attempt with it, or an inner program's error
-     *   with that code), on its first answer: `V1WalletRetiredError` when it
-     *   is the retired v1 program's (the logs name v1, or `protocolVersion` is
-     *   1), the `PaymasterError` otherwise, which the caller maps by the
-     *   wallet's protocol. After an earlier attempt whose answer was lost it
-     *   is the `PaymasterError` with `maybeSent`: that attempt's outcome is
-     *   still unknown.
+     * - the same bytes turn out to be already processed: `maybeSent`;
+     * - an attempt is refused for good (a program error, an allowlist, missing
+     *   funds, a failed simulation, a 4xx), and no earlier attempt may have
+     *   been sent:
+     *   - LazorKit's SignatureReused (3006): `SignatureReusedError`. Those
+     *     bytes are bound to a counter already used and can never succeed.
+     *   - LazorKit's InvalidSignatureAge (3007): `SignatureTooOldError`. The
+     *     approval was sent more than 150 slots after its challenge; ask the
+     *     user to approve again.
+     *   - a 4018 (`RetiredDeployment`): `V1WalletRetiredError` when it is the
+     *     retired v1 program's (the logs name v1, or `protocolVersion` is 1),
+     *     the `PaymasterError` otherwise, which the caller maps by the
+     *     wallet's protocol.
+     *   - anything else (3014, 3023, 3037, 3038, …): the `PaymasterError`.
+     * - the retries, the budget or the blockhash run out: the last attempt's
+     *   `PaymasterError`, its message saying why it was not sent again.
+     *
+     * Whenever an earlier attempt's answer was lost, the error thrown has
+     * `maybeSent`: a later refusal does not undo it.
      */
     private async sendWithRetries(
-        attemptSend: () => Promise<string>,
+        attemptSend: (timeoutMs: number) => Promise<string>,
         maxRetries: number,
         baseDelay: number,
+        options: PaymasterSendOptions = {},
     ): Promise<string> {
+        const budgetMs = options.budgetMs ?? SEND_BUDGET_MS;
+        const deadline = Date.now() + budgetMs;
         let maybeSent = false;
         let last: PaymasterError | undefined;
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        let attempts = 0;
+        let rateLimited = 0;
+        for (;;) {
             if (this.beforeAttempt) {
                 try {
                     this.beforeAttempt();
                 } catch (refusal) {
                     if (!maybeSent || !last) throw refusal;
                     // An earlier attempt may still land: its outcome is unknown, not refused.
-                    throw new PaymasterError(
-                        `${last.message} (not sent again: ${(refusal as Error)?.message ?? String(refusal)})`,
-                        { code: last.code, data: last.data, httpStatus: last.httpStatus, maybeSent: true, cause: last },
-                    );
+                    throw notSentAgain(last, true, (refusal as Error)?.message ?? String(refusal));
                 }
             }
             try {
-                return await attemptSend();
+                return await attemptSend(Math.max(1, Math.min(SEND_ATTEMPT_TIMEOUT_MS, deadline - Date.now())));
             } catch (caught) {
                 const error =
                     caught instanceof PaymasterError
                         ? caught
                         : new PaymasterError((caught as Error)?.message ?? String(caught), { cause: caught });
-                this.logger.error(`Attempt ${attempt} failed:`, error);
                 last = error;
                 if (error.signature) throw error;
                 if (isAlreadyProcessed(error)) {
@@ -351,39 +399,49 @@ export class Paymaster {
                     throw error;
                 }
                 maybeSent ||= error.maybeSent;
-                if (!maybeSent && isSignatureReusedError(error)) throw new SignatureReusedError(error);
-                // DeferredAuthorizationExpired (3014): the slot only moves on,
-                // so the same bytes can never pass again.
-                if (!maybeSent && hasDeferredExpiredCode(error)) throw error;
-                // ActionUnlistedSolOutflow / ActionUnlistedTokenOutflow (3037 / 3038).
-                if (!maybeSent && hasUnlistedOutflowCode(error)) throw error;
-                // ActionSolMaxPerTxExceeded (3023): the cap and the amount stay as they are.
-                if (!maybeSent && hasSolMaxPerTxExceededCode(error)) throw error;
-                // RetiredDeployment (4018): the next attempt gets the same answer.
-                if (hasRetiredDeploymentCode(error)) {
-                    if (!maybeSent) throw this.retiredDeploymentFailure(error);
-                    error.maybeSent = true;
-                    throw error;
-                }
-                if (attempt === maxRetries) {
-                    this.logger.error('All retry attempts failed', error);
-                    // A later refusal does not undo an earlier attempt whose
-                    // answer was lost: that one may still have been sent.
-                    error.maybeSent = maybeSent;
-                    throw error;
-                }
+                const kind = sendFailureKind(error);
+                this.logger.error(`Attempt ${attempts + rateLimited + 1} failed (${kind}):`, error);
+                if (kind === 'final') throw this.finalFailure(error, maybeSent);
 
-                // Calculate exponential backoff delay
-                const delay = baseDelay * Math.pow(2, attempt - 1);
-                this.logger.info(`Retrying in ${delay}ms (attempt ${attempt}/${maxRetries})`);
-                await new Promise(resolve => setTimeout(resolve, delay));
+                let delay: number;
+                if (kind === 'rate-limited') {
+                    rateLimited++;
+                    delay = retryDelayMs(rateLimited, baseDelay, error.retryAfterMs);
+                } else {
+                    attempts++;
+                    if (attempts >= maxRetries) throw notSentAgain(error, maybeSent, `${attempts} attempts failed`);
+                    delay = retryDelayMs(attempts, baseDelay);
+                }
+                if (Date.now() + delay + MIN_ATTEMPT_MS > deadline) {
+                    throw notSentAgain(error, maybeSent, `the send's ${Math.round(budgetMs / 1000)} s limit was reached`);
+                }
+                this.logger.info(`Retrying in ${delay}ms`);
+                await new Promise((resolve) => setTimeout(resolve, delay));
+                if (options.canResend && !(await stillValid(options.canResend))) {
+                    throw notSentAgain(error, maybeSent, 'its blockhash has expired, so it could not land');
+                }
             }
         }
-
-        throw new Error('Failed to sign and send transaction after all retries');
     }
 
-    private async sendOnce(transactionBase64: string, signerKey: PublicKey | undefined): Promise<string> {
+    /**
+     * What to throw for a refusal that the same bytes would get again
+     * (`sendFailureKind` 'final'): the named error for LazorKit's 3006, 3007
+     * and a retired v1 program's 4018, when no earlier attempt may have been
+     * sent; the `PaymasterError` with `maybeSent` when one may have.
+     */
+    private finalFailure(error: PaymasterError, maybeSent: boolean): unknown {
+        if (maybeSent) {
+            error.maybeSent = true;
+            return error;
+        }
+        if (isSignatureReusedError(error)) return new SignatureReusedError(error);
+        if (hasRetiredDeploymentCode(error)) return this.retiredDeploymentFailure(error);
+        if (signatureTooOldVerdict(error) !== 'other') return new SignatureTooOldError(error);
+        return error;
+    }
+
+    private async sendOnce(transactionBase64: string, signerKey: PublicKey | undefined, timeoutMs: number): Promise<string> {
         const result = await this.call<{ signature?: string }>(
             'signAndSendTransaction',
             {
@@ -391,7 +449,7 @@ export class Paymaster {
                 ...(signerKey ? { signer_key: signerKey.toBase58() } : {}),
             },
             'Failed to sign and send transaction',
-            SEND_TIMEOUT_MS,
+            timeoutMs,
         );
         if (!result.signature) {
             throw new PaymasterError("Failed to sign and send transaction: the paymaster's answer has no signature", { maybeSent: true });
@@ -402,33 +460,71 @@ export class Paymaster {
     /**
      * Sign and send a legacy transaction, with retries (see `sendWithRetries`).
      * @param transaction Transaction to sign and send
-     * @param maxRetries Maximum number of retry attempts (default: 3)
+     * @param maxRetries Maximum number of attempts that are not rate-limited (default: 3)
      * @param baseDelay Base delay between retries in ms (default: 1000)
+     * @param options The send's budget, and the blockhash check before each retry
      * @returns Transaction signature
      */
-    async signAndSend(transaction: Transaction, maxRetries: number = 3, baseDelay: number = 1000): Promise<string> {
+    async signAndSend(
+        transaction: Transaction,
+        maxRetries: number = 3,
+        baseDelay: number = 1000,
+        options: PaymasterSendOptions = {},
+    ): Promise<string> {
         const serialized = transaction.serialize({
             verifySignatures: false,
             requireAllSignatures: false
         });
         return this.sendWithRetries(
-            () => this.sendOnce(serialized.toString('base64'), transaction.feePayer ?? undefined),
+            (timeoutMs) => this.sendOnce(serialized.toString('base64'), transaction.feePayer ?? undefined, timeoutMs),
             maxRetries,
             baseDelay,
+            options,
         );
     }
 
     /**
      * Sign and send a v0 transaction, with retries (see `sendWithRetries`).
      * @param transaction Transaction to sign and send
-     * @param maxRetries Maximum number of retry attempts (default: 3)
+     * @param maxRetries Maximum number of attempts that are not rate-limited (default: 3)
      * @param baseDelay Base delay between retries in ms (default: 1000)
+     * @param options The send's budget, and the blockhash check before each retry
      * @returns Transaction signature
      */
-    async signAndSendVersionedTransaction(transaction: VersionedTransaction, maxRetries: number = 3, baseDelay: number = 1000): Promise<string> {
+    async signAndSendVersionedTransaction(
+        transaction: VersionedTransaction,
+        maxRetries: number = 3,
+        baseDelay: number = 1000,
+        options: PaymasterSendOptions = {},
+    ): Promise<string> {
         // V0 message: account_keys[0] is the fee payer.
         const feePayerKey = transaction.message.staticAccountKeys[0];
         const serialized = Buffer.from(transaction.serialize()).toString('base64');
-        return this.sendWithRetries(() => this.sendOnce(serialized, feePayerKey), maxRetries, baseDelay);
+        return this.sendWithRetries((timeoutMs) => this.sendOnce(serialized, feePayerKey, timeoutMs), maxRetries, baseDelay, options);
+    }
+}
+
+/**
+ * The last attempt's error, saying why the bytes were not sent again, with
+ * `maybeSent` when any attempt may have been sent.
+ */
+function notSentAgain(last: PaymasterError, maybeSent: boolean, why: string): PaymasterError {
+    return new PaymasterError(`${last.message} (not sent again: ${why})`, {
+        code: last.code,
+        data: last.data,
+        httpStatus: last.httpStatus,
+        maybeSent: maybeSent || last.maybeSent,
+        offline: last.offline,
+        retryAfterMs: last.retryAfterMs,
+        cause: last,
+    });
+}
+
+/** `canResend`, where a check that fails says nothing: the same bytes are safe to send again. */
+async function stillValid(canResend: () => Promise<boolean>): Promise<boolean> {
+    try {
+        return (await canResend()) !== false;
+    } catch {
+        return true;
     }
 }

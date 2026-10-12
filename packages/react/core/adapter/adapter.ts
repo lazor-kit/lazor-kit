@@ -35,6 +35,7 @@ import {
 } from '../program';
 import { getCredentialHash, toActionError } from '../wallet/utils';
 import { sendAndConfirm, withAuthority } from '../wallet/sequence';
+import { blockhashStillValid } from '../wallet/blockhash';
 import { buildPreviewTransactionBase64 } from '../wallet/preview';
 import { clearPendingConfirmation, connectAbandoned, connectFreshWallet } from '../wallet/resolveWallet';
 import type { OnConfirmWallet } from '../wallet/confirmation';
@@ -130,10 +131,6 @@ function assertConnectedWallet(wallet: WalletInfo, confirmWallet: string | undef
                 `(${wallet.vaultPda ?? wallet.smartWallet}). Disconnect first to connect another.`,
         );
     }
-}
-
-function randomBytes(size: number): Uint8Array {
-    return globalThis.crypto.getRandomValues(new Uint8Array(size));
 }
 
 /** URL-safe base64 (no padding) — portal challenge format. */
@@ -274,12 +271,12 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
                 onConfirmWallet: options?.onConfirmWallet ?? this._config.onConfirmWallet,
                 confirmWallet,
                 openPortal: () => this._createDialogManager(),
-                createWallet: async (owner) => {
+                createWallet: async (owner, userSeed) => {
                     const { paymaster, client } = this._initializeClients(2);
                     const feePayer = await paymaster.getPayer();
                     const { instructions, walletPda, authorityPda } = await client.createWallet({
                         payer: feePayer,
-                        userSeed: randomBytes(32),
+                        userSeed,
                         owner: { type: 'secp256r1', ...owner },
                     });
                     const tx = new Transaction();
@@ -294,7 +291,10 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
                     await sendAndConfirm({
                         connection,
                         attempt: { blockhash, lastValidBlockHeight },
-                        send: () => paymaster.signAndSend(tx),
+                        send: () =>
+                            paymaster.signAndSend(tx, undefined, undefined, {
+                                canResend: () => blockhashStillValid(connection, lastValidBlockHeight),
+                            }),
                         createsAuthority: authorityPda,
                     });
                     return walletPda;
@@ -506,16 +506,12 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
             const credentialId = this._wallet.credentialId;
 
             return await withAuthority(authorityPda, async (turn) => {
-                // Step 2: prepare execute context (challenge + opaque internal
-                // state), from state that includes this passkey's last send.
-                const prepared = await client.prepareExecute({
-                    payer: feePayer,
-                    walletPda,
-                    secp256r1: { credentialIdHash, publicKeyBytes, authorityPda, ...(await turn.challengeReads(connection)) },
-                    instructions,
-                });
-
-                const encodedChallenge = toBase64Url(prepared.challenge);
+                // Everything that does not need the challenge first: the
+                // program accepts a passkey signature for only 150 slots
+                // (about 35 s) after the slot its challenge names, approval
+                // included, so that slot is read last, right before the portal
+                // opens with it.
+                const reads = await turn.challengeReads(connection);
 
                 // A display-only v0 transaction for the portal preview,
                 // compiled with the dApp's lookup tables like the one sent.
@@ -526,6 +522,17 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
                     instructions,
                     addressLookupTables: addressLookupTableAccounts,
                 });
+
+                // Step 2: prepare execute context (challenge + opaque internal
+                // state), from state that includes this passkey's last send.
+                const prepared = await client.prepareExecute({
+                    payer: feePayer,
+                    walletPda,
+                    secp256r1: { credentialIdHash, publicKeyBytes, authorityPda, ...reads },
+                    instructions,
+                });
+
+                const encodedChallenge = toBase64Url(prepared.challenge);
 
                 const dialogManager = this._createDialogManager();
                 try {
@@ -555,6 +562,7 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
                     // Step 5: send via paymaster (versioned if LUTs supplied,
                     // legacy otherwise), then wait until it is confirmed.
                     const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+                    const sendOptions = { canResend: () => blockhashStillValid(connection, lastValidBlockHeight) };
                     let send: () => Promise<string>;
                     let simulateLogs: () => Promise<readonly string[] | null | undefined>;
                     if (addressLookupTableAccounts.length > 0) {
@@ -565,7 +573,7 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
                                 instructions: finalizedIxs,
                             }).compileToV0Message(addressLookupTableAccounts),
                         );
-                        send = () => paymaster.signAndSendVersionedTransaction(v0);
+                        send = () => paymaster.signAndSendVersionedTransaction(v0, undefined, undefined, sendOptions);
                         simulateLogs = async () =>
                             (await connection.simulateTransaction(v0, { sigVerify: false, replaceRecentBlockhash: true })).value.logs;
                     } else {
@@ -575,7 +583,7 @@ export class LazorkitWalletAdapter extends BaseWalletAdapter {
                         tx.add(...finalizedIxs);
                         tx.feePayer = feePayer;
                         tx.recentBlockhash = blockhash;
-                        send = () => paymaster.signAndSend(tx);
+                        send = () => paymaster.signAndSend(tx, undefined, undefined, sendOptions);
                         simulateLogs = async () => (await connection.simulateTransaction(tx)).value.logs;
                     }
                     return await sendAndConfirm({

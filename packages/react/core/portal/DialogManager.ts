@@ -129,6 +129,8 @@ export class DialogManager extends EventEmitter {
   private pendingChoice: (() => void) | null = null;
   /** Settles when the dialog being closed is gone, so the next one does not reuse it mid-close. */
   private closing: Promise<void> | null = null;
+  /** The window 'message' listener this manager added; removed by `destroy()`. */
+  private messageListener: ((event: MessageEvent) => void) | null = null;
 
   constructor(config: DialogManagerConfig) {
     super();
@@ -825,7 +827,8 @@ export class DialogManager extends EventEmitter {
    * Setup message listener for portal communication
    */
   private setupMessageListener(): void {
-    window.addEventListener('message', (event) => {
+    if (typeof window === 'undefined') return;
+    this.messageListener = (event: MessageEvent) => {
       // Only the portal, and only the dialog this manager opened. A substring
       // match on the hostname let `portal.lazor.sh.attacker.example` speak for
       // the portal — and connect now trusts the key the portal reports.
@@ -894,7 +897,8 @@ export class DialogManager extends EventEmitter {
           this.pendingCancel?.();
           break;
       }
-    });
+    };
+    window.addEventListener('message', this.messageListener);
   }
 
   /**
@@ -1006,6 +1010,13 @@ export class DialogManager extends EventEmitter {
     this.pendingChoice?.();
     this.closeDialog();
     this.credentialManager.destroy();
+    // Each manager added one; a page that sends often would otherwise keep
+    // every manager (and its CredentialManager) alive, each one parsing
+    // every message the page receives.
+    if (this.messageListener && typeof window !== 'undefined') {
+      window.removeEventListener('message', this.messageListener);
+    }
+    this.messageListener = null;
     this.removeAllListeners();
     this.logger.debug('Destroyed dialog manager');
   }

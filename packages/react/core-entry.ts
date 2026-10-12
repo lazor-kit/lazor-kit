@@ -168,6 +168,13 @@ export {
   isSignatureReusedError,
   SIGNATURE_REUSED_CODE,
 } from './core/program';
+// A passkey approval sent more than 150 slots (about 35 s) after its
+// challenge was prepared (3007): never resent; ask the user to try again.
+export {
+  SignatureTooOldError,
+  isSignatureTooOldError,
+  SIGNATURE_TOO_OLD_CODE,
+} from './core/program';
 export {
   TransactionFailedError,
   TransactionExpiredError,

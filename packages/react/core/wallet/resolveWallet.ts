@@ -28,6 +28,8 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { Buffer } from 'buffer';
 import {
+    findAuthorityPda,
+    findWalletPda,
     pickOwnWallet,
     recoverPasskeyPublicKeys,
     resolvePasskeyPublicKey,
@@ -51,6 +53,8 @@ import {
     type OnConfirmWallet,
     type WalletChoice,
 } from './confirmation';
+import { forgetCreation, pendingCreation, rememberCreation } from './pendingCreation';
+import { noteAuthorityLanded } from './sequence';
 
 /** How long a `'throw'` offer can be confirmed without opening the portal again. */
 const OFFER_TTL_MS = 2 * 60 * 1000;
@@ -156,6 +160,13 @@ export interface ResolveOwnWalletParams {
     accountName?: string;
     /** Aborted by `disconnect`: then nothing is offered or asked any more. */
     signal?: AbortSignal;
+    /**
+     * The wallet PDA (base58) of a creation for this passkey whose outcome was
+     * not known (see ./pendingCreation). Found, proven and controlled by this
+     * passkey alone, it is adopted without asking: it is the wallet this
+     * connect's own retry would create.
+     */
+    justCreated?: string;
     /**
      * D10 (Embedded only; default none): the session key the SDK keeps on
      * this device and the wallet it is bound to. On that one wallet, and only
@@ -271,6 +282,23 @@ export async function settleCandidates(facts: WalletFacts[], p: ResolveOwnWallet
         const chosen = selectWalletByAddress(facts, p.confirmWallet);
         if (!chosen) throw notOffered(p.confirmWallet, facts);
         return { adopt: chosen, confirmed: true };
+    }
+
+    // The wallet an earlier connect created for this passkey, whose answer was
+    // lost: never signed for yet, so pickOwnWallet would ask the user about
+    // it. It is adopted only as the one proven wallet, with no other key,
+    // session or grant on it.
+    if (p.justCreated && facts.length === 1) {
+        const [mine] = facts;
+        if (
+            mine.walletPda.toBase58() === p.justCreated &&
+            mine.controlledAlone &&
+            mine.otherAuthorities.length === 0 &&
+            mine.liveSessions.length === 0 &&
+            mine.pendingDeferred.length === 0
+        ) {
+            return { adopt: mine };
+        }
     }
 
     const { adopt, needsConfirmation } = pickOwnWallet(facts);
@@ -439,12 +467,20 @@ export interface ConnectFreshWalletParams {
     confirmWallet?: string;
     /** A dialog for the portal; made only when the portal is needed. */
     openPortal: () => PortalDialog;
-    /** Create and land a v2 wallet owned by this passkey; resolve with its wallet PDA. */
-    createWallet: (owner: {
-        credentialIdHash: Uint8Array;
-        compressedPubkey: Uint8Array;
-        rpId: string;
-    }) => Promise<PublicKey>;
+    /**
+     * Create and land a v2 wallet owned by this passkey, from `userSeed`;
+     * resolve with its wallet PDA. The seed is chosen here: the one of an
+     * earlier creation for the same passkey whose outcome was not known, so a
+     * retry can never create a second wallet (see ./pendingCreation).
+     */
+    createWallet: (
+        owner: {
+            credentialIdHash: Uint8Array;
+            compressedPubkey: Uint8Array;
+            rpId: string;
+        },
+        userSeed: Uint8Array,
+    ) => Promise<PublicKey>;
     /**
      * Aborted by `disconnect`: the portal or chooser closes at once, and the
      * connect rejects with `connectAbandoned()` instead of offering, creating
@@ -475,6 +511,10 @@ export async function connectFreshWallet(p: ConnectFreshWalletParams): Promise<W
     try {
         const challenge = createOwnershipChallenge();
         const reply = await dialog.openConnect({ challenge: toBase64Url(challenge) });
+        const client = v2Client(p.connection);
+        const programId = client.programId.toBase58();
+        const credentialIdHash = getCredentialHash(reply.credentialId);
+        const pending = pendingCreation(programId, credentialIdHash, rpId);
         const own = await resolveOwnWallet({
             connection: p.connection,
             rpId,
@@ -493,17 +533,45 @@ export async function connectFreshWallet(p: ConnectFreshWalletParams): Promise<W
             chooseWallet: (choices) => dialog.openWalletChoice(choices),
             accountName: reply.accountName,
             signal: p.signal,
+            justCreated: pending?.walletPda,
         });
         if (p.signal?.aborted) throw connectAbandoned();
-        if ('adopt' in own) return walletInfo(own.adopt, reply.credentialId, reply.accountName);
+        if ('adopt' in own) {
+            if (pending && own.adopt.walletPda.toBase58() === pending.walletPda) {
+                forgetCreation(programId, credentialIdHash, rpId);
+            }
+            return walletInfo(own.adopt, reply.credentialId, reply.accountName);
+        }
 
-        // Persisted as created, never looked up again: a wallet this passkey
-        // has not signed for yet would come back for confirmation.
-        const walletPda = await p.createWallet({
-            credentialIdHash: getCredentialHash(reply.credentialId),
-            compressedPubkey: own.create,
-            rpId,
-        });
+        // The seed of an earlier creation for this very key whose outcome was
+        // not known, else a new one. Kept until the creation lands.
+        const owner = { credentialIdHash, compressedPubkey: own.create, rpId };
+        const reuse = pending && bytesEqual(pending.compressedPubkey, own.create) ? pending : null;
+        const userSeed = reuse ? reuse.seed : globalThis.crypto.getRandomValues(new Uint8Array(32));
+        const [expected] = findWalletPda(userSeed, client.programId);
+        let walletPda: PublicKey;
+        if (reuse && (await createdAlready(p.connection, expected, owner, p.watchMints, programId))) {
+            // It landed after all, and no lookup has seen it yet.
+            walletPda = expected;
+        } else {
+            rememberCreation(programId, credentialIdHash, rpId, {
+                seed: userSeed,
+                walletPda: expected.toBase58(),
+                compressedPubkey: own.create,
+            });
+            try {
+                // Persisted as created, never looked up again: a wallet this
+                // passkey has not signed for yet would come back for confirmation.
+                walletPda = await p.createWallet(owner, userSeed);
+            } catch (error) {
+                // A send of the same seed fails once an earlier one has landed.
+                if (!(await createdAlready(p.connection, expected, owner, p.watchMints, programId).catch(() => false))) {
+                    throw error;
+                }
+                walletPda = expected;
+            }
+        }
+        forgetCreation(programId, credentialIdHash, rpId);
         // Too late to stop the creation; it is simply not connected. The next
         // connect offers it ("Not used with this passkey yet").
         if (p.signal?.aborted) throw connectAbandoned();
@@ -545,6 +613,40 @@ function baseInfo(credentialId: string, passkeyPubkey: Uint8Array, accountName?:
         walletDevice: '',
         accountName,
     };
+}
+
+/**
+ * Whether the wallet at `walletPda` (the pending creation's) exists and is this
+ * passkey's alone: exactly one authority, this key at Owner rank, nothing else
+ * that can spend from it (sdk-legacy's `vetMigrationDestination`). One that
+ * exists and is not throws, creating nothing, and its seed is forgotten.
+ */
+async function createdAlready(
+    connection: Connection,
+    walletPda: PublicKey,
+    owner: { credentialIdHash: Uint8Array; compressedPubkey: Uint8Array; rpId: string },
+    watchMints: readonly string[] | undefined,
+    programId: string,
+): Promise<boolean> {
+    const { value, context } = await connection.getAccountInfoAndContext(walletPda);
+    if (!value) return false;
+    const client = v2Client(connection);
+    const problem = await client.vetMigrationDestination(
+        walletPda,
+        { type: 'secp256r1', ...owner },
+        { watchMints: [...(watchMints ?? [])] },
+    );
+    if (problem === null) {
+        // As a creation confirmed here would: the passkey's first challenge is
+        // read at or past the slot it was seen at.
+        noteAuthorityLanded(findAuthorityPda(walletPda, owner.credentialIdHash, client.programId)[0], context.slot);
+        return true;
+    }
+    forgetCreation(programId, owner.credentialIdHash, owner.rpId);
+    throw new Error(
+        `A wallet already exists at ${walletPda.toBase58()}, where this passkey's wallet was being created, and ` +
+            `it is not this passkey's alone (${problem}). Nothing was created. Connect again.`,
+    );
 }
 
 /** An assertion in the portal's reply, decoded like a sign reply. */

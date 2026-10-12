@@ -188,6 +188,7 @@ export function describeError(error: unknown): ErrorDescription {
         });
     }
     if (has('SignatureReusedError')) return program(3006, 'SignatureReused');
+    if (has('SignatureTooOldError')) return program(3007, 'InvalidSignatureAge');
     if (has('DeferredExpiredError')) return program(3014, 'DeferredAuthorizationExpired');
     if (has('UnlistedSolOutflowError')) return program(3037, 'ActionUnlistedSolOutflow');
     if (has('UnlistedTokenOutflowError')) return program(3038, 'ActionUnlistedTokenOutflow');
@@ -354,6 +355,14 @@ export function describeError(error: unknown): ErrorDescription {
             retryable: true,
         });
     }
+    if (has('PortalTimeoutError')) {
+        return described('browser-failed', {
+            title: "Couldn't open the approval page",
+            message: "The page that asks for your passkey didn't open or didn't answer in time, so nothing was signed.",
+            action: TRY_AGAIN,
+            retryable: true,
+        });
+    }
     if (/Failed to open browser/i.test(messages)) {
         return described('browser-failed', {
             title: "Couldn't open the approval page",
@@ -398,13 +407,22 @@ export function describeError(error: unknown): ErrorDescription {
     if (
         has('NetworkError') ||
         (typeof status === 'number' && status >= 500) ||
-        /failed to fetch|fetch failed|load failed|network ?error|ECONN|ENOTFOUND|socket hang up/i.test(messages)
+        chain.some((l) => field(l, 'offline') === true) ||
+        /failed to fetch|fetch failed|load failed|network ?error|network request failed|offline|ECONN|ENOTFOUND|socket hang up/i.test(messages)
     ) {
         return described('network', {
             title: "Can't reach the network",
             message: "Your device couldn't reach the network, so this didn't go through.",
             action: 'Check your connection and try again.',
             retryable: true,
+        });
+    }
+    if (has('PaymasterError') && /not in the allowed list|is not allowed|disallowed/i.test(messages)) {
+        return described('paymaster', {
+            title: "Couldn't send this",
+            message: "The service that sends transactions for this app doesn't allow this one, so nothing was sent.",
+            action: SUPPORT,
+            retryable: false,
         });
     }
     if (has('PaymasterError')) {
@@ -574,8 +592,8 @@ const PROGRAM_TEXT: Record<number, Text> = {
     },
     3007: {
         title: 'Approval took too long',
-        message: 'Your approval expired before it could be sent, so nothing was sent.',
-        action: 'Try again and approve right away.',
+        message: 'An approval is only good for about 30 seconds, and this one ran out before it was sent, so nothing was sent.',
+        action: 'Try again, and approve right away.',
         retryable: true,
     },
     3008: {

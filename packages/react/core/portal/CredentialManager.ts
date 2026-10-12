@@ -4,6 +4,7 @@
 
 import { EventEmitter } from 'eventemitter3';
 import { CredentialData } from './types/DialogTypes';
+import { syncStorage } from '../storage/StorageManager';
 
 /**
  * The origin of `portalUrl`, the only page the credentials may reach. Null
@@ -92,9 +93,11 @@ export class CredentialManager extends EventEmitter {
     if (!targetOrigin) return;
 
     // Get credentials from localStorage
-    const credentialId = localStorage.getItem('CREDENTIAL_ID') || '';
-    const publickey = localStorage.getItem('PUBLIC_KEY') || '';
-    const smartWalletAddress = localStorage.getItem('SMART_WALLET_ADDRESS') || '';
+    // Storage may be denied (it then reads as empty): this runs in a timer,
+    // where a throw would be uncaught.
+    const credentialId = syncStorage.getItem('CREDENTIAL_ID') || '';
+    const publickey = syncStorage.getItem('PUBLIC_KEY') || '';
+    const smartWalletAddress = syncStorage.getItem('SMART_WALLET_ADDRESS') || '';
 
     // Check if we have valid credentials or if we're forcing the sync
     if (!force && (!credentialId || !publickey)) {
@@ -137,20 +140,21 @@ export class CredentialManager extends EventEmitter {
    * @param credential The credential data to store
    */
   storeCredential(credential: CredentialData): void {
+    // Best effort, like every portal-mode write: denied storage is not an error.
     if (credential.credentialId) {
-      localStorage.setItem('CREDENTIAL_ID', credential.credentialId);
+      syncStorage.setItem('CREDENTIAL_ID', credential.credentialId);
     }
 
     if (credential.publickey) {
-      localStorage.setItem('PUBLIC_KEY', credential.publickey);
+      syncStorage.setItem('PUBLIC_KEY', credential.publickey);
     }
 
     if (credential.smartWalletAddress) {
-      localStorage.setItem('SMART_WALLET_ADDRESS', credential.smartWalletAddress);
+      syncStorage.setItem('SMART_WALLET_ADDRESS', credential.smartWalletAddress);
     }
 
     // Store timestamp for tracking
-    localStorage.setItem('CREDENTIALS_TIMESTAMP', new Date().toISOString());
+    syncStorage.setItem('CREDENTIALS_TIMESTAMP', new Date().toISOString());
   }
 
   /**
