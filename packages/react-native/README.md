@@ -28,7 +28,8 @@ export default function App() {
     <LazorKitProvider
       rpcUrl="https://api.devnet.solana.com"
       portalUrl="https://portal.lazor.sh"
-      configPaymaster={{ paymasterUrl: "https://kora.devnet.lazorkit.com" }}
+      // Optional on devnet: this is the default (DEFAULTS.PAYMASTER_URL).
+      configPaymaster={{ paymasterUrl: "https://kora-devnet-production.up.railway.app" }}
     >
       <WalletScreen />
     </LazorKitProvider>
@@ -54,6 +55,100 @@ function WalletScreen() {
   return <Button title="Action" onPress={handleSign} />;
 }
 ```
+
+**The relayer.** On devnet `configPaymaster` may be left out: the default is
+LazorKit's devnet relayer, `https://kora-devnet-production.up.railway.app`
+(`DEFAULTS.PAYMASTER_URL`), which sponsors the v2 program. Until its domain
+moves, `kora.devnet.lazorkit.com` still serves the old relayer, which allows
+only the v1 program and refuses every v2 transaction; 3.0.0-next.0 defaulted
+to it. Pass `configPaymaster` to use any other relayer (on mainnet you must).
+
+**A portal of your own (local development).** `rpId` defaults to
+`portal.lazor.sh`. When `portalUrl` points anywhere else (a local portal on
+`http://localhost:5310`, a staging host), pass that portal's relying party as
+`rpId` too (`rpId="localhost"`): the passkey is created under the portal's
+host, and with the default `rpId` connect cannot match it to a wallet and
+never completes.
+
+### The system browser
+
+The portal opens in the system browser: `ASWebAuthenticationSession` on iOS,
+a Custom Tab on Android (`expo-web-browser`). `browserOptions` on the provider:
+
+| Option | Default | |
+|---|---|---|
+| `preferEphemeralSession` | `true` | iOS: an ephemeral session. iOS then shows no "“App” Wants to Use “…” to Sign In" alert before each approval. The trade-off: the session shares no cookies or website data with Safari and keeps none after it closes. The portal needs neither (passkeys live in the iCloud Keychain, not in the browser), so it only forgets its own hints between approvals. `false` for a shared session. |
+| `timeoutMs` | `120000` | How long the browser may stay open without the portal answering. Then the browser is closed and the call rejects with `PortalTimeoutError` ("Couldn't open the approval page", `browser-failed`); nothing was signed. A typed approval (`createSession`, `revokeSession`, `removeAuthority`), whose portal picks the slot when the user taps Approve, gets at least 10 minutes. |
+
+Without the timeout, a browser that never opened left connect waiting forever:
+iOS refuses to start an authentication session while the last one is still
+closing, and `expo-web-browser` ignores that failure. The adapter now also
+waits for the last session to be gone (about 0.75 s) before it opens the next.
+
+**One trip to create a wallet (iOS).** A passkey the portal registered just
+now (`kind=created`) whose reply came back through the iOS authentication
+session gets its wallet with no second portal trip: that session hands its
+callback only to the app that opened it, so the key the portal reports is
+the passkey's own, as on web. On Android the reply is a deep link, which any
+app can send, so the key is still proven with an ownership proof (a second
+trip) before a wallet is created for it.
+
+### iOS builds: Xcode 27 and Expo 54
+
+- **Deployment target ≥ 15.1, for every pod.** Expo SDK 54 (React Native
+  0.81) targets iOS 15.1, and Xcode 27 rejects pod targets below iOS 15.0:
+  `@react-native-async-storage/async-storage`'s resource bundle still
+  declares 13.4, so the build fails. Raise the app's target with
+  `expo-build-properties`, and every pod's with a small config plugin, then
+  `npx expo prebuild`:
+
+  ```js
+  // plugins/with-pod-deployment-target.js
+  const { withPodfile } = require('expo/config-plugins');
+
+  const MARK = '# with-pod-deployment-target';
+
+  module.exports = function withPodDeploymentTarget(config, target = '15.1') {
+    return withPodfile(config, (podfile) => {
+      const { contents } = podfile.modResults;
+      if (contents.includes(MARK)) return podfile;
+      const raise = `
+      ${MARK}
+      installer.pods_project.targets.each do |t|
+        t.build_configurations.each do |c|
+          if c.build_settings['IPHONEOS_DEPLOYMENT_TARGET'].to_f < ${target}
+            c.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '${target}'
+          end
+        end
+      end`;
+      // After React Native's own post_install step, which sets build settings too.
+      const rnStep = /react_native_post_install\([\s\S]*?\n\s*\)/;
+      podfile.modResults.contents = rnStep.test(contents)
+        ? contents.replace(rnStep, (step) => step + raise)
+        : contents.replace('post_install do |installer|', (line) => line + raise);
+      return podfile;
+    });
+  };
+  ```
+
+  ```json
+  {
+    "expo": {
+      "plugins": [
+        ["expo-build-properties", { "ios": { "deploymentTarget": "15.1" } }],
+        "./plugins/with-pod-deployment-target"
+      ]
+    }
+  }
+  ```
+- **`LANG=en_US.UTF-8` for `pod install`.** CocoaPods fails on a shell
+  without a UTF-8 locale (`Unicode Normalization not appropriate for
+  ASCII-8BIT`):
+
+  ```bash
+  export LANG=en_US.UTF-8
+  cd ios && pod install
+  ```
 
 
 ## Wallets made before LazorKit v2
@@ -272,7 +367,9 @@ counter at `confirmed` from an RPC node that has executed it
 | `ConfirmationTimeoutError` | A `TransactionOutcomeUnknownError`: no outcome within two minutes, and it may still land. Check `signature` before sending again. |
 | `PreviousTransactionPendingError` | Nothing was signed or sent: the passkey's previous transaction (`pendingSignature`) still has no known outcome, and a new signature could be bound to the counter it may use. Try again later. |
 | `SignatureReusedError` | LazorKit rejected the passkey signature (3006): its counter was already used. Left for the same passkey signing somewhere else at the same moment, or a paymaster reading older state than the adapter. That signature can never be valid, so it is not resent, and no new portal trip opens on its own: ask the user to sign again. An inner program's error with the same code (Anchor's `AccountNotMutable`) is told apart by the logs and reported as the failure it is. |
-| `PaymasterError` | The paymaster refused the transaction: `code` and `data` of its JSON-RPC error, or `httpStatus`. |
+| `SignatureTooOldError` | LazorKit refused the passkey approval with `InvalidSignatureAge` (3007): it was sent more than 150 slots (about 35 s at today's slot times) after its challenge was prepared, and the trip through the browser counts. Nothing was sent, and no counter was used. It is never resent, and no new portal trip opens on its own: offer "Try again", which calls the same action again and asks for a new approval. `isSignatureTooOldError` recognises it. |
+| `PaymasterError` | The paymaster refused the transaction: `code` and `data` of its JSON-RPC error, or `httpStatus` (and `retryAfterMs` for a 429 that said). |
+| `PortalTimeoutError` | The browser did not come back with the portal's answer within `browserOptions.timeoutMs` (see [The system browser](#the-system-browser)). Nothing was signed. |
 | `DeferredExpiredError` | TX2 of a deferred execution (`authorizeAndExecute`, `executeDeferred`) came after its authorization expired (`DeferredAuthorizationExpired`, 3014), so nothing in it ran. `authorizeSignature` (TX1, when this call sent it), `deferredExecPda` (the account holding the paymaster's rent: `reclaimDeferred` it) and `expiresAtSlot`. The passkey approval is spent: ask the user to approve again. An inner program's 3014 is not reported as this (see below). |
 | `UnlistedSolOutflowError` | A `signAndSendWithSession` transaction would have lowered the wallet's SOL balance (rent for a new account included), and the session's actions name no SOL (`ActionUnlistedSolOutflow`, 3037). Nothing in it ran. Its message is "This session is not allowed to spend SOL"; `signer` is `'session'`, and `cause` the failure as it came. See [What a session's actions bound](#what-a-sessions-actions-bound). |
 | `UnlistedTokenOutflowError` | The same for a token whose mint the actions do not name (`ActionUnlistedTokenOutflow`, 3038): "This session is not allowed to spend this token". |
@@ -280,6 +377,40 @@ counter at `confirmed` from an RPC node that has executed it
 | `RequestOutOfDateError` | The portal refused a typed request with `stale-counter`: its view of the passkey's counter was behind. The passkey signed nothing; `retryable` is `true`. |
 | `PortalRefusedError` | The portal refused a typed request; the passkey signed nothing. `code`: `request-invalid` (it would fail on chain), `wrong-network`, `challenge-mismatch`, `typed-malformed`, `typed-unsupported` or `chain-unavailable`. |
 | `TypedRequestTooLargeError` | The typed request, or the portal URL carrying it, is over its cap (8,192 / 16,384 characters). Nothing was opened. |
+
+**Retries and time limits.** A send is tried again only when trying again can
+change the answer, and always with the same bytes, so it lands at most once
+(3.0.0-next.0 never retried):
+- A refusal that would come back the same is not sent again: a program error
+  (LazorKit's 3007, 3008, 3009, 3024, 3025, …, or an inner program's), a
+  relayer's allowlist refusal ("Program … is not in the allowed list"),
+  insufficient funds, a failed simulation, any other 4xx.
+- A rate limit (HTTP 429) is waited out, `Retry-After` honoured up to 10 s,
+  and sent again for as long as the send's time allows.
+- A network error, a timeout or a 5xx is sent again (three attempts in all),
+  but only while the transaction's blockhash is still valid.
+- One attempt waits at most 30 s for the relayer's answer, and the whole send
+  at most 60 s; past that it is `TransactionOutcomeUnknownError` (it may
+  still land).
+
+A new call after a send whose outcome is not known waits at most 20 s for it
+to settle, then rejects with `PreviousTransactionPendingError` ("Still
+checking your last transaction"): try again shortly.
+
+**Approval time.** LazorKit accepts a passkey approval for 150 slots after the
+slot its challenge names: about 35 s at today's slot times, and the trip
+through the browser counts. For `signAndSendTransaction` (an untyped Execute)
+the adapter reads that slot last, right before the browser opens. An approval
+that still comes too late is `SignatureTooOldError`. The full fix, the portal
+picking the slot when the user taps Approve as it does for typed requests,
+is the next step.
+
+**Compute budget.** `transactionOptions.computeUnitLimit` (a whole number from
+1 to 1,400,000) puts a `SetComputeUnitLimit` instruction first in the
+transaction, before the secp256r1 precompile: between the precompile and
+LazorKit's instruction it would fail with `InvalidInstruction` (3003). None is
+set unless you pass one; that costs nothing today, as no LazorKit send carries
+a compute-unit price. A bad value is refused before the browser opens.
 
 Every status read and paymaster request is bounded in time, so one that never
 answers cannot hold a passkey's queue. The slot the passkey's last transaction
@@ -427,10 +558,10 @@ to fail is that program's (`tx-failed`), and so is a 3014 with no logs.
 | `wrong-network` | Wrong network | no | no | PortalRefusedError('wrong-network'), a program that does not exist on this cluster |
 | `rate-limited` | The network is busy | yes | no | HTTP 429, "Too Many Requests" |
 | `timeout` | Taking too long | yes | no | a request with no answer in time (not a send), MinContextSlotNotReachedError |
-| `network` | Can't reach the network | yes | no | NetworkError, fetch failures, HTTP 5xx (not a send) |
-| `paymaster` | Couldn't send right now | yes | no | PaymasterError with no program error |
+| `network` | Can't reach the network | yes | no | NetworkError, fetch failures, HTTP 5xx (not a send), a PaymasterError with `offline` (nothing was sent) |
+| `paymaster` | Couldn't send right now | yes | no | PaymasterError with no program error (an allowlist refusal, "not in the allowed list": "Couldn't send this", not retryable) |
 | `popup-blocked` | Pop-up blocked | yes | no | portal popup blocked (web) |
-| `browser-failed` | Couldn't open the approval page | yes | no | the portal browser did not open (mobile) |
+| `browser-failed` | Couldn't open the approval page | yes | no | the portal browser did not open, or did not answer in time: PortalTimeoutError (mobile) |
 | `busy` | Already in progress | yes | no | "Already signing", "Already connecting", "still in progress" |
 | `not-connected` | Not connected | no | no | "No wallet connected" |
 | `passkey-unavailable` | Passkeys don't work here | no | no | PasskeyUnavailableError |
@@ -460,7 +591,7 @@ LazorKit program errors (`retryable` as given, `maybeSent` never):
 |---|---|---|---|
 | `program-3002` | 3002 PermissionDenied | Not allowed | no |
 | `program-3006` | 3006 SignatureReused | Please approve again | yes |
-| `program-3007` | 3007 InvalidSignatureAge | Approval took too long | yes |
+| `program-3007` | 3007 InvalidSignatureAge, SignatureTooOldError | Approval took too long | yes |
 | `program-3008` | 3008 InvalidSessionDuration | Session length isn't allowed | no |
 | `program-3009` | 3009 SessionExpired | Session ended | no |
 | `program-3016` | 3016 InvalidExpiryWindow | Time limit isn't allowed | no |
@@ -729,7 +860,9 @@ wallet they name. `verifyWalletMessage` does the lookup:
 ```ts
 import { Connection } from '@solana/web3.js';
 import { verifyWalletMessage } from '@lazorkit/wallet-mobile-adapter';
-// or, on a server without React Native: from '@lazorkit/wallet'
+// On a server (no React Native): import it from '@lazorkit/wallet/core'.
+// Not from '@lazorkit/wallet': that root is a client module, and in a
+// Next.js route it builds, then fails at runtime.
 
 const ok = await verifyWalletMessage({
   connection: new Connection(RPC_URL),
@@ -838,7 +971,7 @@ Signs and sends transaction.
 | `payload.instructions` | `TransactionInstruction[]` | Instructions |
 | `payload.transactionOptions` | `object` | Config options |
 | `transactionOptions.feeToken` | `string` | Token address for gas fees (e.g. USDC). |
-| `transactionOptions.computeUnitLimit` | `number` | Max compute units. |
+| `transactionOptions.computeUnitLimit` | `number` | A `SetComputeUnitLimit` put first in the transaction (1 to 1,400,000). None by default. See [Sending transactions](#sending-transactions). |
 | `transactionOptions.addressLookupTableAccounts` | `AddressLookupTableAccount[]` | Lookup tables for v0 txs (the portal preview uses them too). |
 | `transactionOptions.clusterSimulation` | `'devnet' \| 'mainnet'` | Network for simulation. |
 
