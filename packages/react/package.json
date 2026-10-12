@@ -77,7 +77,7 @@
     "provenance": true
   },
   "dependencies": {
-    "@lazorkit/sdk-legacy": "^2.0.0",
+    "@lazorkit/sdk-legacy": "^2.1.0",
     "@noble/curves": "^1.9.7",
     "bs58": "^6.0.0",
     "lazorkit-sdk-v1": "npm:@lazorkit/sdk-legacy@0.3.2",

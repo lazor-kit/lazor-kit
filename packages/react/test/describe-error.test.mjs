@@ -14,6 +14,7 @@ import * as W from '../dist/index.mjs';
 const require = createRequire(import.meta.url);
 const W2 = require('../dist/index.js');
 const approval = require('@lazorkit/sdk-legacy/approval');
+const { RefundDestinationMismatchError } = require('@lazorkit/sdk-legacy');
 
 const V2 = W.PROGRAM_ID_DEVNET.toBase58();
 const V1 = W.PROGRAM_ID_DEVNET_V1.toBase58();
@@ -70,6 +71,7 @@ const PROGRAM = {
     3032: ['Blocked to protect your wallet', false],
     3037: ['Needs your passkey', false],
     3038: ['Needs your passkey', false],
+    3039: ["Refund can't go there", false],
     4005: ["Couldn't cover the fee", false],
     4018: ['Wallet needs an upgrade', false],
 };
@@ -101,7 +103,7 @@ test('the 0xbc0 of a session refused for its length is 3008 InvalidSessionDurati
 
 test('every LazorKit program error maps, read from the logs, from Kora, and landed; its name is the program\'s own (ERROR_NAMES)', () => {
     const codes = Object.keys(W.ERROR_NAMES).map(Number);
-    for (const n of [3006, 3008, 3014, 3023, 3030, 3031, 3032, 3037, 3038, 4018]) assert.ok(codes.includes(n), `${n} in ERROR_NAMES`);
+    for (const n of [3006, 3008, 3014, 3023, 3030, 3031, 3032, 3037, 3038, 3039, 4018]) assert.ok(codes.includes(n), `${n} in ERROR_NAMES`);
     for (const code of codes) {
         const [title, retryable] = PROGRAM[code] ?? [GENERIC, false];
         const expected = { title, retryable, maybeSent: false, code: code === 4018 ? 'v1-retired' : `program-${code}`, programError: W.ERROR_NAMES[code] };
@@ -142,6 +144,16 @@ test("the SDK's classes: the same words as the program's code, from either copy,
     }
     assert.match(W.describeError(new W.UnlistedSolOutflowError()).message, /isn't allowed to spend SOL without your passkey/);
     assert.match(W.describeError(new W.UnlistedTokenOutflowError()).message, /spend this token/);
+});
+
+test("sdk-legacy's RefundDestinationMismatchError (a refund other than the recorded rent payer, refused before the passkey) reads as 3039", () => {
+    const [account, rentPayer, requested] = [0, 1, 2].map(() => Keypair.generate().publicKey);
+    const refused = new RefundDestinationMismatchError({ account, rentPayer, requested });
+    const expected = { code: 'program-3039', programError: 'RefundDestinationMismatch', title: "Refund can't go there", retryable: false, maybeSent: false };
+    check(refused, expected, 'RefundDestinationMismatchError');
+    check(adapterWrap(refused), expected, 'wrapped');
+    check(Object.assign(new Error('refund'), { name: 'RefundDestinationMismatchError' }), expected, 'by name');
+    assert.equal(W.sendStatusOf(refused), 'failed');
 });
 
 test('may have been sent: "Still checking…", maybeSent, never retryable, whatever else it carries', () => {

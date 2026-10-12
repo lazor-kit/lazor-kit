@@ -37,6 +37,7 @@ Module._load = function (request, ...rest) {
 const { Keypair, SendTransactionError } = require('@solana/web3.js');
 const M = require('../dist/index.js');
 const Web = require('../../react/dist/core.js');
+const { RefundDestinationMismatchError } = require('@lazorkit/sdk-legacy');
 
 const V2 = M.PROGRAM_ID_DEVNET.toBase58();
 const INNER = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
@@ -57,6 +58,10 @@ const web3Error = (code) =>
 const paymasterSim = (code, first) =>
   new M.PaymasterError('Transaction simulation failed', { code: -32002, data: { logs: logsFor(code, first) } });
 const kora = (code) => new M.PaymasterError(`Invalid transaction: Transaction simulation failed: InstructionError(0, Custom(${code}))`);
+const refundMismatch = () => {
+  const [account, rentPayer, requested] = [0, 1, 2].map(() => Keypair.generate().publicKey);
+  return new RefundDestinationMismatchError({ account, rentPayer, requested });
+};
 const landed = (code, logs) => new M.TransactionFailedError(SIG, { InstructionError: [0, { Custom: code }] }, 1, logs);
 
 const PROGRAM_TITLES = {
@@ -71,6 +76,7 @@ const PROGRAM_TITLES = {
   3032: 'Blocked to protect your wallet',
   3037: 'Needs your passkey',
   3038: 'Needs your passkey',
+  3039: "Refund can't go there",
   4018: 'Wallet needs an upgrade',
 };
 
@@ -146,6 +152,7 @@ test("the adapter's own errors", () => {
   check(new M.DeferredExpiredError(Keypair.generate().publicKey, SIG, 1n), { code: 'program-3014' }, '3014');
   check(new M.UnlistedSolOutflowError('session'), { code: 'program-3037' }, '3037');
   check(new M.UnlistedTokenOutflowError('session'), { code: 'program-3038' }, '3038');
+  check(refundMismatch(), { code: 'program-3039', programError: 'RefundDestinationMismatch', retryable: false }, '3039');
   check(new M.V1WalletRetiredError(), { code: 'v1-retired' }, 'retired');
   check(new M.V1WalletMigratedError(), { code: 'v1-migrated' }, 'migrated');
   check(new M.TypedRequestTooLargeError(20_000, 16_384, 'URL'), { code: 'request-too-large' }, 'too large');
@@ -173,6 +180,8 @@ test('the same answer as @lazorkit/wallet for the same error', () => {
     new M.PortalRefusedError('request-invalid', 'x'),
     new M.RequestOutOfDateError(),
     new M.TransactionExpiredError(SIG),
+    refundMismatch(),
+    kora(3039),
     new M.PaymasterError('x', { httpStatus: 429 }),
     new Error('Popup was blocked by browser'),
     new Error('weird'),

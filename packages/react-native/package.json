@@ -65,7 +65,7 @@
     "typescript-eslint": "^8.39.1"
   },
   "dependencies": {
-    "@lazorkit/sdk-legacy": "^2.0.0",
+    "@lazorkit/sdk-legacy": "^2.1.0",
     "@noble/curves": "^1.9.7",
     "lazorkit-sdk-v1": "npm:@lazorkit/sdk-legacy@0.3.2",
     "@react-native-async-storage/async-storage": "^2.2.0",

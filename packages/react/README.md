@@ -699,6 +699,7 @@ LazorKit program errors (`retryable` as given, `maybeSent` never):
 | `program-3032` | 3032 SessionTokenAuthorityChanged | Blocked to protect your wallet | no |
 | `program-3037` | 3037 ActionUnlistedSolOutflow | Needs your passkey | no |
 | `program-3038` | 3038 ActionUnlistedTokenOutflow | Needs your passkey | no |
+| `program-3039` | 3039 RefundDestinationMismatch (also `RefundDestinationMismatchError` from `@lazorkit/sdk-legacy`) | Refund can't go there | no |
 | `program-4005` | 4005 InsufficientFeeBalance | Couldn't cover the fee | no |
 | `v1-retired` | 4018 RetiredDeployment | Wallet needs an upgrade | no |
 

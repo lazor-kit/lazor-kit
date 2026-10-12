@@ -192,6 +192,7 @@ export function describeError(error: unknown): ErrorDescription {
     if (has('DeferredExpiredError')) return program(3014, 'DeferredAuthorizationExpired');
     if (has('UnlistedSolOutflowError')) return program(3037, 'ActionUnlistedSolOutflow');
     if (has('UnlistedTokenOutflowError')) return program(3038, 'ActionUnlistedTokenOutflow');
+    if (has('RefundDestinationMismatchError')) return program(3039, 'RefundDestinationMismatch');
     if (has('V1WalletRetiredError')) return program(4018, 'RetiredDeployment');
     if (has('V1WalletMigratedError')) {
         return described('v1-migrated', {
@@ -663,6 +664,12 @@ const PROGRAM_TEXT: Record<number, Text> = {
     3032: PROTECTED,
     3037: NOT_ALLOWED('spend SOL'),
     3038: NOT_ALLOWED('spend this token'),
+    3039: {
+        title: "Refund can't go there",
+        message: 'Closing this returns its deposit only to the account that paid it, and this request named a different one, so nothing happened.',
+        action: SUPPORT,
+        retryable: false,
+    },
     4005: {
         title: "Couldn't cover the fee",
         message: "The app couldn't cover the fee for this, so it didn't go through.",

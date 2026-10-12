@@ -471,6 +471,14 @@ export interface CreateSessionPayload {
 /** Payload for `revokeSession`. */
 export interface RevokeSessionPayload {
   readonly sessionPda: PublicKey;
+  /**
+   * Where the closed account's rent goes. Leave it out: from layout revision
+   * 2 the program refunds only to the account that paid the rent, which
+   * `@lazorkit/sdk-legacy` reads and uses. A different destination is refused
+   * before the passkey prompt with `RefundDestinationMismatchError`
+   * (`describeError`: `program-3039`). For an account written before revision
+   * 2, which records no payer, it defaults to the paymaster fee payer.
+   */
   readonly refundDestination?: PublicKey;
 }
 
@@ -514,6 +522,14 @@ export interface AddAuthorityPayload {
 /** Payload for `removeAuthority`. */
 export interface RemoveAuthorityPayload {
   readonly targetAuthorityPda: PublicKey;
+  /**
+   * Where the closed account's rent goes. Leave it out: from layout revision
+   * 2 the program refunds only to the account that paid the rent, which
+   * `@lazorkit/sdk-legacy` reads and uses. A different destination is refused
+   * before the passkey prompt with `RefundDestinationMismatchError`
+   * (`describeError`: `program-3039`). For an account written before revision
+   * 2, which records no payer, it defaults to the paymaster fee payer.
+   */
   readonly refundDestination?: PublicKey;
 }
 
