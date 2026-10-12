@@ -337,6 +337,17 @@ limit no longer fails `signAndSendTransaction`, `authorizeAndExecute` or
 
 ## Session keys
 
+> **v2 wallets need `@lazorkit/wallet-mobile-adapter` 3.0 for sessions.** The
+> LazorKit v2 program reads a session's expiry, an action's expiry and a
+> recurring limit's window in Unix seconds; this 2.x release builds them in
+> slots. On a v2 wallet (`protocolVersion: 2`), `createSession` and an
+> `addAuthorityEd25519` whose `policy` has an action with an expiry or a
+> recurring limit throw `SdkUpgradeRequiredError` before anything is read or
+> the portal opens (`isSdkUpgradeRequiredError(error)` tells it apart).
+> Install `@lazorkit/wallet-mobile-adapter@next` for those. v1 wallets,
+> `addAuthorityEd25519` with `ROLE_ADMIN`, and a delegate policy with neither
+> expiries nor recurring limits work as before.
+
 `createSession` registers a session key that your app generates, and
 `signAndSendWithSession` signs with the `Keypair` you pass it. The adapter
 never stores a session key, or the Ed25519 key you pass to

@@ -8,6 +8,10 @@
 // them; the refusals as `UnlistedSolOutflowError` / `UnlistedTokenOutflowError`
 // (from either copy of the package, wrapped or raw) and as a session send
 // reports them, one whose outcome is not known as it came; the error names.
+// On a v2 wallet, createSession and an addAuthorityEd25519 whose policy has an
+// expiry or a recurring limit are refused with SdkUpgradeRequiredError before
+// anything is read or the portal opens (this release builds those times in
+// slots; the v2 program reads seconds).
 // A scripted RPC and paymaster, no network. The native modules the package
 // loads are stubbed. Run with `pnpm test`.
 'use strict';
@@ -16,6 +20,8 @@ const { test, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 
 const storage = new Map();
+/** Times the portal was opened (an auth session in the system browser). */
+let portalOpens = 0;
 const STUBS = {
   'react-native': {
     Platform: { OS: 'android', select: (options) => options.android ?? options.default },
@@ -24,7 +30,17 @@ const STUBS = {
     StyleSheet: { create: (styles) => styles },
     useColorScheme: () => 'light',
   },
-  'expo-web-browser': {},
+  'expo-web-browser': {
+    openAuthSessionAsync: async () => {
+      portalOpens++;
+      return { type: 'cancel' };
+    },
+    openBrowserAsync: async () => {
+      portalOpens++;
+      return { type: 'cancel' };
+    },
+    dismissBrowser: () => {},
+  },
   'expo-crypto': {},
   'react-native-get-random-values': {},
   '@react-native-async-storage/async-storage': {
@@ -163,8 +179,11 @@ let refusal = null;
 /** The HTTP status the paymaster's refusal comes with. */
 let refusalStatus = 200;
 let owner;
+/** RPC and paymaster requests made, of any kind. */
+let requests = 0;
 
 const rpcFetch = async (_url, init) => {
+  requests++;
   const { id, method, params } = JSON.parse(init.body);
   const reply = (result) => new Response(JSON.stringify({ jsonrpc: '2.0', id, result }), { status: 200 });
   if (method === 'getLatestBlockhash') {
@@ -184,6 +203,7 @@ const rpcFetch = async (_url, init) => {
   throw new Error(`unscripted RPC ${method}`);
 };
 globalThis.fetch = async (url, init) => {
+  requests++;
   assert.equal(String(url), PAYMASTER);
   const { id, method } = JSON.parse(init.body);
   const answer = (body) => new Response(JSON.stringify({ jsonrpc: '2.0', id, ...body }), { status: 200 });
@@ -292,4 +312,116 @@ test('a refusal in an answer that may come after the send (a 5xx) is Transaction
   assert.equal(error.cause.name, 'PaymasterError');
   assert.equal(error.cause.maybeSent, true);
   assert.deepEqual(failures, [error]);
+});
+
+// ─── What a v2 wallet needs @lazorkit/wallet-mobile-adapter 3.0 for ──────────
+
+/** Asserts the call rejects with SdkUpgradeRequiredError for `operation`, reported once, with nothing read, opened or sent. */
+async function assertUpgradeRequired(start, operation) {
+  requests = 0;
+  portalOpens = 0;
+  const failures = [];
+  const error = await rejection(start((e) => failures.push(e)));
+  assert.ok(error instanceof M.SdkUpgradeRequiredError, `${error.name}: ${error.message}`);
+  assert.equal(error.name, 'SdkUpgradeRequiredError');
+  assert.equal(error.operation, operation);
+  assert.match(
+    error.message,
+    /requires @lazorkit\/wallet-mobile-adapter 3\.0 \(npm install @lazorkit\/wallet-mobile-adapter@next\)/,
+  );
+  assert.match(error.message, /Nothing was signed or sent\.$/);
+  assert.equal(requests, 0, 'nothing read or sent');
+  assert.equal(portalOpens, 0, 'the portal was not opened');
+  assert.deepEqual(failures, [error]);
+  assert.equal(store.getState().error, error);
+  assert.equal(store.getState().isSigning, false);
+  return error;
+}
+
+const redirectUrl = 'myapp://callback';
+
+test('createSession on a v2 wallet throws SdkUpgradeRequiredError before anything is read or the portal opens', async () => {
+  for (const payload of [
+    { sessionKey: Keypair.generate().publicKey, expiresAtSlot: 400_000_000n, actions: [sdk.Actions.solMaxPerTx(1_000n)] },
+    { sessionKey: Keypair.generate().publicKey, expiresAtSlot: 400_000_000n, unrestricted: true },
+    { sessionKey: Keypair.generate().publicKey, expiresAtSlot: 1n },
+  ]) {
+    const error = await assertUpgradeRequired(
+      (onFail) => store.getState().createSession(payload, { redirectUrl, onFail }),
+      'createSession',
+    );
+    assert.match(error.message, /^Creating sessions on v2 wallets requires @lazorkit\/wallet-mobile-adapter 3\.0/);
+    assert.match(error.message, /InvalidSessionDuration, 3008/);
+  }
+});
+
+test('addAuthorityEd25519 on a v2 wallet with a policy that has an expiry or a recurring limit throws SdkUpgradeRequiredError before anything is read or the portal opens', async () => {
+  const { Actions, serializeActions } = sdk;
+  for (const actions of [
+    [Actions.solLimit(1_000n, 400_000_000n)],
+    [Actions.solMaxPerTx(1_000n), Actions.programBlacklist(fixed(32), 400_000_000n)],
+    [Actions.solRecurringLimit({ limit: 1_000n, window: 216_000n })],
+    [Actions.solMaxPerTx(1_000n), Actions.tokenRecurringLimit({ mint: USDC, limit: 5n, window: 9_000n })],
+    [Actions.tokenMaxPerTx({ mint: USDC, max: 5n, expiresAt: 1n })],
+  ]) {
+    const error = await assertUpgradeRequired(
+      (onFail) =>
+        store
+          .getState()
+          .addAuthorityEd25519(
+            { newEd25519Pubkey: Keypair.generate().publicKey, role: M.ROLE_SPENDER, policy: serializeActions(actions) },
+            { redirectUrl, onFail },
+          ),
+      'addAuthorityEd25519',
+    );
+    assert.match(error.message, /^Adding a key whose policy has an expiry or a recurring limit to a v2 wallet requires/);
+  }
+});
+
+test('addAuthorityEd25519 on a v2 wallet with a policy with no expiry and no recurring limit, or with no policy, is not refused for it', async () => {
+  const { Actions, serializeActions } = sdk;
+  for (const payload of [
+    {
+      role: M.ROLE_SPENDER,
+      policy: serializeActions([
+        Actions.solMaxPerTx(1_000n),
+        Actions.solLimit(9_000n),
+        Actions.tokenLimit({ mint: USDC, remaining: 5n }),
+        Actions.programWhitelist(SystemProgram.programId),
+      ]),
+    },
+    { role: M.ROLE_ADMIN },
+  ]) {
+    requests = 0;
+    // It goes on to the chain and the portal (which this test does not script).
+    const error = await rejection(
+      store.getState().addAuthorityEd25519({ newEd25519Pubkey: Keypair.generate().publicKey, ...payload }, { redirectUrl }),
+    );
+    assert.equal(M.isSdkUpgradeRequiredError(error), false, `${error.name}: ${error.message}`);
+    assert.ok(requests > 0, 'it went on to read the chain');
+  }
+});
+
+test('on a v1 wallet createSession is not refused for its protocol', async () => {
+  store.setState({ wallet: { ...store.getState().wallet, protocolVersion: 1 } });
+  requests = 0;
+  const error = await rejection(
+    store.getState().createSession({ sessionKey: Keypair.generate().publicKey, expiresAtSlot: 9_000n, unrestricted: true }, { redirectUrl }),
+  );
+  assert.equal(M.isSdkUpgradeRequiredError(error), false, `${error.name}: ${error.message}`);
+  assert.ok(requests > 0, 'it went on to read the chain');
+});
+
+test('isSdkUpgradeRequiredError: either copy of the package, wrapped or not; nothing else', () => {
+  const own = new M.SdkUpgradeRequiredError('createSession');
+  const copy = new M2.SdkUpgradeRequiredError('addAuthorityEd25519');
+  assert.ok(!(copy instanceof M.SdkUpgradeRequiredError));
+  for (const is of [M.isSdkUpgradeRequiredError, M2.isSdkUpgradeRequiredError]) {
+    assert.equal(is(own), true);
+    assert.equal(is(copy), true);
+    assert.equal(is(new Error('wrapped', { cause: copy })), true);
+    assert.equal(is({ error: own }), true);
+    assert.equal(is(new Error('Creating sessions on v2 wallets requires @lazorkit/wallet-mobile-adapter 3.0')), false);
+    assert.equal(is(undefined), false);
+  }
 });

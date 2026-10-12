@@ -393,6 +393,17 @@ fails the call before the prompt.
 
 ## Session and authority keys
 
+> **v2 wallets need `@lazorkit/wallet` 4.0 for sessions.** The LazorKit v2
+> program reads a session's expiry, an action's expiry and a recurring limit's
+> window in Unix seconds; this 3.x release builds them in slots. On a v2
+> wallet (`protocolVersion: 2`), `createSession` and an `addAuthority` whose
+> `policy` has an action with an expiry or a recurring limit throw
+> `SdkUpgradeRequiredError` before anything is read or the passkey is asked
+> (`isSdkUpgradeRequiredError(error)` tells it apart). Install
+> `@lazorkit/wallet@next` for those. v1 wallets, `addAuthority` with
+> `ROLE_ADMIN`, and a delegate policy with neither expiries nor recurring
+> limits work as before.
+
 `createSession()` without `sessionKey`, and `addAuthority({ role })`, generate an
 Ed25519 key in the browser and register its public key on chain with one
 passkey approval. The SDK keeps the key, so `signAndSendWithSession` and

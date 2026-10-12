@@ -51,7 +51,15 @@ console.warn = (...args) => warnings.push(args.map(String).join(' '));
 console.debug = () => {};
 
 const W = await import('../dist/index.mjs');
-const PROGRAM = W.PROGRAM_ID_DEVNET;
+/**
+ * The connected wallet's protocol: 2, except for createSession, which this
+ * release refuses on a v2 wallet (its expiry is in slots; the v2 program reads
+ * seconds). Its test runs on a v1 wallet.
+ */
+let protocol = 2;
+let PROGRAM = W.PROGRAM_ID_DEVNET;
+/** The authority account's discriminator: 0x22 on v2, 2 on v1 (same layout otherwise). */
+const authorityDiscriminator = () => (protocol === 2 ? 0x22 : 2);
 
 // ─── A scripted chain, paymaster and portal ─────────────────────────────────
 
@@ -68,10 +76,10 @@ let sends = 0;
 function passkeyAuthority() {
     const credentialIdHash = W.getCredentialHash(CREDENTIAL_ID);
     const [authorityPda] = W.findAuthorityPda(WALLET, credentialIdHash, PROGRAM);
-    // Authority (discriminator 0x22), Secp256r1, owner; counter at 8; wallet
+    // Authority (discriminator 0x22, or 2 on v1), Secp256r1, owner; counter at 8; wallet
     // at 16; credential hash at 48; compressed P-256 key at 80.
     const data = Buffer.alloc(120);
-    data[0] = 0x22;
+    data[0] = authorityDiscriminator();
     data[1] = 1;
     data.writeUInt32LE(5, 8);
     WALLET.toBuffer().copy(data, 16);
@@ -107,7 +115,7 @@ async function rpc(init) {
         case 'getProgramAccounts':
             return reply(
                 [...accounts]
-                    .filter(([, a]) => a.owner === PROGRAM.toBase58() && a.data?.length >= 113 && a.data[0] === 0x22 && a.data[1] === 1)
+                    .filter(([, a]) => a.owner === PROGRAM.toBase58() && a.data?.length >= 113 && a.data[0] === authorityDiscriminator() && a.data[1] === 1)
                     .map(([pubkey, a]) => ({ pubkey, account: account(a) })),
             );
         case 'getSignatureStatuses':
@@ -178,7 +186,17 @@ beforeEach(() => {
     accounts.clear();
     warnings.length = 0;
     store.getState().setConfig({ rpcUrl: RPC, portalUrl: PORTAL, paymasterConfig: { paymasterUrl: PAYMASTER }, cluster: 'devnet' });
+    connectWallet(2);
+});
+
+/** The store connected to WALLET, a wallet of `version` whose passkey authority is on chain. */
+function connectWallet(version) {
+    protocol = version;
+    PROGRAM = version === 2 ? W.PROGRAM_ID_DEVNET : W.PROGRAM_ID_DEVNET_V1;
+    accounts.clear();
     passkeyAuthority();
+    // A v1 wallet's own account: the SDK reads it to tell a live v1 wallet from a migrated one.
+    if (version === 1) accounts.set(WALLET.toBase58(), { owner: PROGRAM.toBase58() });
     store.setState({
         connection: new Connection(RPC, { commitment: 'confirmed', fetch: (_url, init) => rpc(init), disableRetryOnRateLimit: true }),
         wallet: {
@@ -187,12 +205,12 @@ beforeEach(() => {
             smartWallet: WALLET.toBase58(),
             vaultPda: W.findVaultPda(WALLET, PROGRAM)[0].toBase58(),
             walletDevice: '',
-            protocolVersion: 2,
+            protocolVersion: version,
         },
         isSigning: false,
         error: null,
     });
-});
+}
 
 /** From now on, writing a session or authority key fails, as a full or blocked storage does. */
 function refuseKeyWrites() {
@@ -202,11 +220,12 @@ function refuseKeyWrites() {
     };
 }
 
-for (const [name, slot, call] of [
-    ['createSession', 'lazorkit-session', (callbacks) => store.getState().createSession({ unrestricted: true, ...callbacks })],
-    ['addAuthority', 'lazorkit-authority', (callbacks) => store.getState().addAuthority({ role: 1, ...callbacks })],
+for (const [name, slot, version, call] of [
+    ['createSession', 'lazorkit-session', 1, (callbacks) => store.getState().createSession({ unrestricted: true, ...callbacks })],
+    ['addAuthority', 'lazorkit-authority', 2, (callbacks) => store.getState().addAuthority({ role: 1, ...callbacks })],
 ]) {
     test(`${name}: a key that cannot be stored once it landed does not report it as failed`, async () => {
+        connectWallet(version);
         // A key an earlier call kept: later calls must not sign with it in
         // place of the new one.
         localStorage.setItem(slot, JSON.stringify({ secretKey: [1], publicKey: 'the previous key' }));

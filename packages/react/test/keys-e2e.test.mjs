@@ -12,7 +12,11 @@
 // refused unless its own wallet is connected. A session or authority that
 // lands after the sign-out keeps no key, a key stored later is not written
 // back once deleted, a stored record that names another wallet is not
-// trusted, and addAuthority's role is checked before anything is read. The
+// trusted, and addAuthority's role is checked before anything is read. On a
+// v2 wallet createSession, and addAuthority with a policy that has an expiry
+// or a recurring limit, are refused before the portal opens (this release
+// builds those times in slots; the v2 program reads seconds), so the session
+// tests run on a v1 wallet, whose key storage is the same. The
 // wallet-adapter's and the Wallet Standard's disconnect delete the session key
 // as the store's does, and disconnect the store. A disconnect, whichever way
 // it came, while a kept-key send is in flight stops that send before its key
@@ -73,7 +77,15 @@ const WALLET = fixed(11);
 const RECIPIENT = fixed(13);
 const CREDENTIAL_ID = Buffer.from('a passkey credential').toString('base64');
 
-let PROGRAM; // the v2 program on devnet
+let PROGRAM; // the devnet program of the connected wallet's protocol
+/**
+ * The connected wallet's protocol. 2 unless a test says otherwise; a test that
+ * creates a session uses a v1 wallet: on a v2 wallet this release refuses
+ * createSession (its expiry is in slots; the v2 program reads seconds).
+ */
+let protocol = 2;
+/** The authority account's discriminator: 0x22 on v2, 2 on v1 (same layout otherwise). */
+const authorityDiscriminator = () => (protocol === 2 ? 0x22 : 2);
 /** Accounts that exist: address → { owner, data }. */
 const accounts = new Map();
 /** Every transaction the paymaster was asked to send. */
@@ -82,10 +94,10 @@ const sent = [];
 function passkeyAuthority(W) {
     const credentialIdHash = W.getCredentialHash(CREDENTIAL_ID);
     const [authorityPda] = W.findAuthorityPda(WALLET, credentialIdHash, PROGRAM);
-    // Authority (discriminator 0x22), Secp256r1, owner; counter at 8; wallet
+    // Authority (discriminator 0x22, or 2 on v1), Secp256r1, owner; counter at 8; wallet
     // at 16; credential hash at 48; compressed P-256 key at 80.
     const data = Buffer.alloc(120);
-    data[0] = 0x22;
+    data[0] = authorityDiscriminator();
     data[1] = 1;
     data.writeUInt32LE(5, 8);
     WALLET.toBuffer().copy(data, 16);
@@ -133,7 +145,7 @@ async function rpc(init) {
         case 'getProgramAccounts':
             return reply(
                 [...accounts]
-                    .filter(([, a]) => a.owner === PROGRAM.toBase58() && a.data?.length >= 113 && a.data[0] === 0x22 && a.data[1] === 1)
+                    .filter(([, a]) => a.owner === PROGRAM.toBase58() && a.data?.length >= 113 && a.data[0] === authorityDiscriminator() && a.data[1] === 1)
                     .map(([pubkey, a]) => ({ pubkey, account: account(a) })),
             );
         case 'getSignatureStatuses':
@@ -216,7 +228,8 @@ async function load({ keyStorage } = {}) {
     unmount();
     document.body.innerHTML = '';
     const W = await import(`../dist/index.mjs?page=${++pages}`);
-    PROGRAM = W.PROGRAM_ID_DEVNET;
+    PROGRAM = protocol === 2 ? W.PROGRAM_ID_DEVNET : W.PROGRAM_ID_DEVNET_V1;
+    if (protocol === 1) scriptedAdapterRpc(W);
     const container = document.createElement('div');
     document.body.appendChild(container);
     mounted = createRoot(container);
@@ -243,9 +256,18 @@ function unmount() {
 }
 const paymasterConfig = { paymasterUrl: PAYMASTER };
 
-/** A connected v2 wallet whose passkey authority is on chain. */
+/**
+ * A v1 wallet's own account, which the SDK reads to tell a live v1 wallet from
+ * one that was migrated (and is gone).
+ */
+function v1WalletAccount(walletPda) {
+    if (protocol === 1) accounts.set(walletPda.toBase58(), { owner: PROGRAM.toBase58() });
+}
+
+/** A connected wallet of `protocol` whose passkey authority is on chain. */
 function connect(W) {
     passkeyAuthority(W);
+    v1WalletAccount(WALLET);
     W.useWalletStore.setState({
         wallet: {
             credentialId: CREDENTIAL_ID,
@@ -255,9 +277,29 @@ function connect(W) {
             walletDevice: '',
             platform: 'web',
             expo: '',
-            protocolVersion: 2,
+            protocolVersion: protocol,
         },
     });
+}
+
+/**
+ * A connected v1 wallet, as `connect`: what a test that creates a session
+ * uses, since this release refuses createSession on a v2 wallet (its expiry
+ * is in slots; the v2 program reads seconds). The key storage it exercises is
+ * the same for either protocol. A v1 wallet's adapter reads the wallet's
+ * account when it connects, so this page's adapter gets the scripted RPC too.
+ */
+function connectV1(W) {
+    protocol = 1;
+    PROGRAM = W.PROGRAM_ID_DEVNET_V1;
+    scriptedAdapterRpc(W);
+    connect(W);
+}
+
+/** This page's wallet-adapter connects through the scripted RPC (web3.js took `fetch` when it loaded). */
+function scriptedAdapterRpc(W) {
+    W.LazorkitWalletAdapter.prototype._createConnection = () =>
+        new Connection(RPC, { commitment: 'confirmed', fetch: (_url, init) => rpc(init), disableRetryOnRateLimit: true });
 }
 
 /** As if the transaction that created `address` had executed. */
@@ -273,6 +315,7 @@ beforeEach(async () => {
     clientDataBytes = undefined;
     warnings.length = 0;
     onBlockhash = null;
+    protocol = 2;
 });
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -347,7 +390,7 @@ async function until(condition, what) {
 
 test('createSession → reload → signAndSendWithSession: the key kept in IndexedDB signs after the reload, with no passkey', async () => {
     let W = await load();
-    connect(W);
+    connectV1(W);
     const calls = [];
     const { sessionPda, sessionPublicKey } = await W.useWalletStore.getState().createSession({
         spendingLimits: { solPerTxMax: 1_000_000n },
@@ -386,7 +429,7 @@ test('createSession → reload → signAndSendWithSession: the key kept in Index
 
 test('createSession with token limits registers a SOL action and one for each mint, and the record keeps them', async () => {
     const W = await load();
-    connect(W);
+    connectV1(W);
     const USDC = fixed(21);
     const BONK = fixed(22);
     const { sessionPda } = await W.useWalletStore.getState().createSession({
@@ -423,7 +466,7 @@ test('createSession with token limits registers a SOL action and one for each mi
 
 test("the largest limits createSession takes fill its transaction exactly when the passkey's clientDataJSON is 300 bytes", async () => {
     const W = await load();
-    connect(W);
+    connectV1(W);
     // The portal's, signed in its frame on an app's page, with the key Chrome adds at random: about 300 bytes.
     clientDataBytes = 300;
     const recurring = { limit: 10n, windowSlots: 216_000n };
@@ -501,7 +544,7 @@ test('LazorkitProvider moves the plaintext keys an earlier release left when it 
 
 test('a key that cannot be stored once its session landed: createSession still succeeds, the key serves this page, and is stored on a later use', async () => {
     let W = await load();
-    connect(W);
+    connectV1(W);
     const put = IDBObjectStore.prototype.put;
     IDBObjectStore.prototype.put = function (...args) {
         if (this.name === 'keys') throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
@@ -540,7 +583,7 @@ test('a key that cannot be stored once its session landed: createSession still s
 
 test('a stored-later key does not replace a newer one another tab stored meanwhile', async () => {
     const W = await load();
-    connect(W);
+    connectV1(W);
     const put = IDBObjectStore.prototype.put;
     IDBObjectStore.prototype.put = function (...args) {
         if (this.name === 'keys') throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
@@ -555,7 +598,7 @@ test('a stored-later key does not replace a newer one another tab stored meanwhi
     landed(older.sessionPda);
     // Another tab creates a session now, and stores its key.
     const other = await load();
-    connect(other);
+    connectV1(other);
     const newer = await other.useWalletStore.getState().createSession({ unrestricted: true });
     landed(newer.sessionPda);
     assert.equal((await storedRecord('session')).publicKey, newer.sessionPublicKey);
@@ -568,7 +611,7 @@ test('a stored-later key does not replace a newer one another tab stored meanwhi
 
 test('an IndexedDB that cannot hold the key (DataCloneError): createSession succeeds, the key serves this page only', async () => {
     let W = await load();
-    connect(W);
+    connectV1(W);
     const put = IDBObjectStore.prototype.put;
     IDBObjectStore.prototype.put = function (...args) {
         if (this.name === 'keys') throw new DOMException('CryptoKey object could not be cloned.', 'DataCloneError');
@@ -592,10 +635,10 @@ test('an IndexedDB that cannot hold the key (DataCloneError): createSession succ
 
 test('forgetStoredKeys at sign-out: no session or authority key is left, here or after a reload', async () => {
     let W = await load();
-    connect(W);
+    connectV1(W);
     const session = await W.useWalletStore.getState().createSession({ unrestricted: true });
     landed(session.sessionPda);
-    const authority = await W.useWalletStore.getState().addAuthority({ role: W.ROLE_ADMIN });
+    const authority = await W.useWalletStore.getState().addAuthority({ role: W.ROLE_ADMIN, unrestricted: true });
     landed(authority.authorityPda);
     assert.ok(await storedRecord('session'));
     assert.ok(await storedRecord('authority'));
@@ -622,7 +665,7 @@ test('forgetStoredKeys at sign-out: no session or authority key is left, here or
 
 test("a caller's own session key is registered and never stored", async () => {
     const W = await load();
-    connect(W);
+    connectV1(W);
     const own = Keypair.generate();
     const { sessionPublicKey } = await W.useWalletStore.getState().createSession({ sessionKey: own.publicKey, unrestricted: true });
     assert.equal(sessionPublicKey, own.publicKey.toBase58());
@@ -636,7 +679,7 @@ test("a caller's own session key is registered and never stored", async () => {
 
 test("revokeSession deletes the kept key once its session is revoked, and leaves it when another session is", async () => {
     let W = await load();
-    connect(W);
+    connectV1(W);
     const { sessionPda } = await W.useWalletStore.getState().createSession({ unrestricted: true });
     landed(sessionPda);
 
@@ -651,11 +694,12 @@ test("revokeSession deletes the kept key once its session is revoked, and leaves
 
 test("revokeSession() refuses another wallet's kept session before the passkey is read or prompted", async () => {
     const W = await load();
-    connect(W);
+    connectV1(W);
     const { sessionPda } = await W.useWalletStore.getState().createSession({ unrestricted: true });
     landed(sessionPda);
     const own = W.useWalletStore.getState().wallet;
     // Another wallet is connected now (its passkey is not even on chain).
+    v1WalletAccount(fixed(45));
     W.useWalletStore.setState({ wallet: { ...own, smartWallet: fixed(45).toBase58(), vaultPda: undefined } });
     const prompts = approvals.length;
     const sends = sent.length;
@@ -704,12 +748,13 @@ function walletRecord(W, walletPda) {
         walletDevice: '',
         platform: 'web',
         expo: '',
-        protocolVersion: 2,
+        protocolVersion: protocol,
     };
 }
 
 /** Connects `walletPda` through `connect()`, as when the portal has found it and saved it. */
 async function reconnect(W, walletPda) {
+    v1WalletAccount(walletPda);
     await W.StorageManager.saveWallet(walletRecord(W, walletPda));
     const connected = await W.useWalletStore.getState().connect();
     assert.equal(connected.smartWallet, walletPda.toBase58());
@@ -733,7 +778,7 @@ async function assertRefused(W, send, reason) {
 
 test('createSession → disconnect → connect again: disconnect deleted the session key, so there is none to sign with', async () => {
     let W = await load();
-    connect(W);
+    connectV1(W);
     const { sessionPda } = await W.useWalletStore.getState().createSession({ unrestricted: true });
     landed(sessionPda);
     assert.ok(await storedRecord('session'));
@@ -754,7 +799,7 @@ test('createSession → disconnect → connect again: disconnect deleted the ses
 
 test('createSession → disconnect({ keepSessionKeys: true }) → connect again: refused while disconnected and for another wallet, signs for its own', async () => {
     let W = await load();
-    connect(W);
+    connectV1(W);
     const { sessionPda, sessionPublicKey } = await W.useWalletStore.getState().createSession({ unrestricted: true });
     landed(sessionPda);
 
@@ -776,7 +821,7 @@ test('createSession → disconnect({ keepSessionKeys: true }) → connect again:
 
 test('disconnect deletes the kept session key whichever wallet it belongs to: one kept for another wallet goes too', async () => {
     const W = await load();
-    connect(W);
+    connectV1(W);
     const { sessionPda } = await W.useWalletStore.getState().createSession({ unrestricted: true });
     landed(sessionPda);
     await W.useWalletStore.getState().disconnect({ keepSessionKeys: true });
@@ -827,9 +872,9 @@ async function connectedAdapter(W, walletPda = WALLET) {
     return adapter;
 }
 
-/** A session created through the store, its key kept in IndexedDB. */
+/** A session created through the store (on a v1 wallet, see `connectV1`), its key kept in IndexedDB. */
 async function keptSession(W) {
-    connect(W);
+    connectV1(W);
     const created = await W.useWalletStore.getState().createSession({ unrestricted: true });
     landed(created.sessionPda);
     assert.equal((await storedRecord('session')).publicKey, created.sessionPublicKey);
@@ -880,7 +925,7 @@ test('LazorkitWalletAdapter.disconnect() keeps the authority key, as the store d
 
 test("keyStorage='memory': LazorkitWalletAdapter.disconnect() deletes the session key this page holds in memory", async () => {
     const W = await load({ keyStorage: 'memory' });
-    connect(W);
+    connectV1(W);
     const { sessionPda } = await W.useWalletStore.getState().createSession({ unrestricted: true });
     landed(sessionPda);
     await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
@@ -1201,7 +1246,7 @@ function holdNextSend() {
 for (const keep of [false, true]) {
     test(`a createSession still landing when disconnect(${keep ? '{ keepSessionKeys: true }' : ''}) runs: its key is ${keep ? 'kept, bound to its wallet' : 'not kept, here or at rest'}`, async () => {
         let W = await load();
-        connect(W);
+        connectV1(W);
         const hold = holdNextSend();
         const calls = [];
         let created;
@@ -1306,7 +1351,7 @@ for (const wipe of ['disconnect', 'forgetStoredKeys']) {
         const undo = withoutEd25519();
         try {
             let W = await load();
-            connect(W);
+            connectV1(W);
             await createSessionStoredLater(W);
             // The send stores the key first, sealing its seed: held here ...
             const encrypt = crypto.subtle.encrypt;
@@ -1335,7 +1380,7 @@ for (const wipe of ['disconnect', 'forgetStoredKeys']) {
             assert.equal(sent.length, 1, 'only the createSession');
             assert.ok(!warnings.some((w) => w.includes('could not be deleted')), JSON.stringify(warnings));
             W = await load();
-            connect(W);
+            connectV1(W);
             await assert.rejects(W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() }), /No session key found/);
         } finally {
             undo();
@@ -1345,7 +1390,7 @@ for (const wipe of ['disconnect', 'forgetStoredKeys']) {
 
 test('a send and disconnect() started together, the session key stored later: nothing is at rest once both settle', async () => {
     const W = await load();
-    connect(W);
+    connectV1(W);
     // One IndexedDB open fails: createSession's save, so the key waits in memory.
     const real = globalThis.indexedDB;
     let failures = 1;
@@ -1404,7 +1449,7 @@ async function rewriteRecord(slot, change) {
 
 test("a record altered to name another wallet is not trusted: refused as unbound, or bound back to the wallet its account names", async () => {
     const W = await load();
-    connect(W);
+    connectV1(W);
     const created = await W.useWalletStore.getState().createSession({ unrestricted: true });
     landed(created.sessionPda);
     await rewriteRecord('session', (record) => ({ ...record, info: { ...record.info, walletPda: OTHER_WALLET.toBase58(), bound: true } }));
@@ -1424,6 +1469,52 @@ test("a record altered to name another wallet is not trusted: refused as unbound
     await reconnect(W, WALLET);
     await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });
     assertSignedBy(sent.at(-1), new PublicKey(created.sessionPublicKey));
+});
+
+// ─── What a v2 wallet needs @lazorkit/wallet 4.0 for ────────────────────────
+
+test('on a v2 wallet createSession throws SdkUpgradeRequiredError: no portal, no passkey prompt, nothing sent, no key kept', async () => {
+    const W = await load();
+    connect(W);
+    const before = requests;
+    const calls = [];
+    const error = await rejection(
+        W.useWalletStore.getState().createSession({ spendingLimits: { solPerTxMax: 1_000_000n }, onSuccess: () => calls.push('onSuccess'), onFail: (e) => calls.push(e) }),
+    );
+    assert.ok(W.isSdkUpgradeRequiredError(error), `${error.name}: ${error.message}`);
+    assert.match(error.message, /^Creating sessions on v2 wallets requires @lazorkit\/wallet 4\.0 \(npm install @lazorkit\/wallet@next\)\./);
+    assert.deepEqual(calls, [error]);
+    assert.equal(document.getElementById('lazorkit-iframe'), null, 'the portal was not opened');
+    assert.equal(approvals.length, 0, 'no passkey prompt');
+    assert.equal(requests, before, 'nothing read or sent');
+    assert.equal(sent.length, 0);
+    assert.equal(await storedRecord('session'), undefined);
+    assert.equal(W.useWalletStore.getState().isSigning, false);
+});
+
+test('on a v2 wallet addAuthority refuses a delegate policy with a recurring limit before the portal opens, and adds one without expiries or windows', async () => {
+    const W = await load();
+    connect(W);
+    const USDC = fixed(21);
+    const before = requests;
+    const windowed = W.serializeActions([W.Actions.solRecurringLimit({ limit: 1_000n, window: 216_000n })]);
+    const error = await rejection(W.useWalletStore.getState().addAuthority({ role: W.ROLE_SPENDER, policy: windowed }));
+    assert.ok(W.isSdkUpgradeRequiredError(error), `${error.name}: ${error.message}`);
+    assert.equal(error.operation, 'addAuthority');
+    assert.equal(document.getElementById('lazorkit-iframe'), null, 'the portal was not opened');
+    assert.equal(approvals.length, 0, 'no passkey prompt');
+    assert.equal(requests, before, 'nothing read or sent');
+
+    // No expiry, no window: added as before, with the policy it was given.
+    const policy = W.serializeActions([W.Actions.solMaxPerTx(1_000n), W.Actions.tokenMaxPerTx({ mint: USDC, max: 5n })]);
+    const { authorityPda } = await W.useWalletStore.getState().addAuthority({ role: W.ROLE_SPENDER, policy });
+    assert.equal(approvals.length, 1);
+    assert.equal(sent.length, 1);
+    assert.ok(
+        sent[0].message.compiledInstructions.some((ix) => Buffer.from(ix.data).indexOf(Buffer.from(policy)) >= 0),
+        'the add carries the policy',
+    );
+    assert.equal((await storedRecord('authority')).info.authorityPda, authorityPda);
 });
 
 // ─── addAuthority's role ─────────────────────────────────────────────────────
@@ -1499,7 +1590,7 @@ test('on a v1 wallet, addAuthority lists ROLE_OWNER among the ranks, and does no
 
 test("keyStorage='memory': the key signs on this page, nothing is stored, and it is gone after a reload", async () => {
     let W = await load({ keyStorage: 'memory' });
-    connect(W);
+    connectV1(W);
     const { sessionPda, sessionPublicKey } = await W.useWalletStore.getState().createSession({ unrestricted: true });
     landed(sessionPda);
     await W.useWalletStore.getState().signAndSendWithSession({ instructions: transfer() });

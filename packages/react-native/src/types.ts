@@ -364,7 +364,13 @@ export interface SessionSignPayload {
   readonly transactionOptions?: TransactionOptions;
 }
 
-/** Payload for `createSession`. */
+/**
+ * Payload for `createSession`. With this release `createSession` works on v1
+ * wallets only: on a v2 wallet it throws `SdkUpgradeRequiredError` before
+ * anything is read or the portal opens (the expiry is in slots; the v2 program
+ * reads Unix seconds). Use `@lazorkit/wallet-mobile-adapter` 3.0 for sessions
+ * on v2 wallets.
+ */
 export interface CreateSessionPayload {
   /**
    * New session public key (Ed25519). Clients typically generate a fresh
@@ -434,7 +440,10 @@ export interface AddAuthorityPayload {
    * (rent the wallet pays counts) and each mint the key may spend with an
    * `Actions.token*` action. Keep it within 244 bytes, as a session's
    * `actions`. v1 wallets have no policies: passing one for a v1 wallet
-   * throws.
+   * throws. On a v2 wallet, an action with an expiry of its own or a
+   * recurring limit (a window) throws `SdkUpgradeRequiredError` before the
+   * portal opens: this release builds both in slots, and the v2 program
+   * reads Unix seconds. Use `@lazorkit/wallet-mobile-adapter` 3.0 for those.
    */
   readonly policy?: Uint8Array;
   /**
