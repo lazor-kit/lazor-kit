@@ -38,6 +38,10 @@ that has users.
 npm install @lazorkit/wallet @coral-xyz/anchor @solana/web3.js
 ```
 
+## Security & compatibility
+
+Supported versions and how to report a vulnerability: [SECURITY.md](https://github.com/lazor-kit/lazor-kit/blob/main/SECURITY.md). Which programs are deployed, their audit status, and which SDK versions work with them: [Versions & compatibility](https://docs.lazorkit.com/versions); how long each release is supported: [Support policy](https://docs.lazorkit.com/support-policy).
+
 ## Usage
 
 ### Embedded mode
