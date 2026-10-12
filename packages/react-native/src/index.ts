@@ -57,6 +57,11 @@ export {
   UNLISTED_TOKEN_OUTFLOW_CODE,
 } from './core/wallet/policy';
 export type { PolicySigner } from './core/wallet/policy';
+// What a v2 wallet needs @lazorkit/wallet-mobile-adapter 3.0 for: createSession,
+// and a delegate policy with an expiry or a recurring window (this release
+// builds both in slots; the v2 program reads seconds).
+export { SdkUpgradeRequiredError, isSdkUpgradeRequiredError } from './core/wallet/timeBased';
+export type { UpgradeRequiredOperation } from './core/wallet/timeBased';
 export { PaymasterError } from './core/paymaster';
 export * from './config';
 export * from './program';

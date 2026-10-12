@@ -10,8 +10,12 @@
 // refusals as `UnlistedSolOutflowError` / `UnlistedTokenOutflowError` (from
 // either copy of the package, wrapped or raw) and as a session or delegate
 // send reports them, not resent; an Admin key's, and one whose outcome is not
-// known, as they came; the error names. A scripted RPC and paymaster, no
-// network. Run with `pnpm test`.
+// known, as they came; the error names. A send over its SolMaxPerTx (3023)
+// is not resent. On a v2 wallet, createSession and an addAuthority whose
+// policy has an expiry or a recurring limit are refused with
+// SdkUpgradeRequiredError before anything is read (this release builds those
+// times in slots; the v2 program reads seconds). A scripted RPC and
+// paymaster, no network. Run with `pnpm test`.
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import { test, beforeEach } from 'node:test';
@@ -179,7 +183,7 @@ test("the actions must fit in the transaction that registers them, beside the pa
 
 // ─── The refusals ───────────────────────────────────────────────────────────
 
-const hex = { 3037: '0xbdd', 3038: '0xbde' };
+const hex = { 3023: '0xbcf', 3037: '0xbdd', 3038: '0xbde' };
 /** Logs of a failed instruction: `first` failed first (an inner program, or LazorKit itself). */
 const logsFor = (code, first) => [
     `Program ${V2} invoke [1]`,
@@ -398,6 +402,8 @@ async function rejection(promise) {
 }
 
 test('createSession refuses a preset that names a mint with no limit, or does not fit, before anything is read or prompted', async () => {
+    // On a v1 wallet: on a v2 one createSession is refused first (see below).
+    store.setState({ wallet: { ...store.getState().wallet, protocolVersion: 1 } });
     for (const spendingLimits of [
         { solPerTxMax: 1n, tokens: [{ mint: USDC }] },
         { tokens: [{ mint: USDC, perTxMax: 1n }, { mint: USDC, perTxMax: 2n }] },
@@ -489,4 +495,134 @@ test('any other failure of a session send is reported as it came', async () => {
     landedErr = { InstructionError: [0, { Custom: 3023 }] };
     const error = await rejection(store.getState().signAndSendWithSession({ instructions: transfer() }));
     assert.equal(error.name, 'TransactionFailedError');
+});
+
+test('a send over its SolMaxPerTx (3023) is sent once and reported as it came: the same bytes move the same amount', async () => {
+    // As Kora words it, and as a simulation's logs give it.
+    for (const answer of [
+        { code: -32602, message: korasText(3023) },
+        { code: -32002, message: 'Transaction simulation failed', data: { logs: logsFor(3023, V2) } },
+    ]) {
+        keptSession();
+        sends = 0;
+        refusal = answer;
+        const error = await rejection(store.getState().signAndSendWithSession({ instructions: transfer() }));
+        assert.equal(error.name, 'PaymasterError');
+        assert.ok(/Custom\(3023\)|0xbcf/.test(error.message) || /0xbcf/.test(JSON.stringify(error.data)), error.message);
+        assert.equal(sends, 1, 'not sent again');
+    }
+
+    // After an attempt whose answer was lost the outcome is unknown: sent again, as before.
+    keptSession();
+    sends = 0;
+    firstAnswerLost = true;
+    refusal = { code: -32602, message: korasText(3023) };
+    const unknown = await rejection(store.getState().signAndSendWithSession({ instructions: transfer() }));
+    assert.ok(unknown instanceof W.TransactionOutcomeUnknownError, `${unknown.name}: ${unknown.message}`);
+    assert.ok(sends > 1);
+});
+
+// ─── What a v2 wallet needs @lazorkit/wallet 4.0 for ────────────────────────
+//
+// The v2 program reads a session's expiry, an action's expiry and a recurring
+// window in Unix seconds; this release builds them in slots. So on a v2 wallet
+// createSession, and addAuthority with a policy that has either, are refused
+// before anything is read or prompted.
+
+/** Asserts `promise` rejects with SdkUpgradeRequiredError for `operation`, reported once, with nothing read or sent. */
+async function assertUpgradeRequired(start, operation) {
+    requests = 0;
+    const failures = [];
+    const error = await rejection(start((e) => failures.push(e)));
+    assert.ok(error instanceof W.SdkUpgradeRequiredError, `${error.name}: ${error.message}`);
+    assert.equal(error.name, 'SdkUpgradeRequiredError');
+    assert.equal(error.operation, operation);
+    assert.match(error.message, /requires @lazorkit\/wallet 4\.0 \(npm install @lazorkit\/wallet@next\)/);
+    assert.match(error.message, /Nothing was signed or sent\.$/);
+    assert.equal(requests, 0, 'nothing read or sent');
+    assert.deepEqual(failures, [error]);
+    assert.equal(store.getState().error, error);
+    assert.equal(store.getState().isSigning, false);
+    return error;
+}
+
+test('createSession on a v2 wallet throws SdkUpgradeRequiredError before anything is read or prompted, whatever it is passed', async () => {
+    for (const payload of [
+        { spendingLimits: { solPerTxMax: 1_000_000n } },
+        { unrestricted: true },
+        { sessionKey: fixed(31), unrestricted: true, expiresInSlots: 9_000n },
+        { spendingLimits: { tokens: [{ mint: USDC }] } }, // one createSession would refuse anyway
+        {},
+    ]) {
+        const error = await assertUpgradeRequired((onFail) => store.getState().createSession({ ...payload, onFail }), 'createSession');
+        assert.match(error.message, /^Creating sessions on v2 wallets requires @lazorkit\/wallet 4\.0 \(npm install @lazorkit\/wallet@next\)\./);
+        assert.match(error.message, /InvalidSessionDuration, 3008/);
+    }
+});
+
+test('addAuthority on a v2 wallet with a policy that has an expiry or a recurring limit throws SdkUpgradeRequiredError before anything is read or prompted', async () => {
+    const policies = [
+        [Actions.solLimit(1_000n, 400_000_000n)],
+        [Actions.solMaxPerTx(1_000n), Actions.programBlacklist(fixed(32), 400_000_000n)],
+        [Actions.solRecurringLimit({ limit: 1_000n, window: 216_000n })],
+        [Actions.solMaxPerTx(1_000n), Actions.tokenRecurringLimit({ mint: USDC, limit: 5n, window: 9_000n })],
+        [Actions.tokenMaxPerTx({ mint: USDC, max: 5n, expiresAt: 1n })],
+        // A preset's recurring SOL limit, as the README builds a delegate policy.
+        W.spendingLimitsToActions({ solPerTxMax: 1n, solRecurring: { limit: 2n, windowSlots: 216_000n } }),
+    ];
+    for (const actions of policies) {
+        const policy = serializeActions(actions);
+        const error = await assertUpgradeRequired(
+            (onFail) => store.getState().addAuthority({ role: W.ROLE_SPENDER, policy, onFail }),
+            'addAuthority',
+        );
+        assert.match(error.message, /^Adding a key whose policy has an expiry or a recurring limit to a v2 wallet requires @lazorkit\/wallet 4\.0/);
+    }
+    // The role is still checked first.
+    const roleless = await rejection(store.getState().addAuthority({ policy: serializeActions(policies[0]) }));
+    assert.match(roleless.message, /^addAuthority needs a role/);
+});
+
+test('addAuthority on a v2 wallet with a policy with no expiry and no recurring limit, or with no policy, is not refused for it', async () => {
+    for (const payload of [
+        {
+            role: W.ROLE_SPENDER,
+            policy: serializeActions([
+                Actions.solMaxPerTx(1_000n),
+                Actions.solLimit(9_000n),
+                Actions.tokenLimit({ mint: USDC, remaining: 5n }),
+                Actions.tokenMaxPerTx({ mint: USDC, max: 1n }),
+                Actions.programWhitelist(SystemProgram.programId),
+            ]),
+        },
+        { role: W.ROLE_ADMIN },
+    ]) {
+        requests = 0;
+        // It goes on to read the wallet (which this scripted RPC does not answer for).
+        const error = await rejection(store.getState().addAuthority(payload));
+        assert.equal(W.isSdkUpgradeRequiredError(error), false, `${error.name}: ${error.message}`);
+        assert.ok(requests > 0, 'it went on to read the chain');
+    }
+});
+
+test('on a v1 wallet createSession is not refused for its protocol', async () => {
+    store.setState({ wallet: { ...store.getState().wallet, protocolVersion: 1 } });
+    requests = 0;
+    const error = await rejection(store.getState().createSession({ unrestricted: true }));
+    assert.equal(W.isSdkUpgradeRequiredError(error), false, `${error.name}: ${error.message}`);
+    assert.ok(requests > 0, 'it went on to read the chain');
+});
+
+test('isSdkUpgradeRequiredError: either copy of the package, wrapped or not; nothing else', () => {
+    const own = new W.SdkUpgradeRequiredError('createSession');
+    const copy = new W2.SdkUpgradeRequiredError('addAuthority');
+    assert.ok(!(copy instanceof W.SdkUpgradeRequiredError));
+    for (const is of [W.isSdkUpgradeRequiredError, W2.isSdkUpgradeRequiredError]) {
+        assert.equal(is(own), true);
+        assert.equal(is(copy), true);
+        assert.equal(is(wrap(own)), true);
+        assert.equal(is(new Error('wrapped', { cause: copy })), true);
+        assert.equal(is(new Error('Creating sessions on v2 wallets requires @lazorkit/wallet 4.0')), false);
+        assert.equal(is(undefined), false);
+    }
 });

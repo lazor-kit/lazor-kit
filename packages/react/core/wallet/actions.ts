@@ -50,6 +50,7 @@ import { deferredExpiryOffset, executeBeforeExpiry } from './deferred';
 import { type KeySigner, type KeyStorage, forgetKey, generateKey, saveKey, wipeKey, wipeMark } from '../keys';
 import { keyForConnectedWallet } from './keyBinding';
 import { noteDisconnect } from './disconnects';
+import { SdkUpgradeRequiredError, policyHasSlotTimes } from './timeBased';
 import type { SignMessageResult } from '../message/signedMessage';
 
 export function randomBytes(size: number): Uint8Array {
@@ -475,10 +476,25 @@ async function resolvePasskeyWallet(wallet: WalletInfo, connection: Connection) 
 }
 
 /**
+ * Refuses a call this release cannot build for the connected wallet's
+ * protocol (see ./timeBased): recorded in `error` and thrown, before anything
+ * is read or prompted.
+ */
+function refuseUpgradeRequired(set: (state: Partial<WalletState>) => void, error: SdkUpgradeRequiredError): never {
+    set({ error });
+    throw error;
+}
+
+/**
  * Create session key action — passkey signs to authorize a new ed25519 session key on-chain.
  * The key the SDK generates is kept for `signAndSendWithSession` (see ../keys:
  * a non-extractable key in IndexedDB, not localStorage). A key the caller
  * supplies is never stored.
+ *
+ * v1 wallets only: on a v2 wallet it throws `SdkUpgradeRequiredError` before
+ * anything is read or prompted. This release sets the expiry in slots, which
+ * the v2 program refuses (InvalidSessionDuration, 3008); `@lazorkit/wallet`
+ * 4.0 sets it in seconds.
  */
 export const createSessionAction = async (
     get: () => WalletState,
@@ -489,6 +505,7 @@ export const createSessionAction = async (
     if (isSigning) throw new Error('Already signing');
     if (!wallet) refuse(set, 'No wallet connected');
     if (!connection) refuse(set, 'No connection available');
+    if (versionOf(wallet) === 2) refuseUpgradeRequired(set, new SdkUpgradeRequiredError('createSession'));
     // A disconnect (or forgetStoredKeys) from here on means the key is not kept.
     const sessionWipes = wipeMark('session');
 
@@ -779,7 +796,10 @@ export function authorityRoleProblem(role: unknown, method: string, version: Pro
  * The key the SDK generates is kept for `signAndSendWithAuthority` (see
  * ../keys: a non-extractable key in IndexedDB, not localStorage), bound to
  * the connected wallet. `payload.role` is required: a missing or unknown one
- * is refused before anything is read or prompted.
+ * is refused before anything is read or prompted. On a v2 wallet, a policy
+ * with an action that has an expiry of its own or a recurring window throws
+ * `SdkUpgradeRequiredError`, also before anything is read or prompted (this
+ * release builds both in slots; the v2 program reads seconds).
  */
 export const addAuthorityAction = async (
     get: () => WalletState,
@@ -792,6 +812,10 @@ export const addAuthorityAction = async (
     if (!connection) refuse(set, 'No connection available');
     const roleProblem = authorityRoleProblem(payload?.role, 'addAuthority', versionOf(wallet));
     if (roleProblem) refuse(set, roleProblem);
+    // An expiry or a recurring window would go out in slots (see ./timeBased).
+    if (versionOf(wallet) === 2 && payload.policy && policyHasSlotTimes(payload.policy)) {
+        refuseUpgradeRequired(set, new SdkUpgradeRequiredError('addAuthority'));
+    }
     const role = payload.role;
     // forgetStoredKeys from here on means the key is not kept.
     const authorityWipes = wipeMark('authority');

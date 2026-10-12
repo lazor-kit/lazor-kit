@@ -31,6 +31,7 @@ import { connectAbandoned, forgetCandidates, hasChooserHost } from './core/walle
 import { type AuthorityTurn, withAuthority } from './core/wallet/sequence';
 import { deferredExpiryOffset, executeBeforeExpiry } from './core/wallet/deferred';
 import { toPolicyError } from './core/wallet/policy';
+import { SdkUpgradeRequiredError, policyHasSlotTimes } from './core/wallet/timeBased';
 import { logger } from './core/logger';
 import {
   isSignedMessageClientData,
@@ -602,6 +603,11 @@ export const signMessageAction = async (
  * Create a session key with optional spending limits. The user's passkey
  * authorises creation; afterwards the session keypair can sign transactions
  * locally without further passkey prompts.
+ *
+ * v1 wallets only: on a v2 wallet it throws `SdkUpgradeRequiredError` before
+ * anything is read or the portal opens. This release passes the expiry in
+ * slots, which the v2 program refuses (InvalidSessionDuration, 3008);
+ * `@lazorkit/wallet-mobile-adapter` 3.0 passes it in seconds.
  */
 export const createSessionAction = async (
   get: () => WalletStateClient,
@@ -612,6 +618,7 @@ export const createSessionAction = async (
   return withSigningState(get, set, options, async () => {
     try {
       const { connection, wallet, config } = requireWalletAndConnection(get);
+      if (versionOf(wallet!) === 2) throw new SdkUpgradeRequiredError('createSession');
       const { client, version } = await buildClient(get);
       const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);
@@ -811,7 +818,10 @@ export function authorityRoleProblem(role: unknown, method: string, version: Pro
 /**
  * Add an Ed25519 public key as an authority. Signed by the current passkey
  * owner. `role` is required: a missing or unknown one is refused before
- * anything is read or prompted.
+ * anything is read or prompted. On a v2 wallet, a policy with an action that
+ * has an expiry of its own or a recurring window throws
+ * `SdkUpgradeRequiredError`, also before anything is read or prompted (this
+ * release builds both in slots; the v2 program reads seconds).
  */
 export const addAuthorityEd25519Action = async (
   get: () => WalletStateClient,
@@ -824,6 +834,10 @@ export const addAuthorityEd25519Action = async (
       const { connection, wallet, config } = requireWalletAndConnection(get);
       const roleProblem = authorityRoleProblem(params?.role, 'addAuthorityEd25519', versionOf(wallet!));
       if (roleProblem) throw new Error(roleProblem);
+      // An expiry or a recurring window would go out in slots (see ./core/wallet/timeBased).
+      if (versionOf(wallet!) === 2 && params.policy && policyHasSlotTimes(params.policy)) {
+        throw new SdkUpgradeRequiredError('addAuthorityEd25519');
+      }
       const { client, version } = await buildClient(get);
       const feePayer = await feePayerFor(config, version);
       const walletPda = new PublicKey(wallet!.walletPda);

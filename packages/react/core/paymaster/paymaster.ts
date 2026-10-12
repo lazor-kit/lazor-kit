@@ -17,7 +17,7 @@ import {
     type ProtocolVersion,
 } from '../program/protocol';
 import { hasDeferredExpiredCode } from '../wallet/deferred';
-import { hasUnlistedOutflowCode } from '../wallet/policy';
+import { hasSolMaxPerTxExceededCode, hasUnlistedOutflowCode } from '../wallet/policy';
 export interface PaymasterConfig {
     paymasterUrl: string;
     apiKey?: string;
@@ -303,6 +303,10 @@ export class Paymaster {
      *   an asset its policy does not name, or an inner program's error with
      *   that code) and no earlier attempt may have been sent: the
      *   `PaymasterError`. The same bytes move the same assets.
+     * - the simulation failed with 3023 (a session or delegate moving more
+     *   SOL in one transaction than its `SolMaxPerTx` allows, or an inner
+     *   program's error with that code) and no earlier attempt may have been
+     *   sent: the `PaymasterError`. The same bytes move the same amount.
      * - the paymaster answered with a 4018 (`RetiredDeployment`: a retired
      *   v1 program answers every attempt with it, or an inner program's error
      *   with that code), on its first answer: `V1WalletRetiredError` when it
@@ -353,6 +357,8 @@ export class Paymaster {
                 if (!maybeSent && hasDeferredExpiredCode(error)) throw error;
                 // ActionUnlistedSolOutflow / ActionUnlistedTokenOutflow (3037 / 3038).
                 if (!maybeSent && hasUnlistedOutflowCode(error)) throw error;
+                // ActionSolMaxPerTxExceeded (3023): the cap and the amount stay as they are.
+                if (!maybeSent && hasSolMaxPerTxExceededCode(error)) throw error;
                 // RetiredDeployment (4018): the next attempt gets the same answer.
                 if (hasRetiredDeploymentCode(error)) {
                     if (!maybeSent) throw this.retiredDeploymentFailure(error);

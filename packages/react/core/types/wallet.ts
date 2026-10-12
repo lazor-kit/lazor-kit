@@ -106,6 +106,12 @@ export interface TokenSpendingLimit {
     };
 }
 
+/**
+ * `createSession` works on v1 wallets only with this release: on a v2 wallet it
+ * throws `SdkUpgradeRequiredError` before anything is read or prompted (the
+ * expiry is in slots; the v2 program reads Unix seconds). Use
+ * `@lazorkit/wallet` 4.0 for sessions on v2 wallets.
+ */
 export interface CreateSessionPayload {
     readonly expiresInSlots?: bigint;
     readonly spendingLimits?: SpendingLimits;
@@ -185,7 +191,10 @@ export interface AddAuthorityPayload {
      * with a `token*` action. Keep it within 244 bytes, which is what fits in
      * the transaction beside the passkey's response; its size is not checked
      * before the prompt. v1 wallets have no policies: passing one for a v1
-     * wallet throws.
+     * wallet throws. On a v2 wallet, an action with an expiry of its own or a
+     * recurring limit (a window) throws `SdkUpgradeRequiredError` before the
+     * prompt: this release builds both in slots, and the v2 program reads
+     * Unix seconds. Use `@lazorkit/wallet` 4.0 for those.
      */
     readonly policy?: Uint8Array;
     /**

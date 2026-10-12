@@ -135,6 +135,11 @@ export {
   UNLISTED_TOKEN_OUTFLOW_CODE,
 } from './core/wallet/policy';
 export type { PolicySigner } from './core/wallet/policy';
+// What a v2 wallet needs @lazorkit/wallet 4.0 for: createSession, and a
+// delegate policy with an expiry or a recurring window (this release builds
+// both in slots; the v2 program reads seconds).
+export { SdkUpgradeRequiredError, isSdkUpgradeRequiredError } from './core/wallet/timeBased';
+export type { UpgradeRequiredOperation } from './core/wallet/timeBased';
 // Which wallet is a passkey's own (the credential hash alone is public): what
 // connect asks the user when it will not adopt one on its own.
 export {
