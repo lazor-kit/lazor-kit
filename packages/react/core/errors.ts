@@ -179,8 +179,11 @@ export type ErrorKind =
  */
 export function errorKind(error: unknown): ErrorKind {
     const chain = errorChain(error);
-    if (chain.some(isUserRejection)) return 'rejected';
     const has = (name: string, code?: number | string) => chain.some((link) => isNamedError(link, name, code));
+    // A transaction that may have been sent, first: a refusal a later
+    // attempt got does not undo an earlier attempt whose answer was lost.
+    if (has('TransactionOutcomeUnknownError') || has('ConfirmationTimeoutError') || chain.some(paymasterMaySend)) return 'tx-unknown';
+    if (chain.some(isUserRejection)) return 'rejected';
     if (has('PasskeyMismatchError')) return 'other-passkey';
     if (has('KeyRecoveryError')) return 'key-recovery';
     if (has('PasskeyUnavailableError')) return 'unavailable';
@@ -195,12 +198,22 @@ export function errorKind(error: unknown): ErrorKind {
     // or the failed transaction.
     if (has('UnlistedSolOutflowError', 3037) || has('UnlistedTokenOutflowError', 3038)) return 'policy';
     if (has('PreviousTransactionPendingError')) return 'previous-pending';
-    if (has('TransactionOutcomeUnknownError') || has('ConfirmationTimeoutError')) return 'tx-unknown';
     if (has('TransactionExpiredError')) return 'tx-expired';
     if (has('TransactionFailedError')) return 'tx-failed';
     if (has('NetworkError')) return 'network';
     if (has('PaymasterError') && !hasProgramCode(error)) return 'network';
     return 'unknown';
+}
+
+/** A paymaster error whose transaction may be on its way: `maybeSent`, or a signature it reported with the error. */
+function paymasterMaySend(link: unknown): boolean {
+    if (typeof link !== 'object' || link === null) return false;
+    try {
+        const { maybeSent, signature } = link as { maybeSent?: unknown; signature?: unknown };
+        return maybeSent === true || (isNamedError(link, 'PaymasterError') && typeof signature === 'string');
+    } catch {
+        return false;
+    }
 }
 
 function hasProgramCode(error: unknown): boolean {

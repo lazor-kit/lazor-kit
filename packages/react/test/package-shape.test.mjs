@@ -66,6 +66,8 @@ const NEW_IN_4 = [
     'isUserRejection', 'passkeyCapabilities', 'publicKeyFromAttestation', 'resolveConfig', 'userMessage', 'validateRpId',
     // Typed approval requests and time-based session expiry (#130).
     'MAX_SESSION_SECONDS', 'PortalRefusedError', 'PortalReplyMismatchError', 'RequestOutOfDateError', 'TypedRequestTooLargeError',
+    // Plain-language errors and the send status.
+    'describeError', 'sendStatusOf',
 ];
 const REACT_ONLY = ['CONNECT_BUTTON_TEXT', 'ConnectButton', 'LazorkitProvider', 'connectButtonLabel', 'useWallet', 'useWalletStore'];
 const HOOKS = ['useLazorkitClient', 'useLazorkitState', 'useWallet', 'useWalletStatus', 'useWalletStore'];

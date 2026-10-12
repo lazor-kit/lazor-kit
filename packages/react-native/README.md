@@ -339,6 +339,151 @@ Only a payload over the 1232-byte limit is compiled with
 limit no longer fails `signAndSendTransaction`, `authorizeAndExecute` or
 `authorizeDeferred` before the portal opens.
 
+## Showing errors to users
+
+`describeError(error)` turns any error the SDK throws into words for someone
+who has never used a crypto wallet. It never says "failed" about a
+transaction that may still land.
+
+```ts
+import { describeError, sendStatusOf, type ErrorDescription, type SendStatus } from '@lazorkit/wallet-mobile-adapter';
+
+const { title, message, action, retryable, maybeSent, code } = describeError(error);
+```
+
+| Field | |
+|---|---|
+| `title` | A short heading: "Cancelled", "Still checking…", "Not enough funds". |
+| `message` | One or two sentences: what happened, and what did not. |
+| `action` | What the person can do next, when there is something ("Add funds or try a smaller amount."). |
+| `retryable` | Trying the same thing again may work. Never `true` when `maybeSent` is. |
+| `maybeSent` | The transaction may have been sent and may still land. Show it as pending, never as failed, and do not let the person pay again until it has settled. |
+| `code` | A stable name to branch on and to count (below). |
+| `programError` | The LazorKit program's name for the error, when it is one (`'InvalidSessionDuration'`), from `ERROR_NAMES`. |
+
+```tsx
+function PayButton({ instructions }: { instructions: TransactionInstruction[] }) {
+  const { signAndSendTransaction } = useWallet();
+  const [status, setStatus] = useState<SendStatus>('idle');
+  const [problem, setProblem] = useState<ErrorDescription | null>(null);
+
+  const pay = async () => {
+    setStatus('signing');
+    setProblem(null);
+    try {
+      await signAndSendTransaction({ instructions }, { redirectUrl: 'myapp://pay' });
+      setStatus('confirmed');
+    } catch (error) {
+      setStatus(sendStatusOf(error)); // 'cancelled' | 'checking' | 'failed'
+      setProblem(describeError(error));
+    }
+  };
+
+  return (
+    <View>
+      <Button title="Pay" onPress={pay} disabled={status === 'signing' || status === 'checking'} />
+      {problem && status !== 'cancelled' && (
+        <Text>
+          {problem.title}. {problem.message} {problem.action}
+        </Text>
+      )}
+    </View>
+  );
+}
+```
+
+**Sends: 'checking' is not 'failed'.** A send is `'idle'`, then
+`'signing'` while the call runs (the portal, then the wait for
+confirmation), and `'confirmed'` when its promise resolves. When it rejects,
+`sendStatusOf(error)` says where it stands:
+
+- `'cancelled'`: the person said no. Nothing was signed or sent; show nothing
+  alarming.
+- `'checking'`: the outcome is not known (`TransactionOutcomeUnknownError`,
+  `ConfirmationTimeoutError`, or a paymaster answer that was lost). It may
+  still land. Say "Still checking…, don't pay again", check the balance or the
+  signature, and do not offer a resend.
+- `'failed'`: it was not sent, or it landed and failed. Nothing in it
+  happened; `retryable` says whether trying again may work.
+
+The `SendStatus` type names all of these.
+
+Any value is accepted, from either copy of the package (ESM and CJS), and
+through what wraps it (`cause`, a wallet-adapter `WalletError`'s `error`). A
+program error is read from the simulation logs, Kora's text (`Custom(3008)`)
+or a landed TransactionError, and named with the program's own list
+(`ERROR_NAMES`): `custom program error: 0xbc0` is 3008,
+`InvalidSessionDuration`. A code whose logs name another program as the first
+to fail is that program's (`tx-failed`), and so is a 3014 with no logs.
+
+| `code` | Title | Retryable | maybeSent | From |
+|---|---|---|---|---|
+| `user-rejected` | Cancelled | yes | no | UserRejectedError, PortalCancelledError, WalletConfirmationDeclinedError |
+| `outcome-unknown` | Still checking… | no | **yes** | TransactionOutcomeUnknownError, ConfirmationTimeoutError, PaymasterError with maybeSent or a reported signature |
+| `previous-pending` | Still checking your last transaction | yes | no | PreviousTransactionPendingError |
+| `tx-expired` | It didn't go through | yes | no | TransactionExpiredError |
+| `tx-failed` | It didn't go through | yes | no | TransactionFailedError, or another program's error |
+| `insufficient-funds` | Not enough funds | no | no | "insufficient lamports / funds", InsufficientFundsForRent in the logs |
+| `wrong-network` | Wrong network | no | no | PortalRefusedError('wrong-network'), a program that does not exist on this cluster |
+| `rate-limited` | The network is busy | yes | no | HTTP 429, "Too Many Requests" |
+| `timeout` | Taking too long | yes | no | a request with no answer in time (not a send), MinContextSlotNotReachedError |
+| `network` | Can't reach the network | yes | no | NetworkError, fetch failures, HTTP 5xx (not a send) |
+| `paymaster` | Couldn't send right now | yes | no | PaymasterError with no program error |
+| `popup-blocked` | Pop-up blocked | yes | no | portal popup blocked (web) |
+| `browser-failed` | Couldn't open the approval page | yes | no | the portal browser did not open (mobile) |
+| `busy` | Already in progress | yes | no | "Already signing", "Already connecting", "still in progress" |
+| `not-connected` | Not connected | no | no | "No wallet connected" |
+| `passkey-unavailable` | Passkeys don't work here | no | no | PasskeyUnavailableError |
+| `passkey-mismatch` | A different passkey was used | yes | no | PasskeyMismatchError |
+| `key-recovery` | Couldn't finish setting up | yes | no | KeyRecoveryError |
+| `key-mismatch` | This key doesn't match your wallet | no | no | KeyWalletMismatchError (title by reason) |
+| `wallet-mismatch` | Couldn't set up your wallet | yes | no | WalletVerificationError |
+| `wallet-needs-confirmation` | Choose your wallet | yes | no | WalletNeedsConfirmationError |
+| `wallet-chooser-not-shown` | Couldn't show your wallets | yes | no | WalletChooserNotShownError (mobile) |
+| `request-too-large` | Request too large | no | no | TypedRequestTooLargeError |
+| `transaction-too-large` | Transaction too large | no | no | TransactionTooLargeError |
+| `request-out-of-date` | Please try again | yes | no | RequestOutOfDateError (portal 'stale-counter') |
+| `portal-reply-mismatch` | Approval didn't match | yes | no | PortalReplyMismatchError |
+| `portal-request-invalid` | This can't be approved | no | no | PortalRefusedError('request-invalid') |
+| `portal-challenge-mismatch` | Please try again | yes | no | PortalRefusedError('challenge-mismatch') |
+| `portal-chain-unavailable` | Can't reach the network | yes | no | PortalRefusedError('chain-unavailable') |
+| `portal-unsupported` | Update needed | no | no | PortalRefusedError('typed-malformed' / 'typed-unsupported') |
+| `portal-refused` | This wasn't approved | no | no | PortalRefusedError, any other code |
+| `v1-retired` | Wallet needs an upgrade | no | no | V1WalletRetiredError, 4018 RetiredDeployment |
+| `v1-migrated` | Your wallet was upgraded | no | no | V1WalletMigratedError |
+| `config` | This app isn't set up correctly | no | no | LazorkitConfigError |
+| `unknown` | Something went wrong | no | no | anything else |
+
+LazorKit program errors (`retryable` as given, `maybeSent` never):
+
+| `code` | Program error | Title | Retryable |
+|---|---|---|---|
+| `program-3002` | 3002 PermissionDenied | Not allowed | no |
+| `program-3006` | 3006 SignatureReused | Please approve again | yes |
+| `program-3007` | 3007 InvalidSignatureAge | Approval took too long | yes |
+| `program-3008` | 3008 InvalidSessionDuration | Session length isn't allowed | no |
+| `program-3009` | 3009 SessionExpired | Session ended | no |
+| `program-3016` | 3016 InvalidExpiryWindow | Time limit isn't allowed | no |
+| `program-3021` | 3021 ActionProgramNotWhitelisted | Needs your passkey | no |
+| `program-3022` | 3022 ActionProgramBlacklisted | Needs your passkey | no |
+| `program-3023` | 3023 ActionSolMaxPerTxExceeded | Over the per-payment limit | no |
+| `program-3024` | 3024 ActionSolLimitExceeded | Spending limit reached | no |
+| `program-3025` | 3025 ActionSolRecurringLimitExceeded | Spending limit reached for now | no |
+| `program-3026` | 3026 ActionTokenLimitExceeded | Spending limit reached | no |
+| `program-3027` | 3027 ActionTokenRecurringLimitExceeded | Spending limit reached for now | no |
+| `program-3029` | 3029 ActionTokenMaxPerTxExceeded | Over the per-payment limit | no |
+| `program-3030` | 3030 SessionVaultOwnerChanged | Blocked to protect your wallet | no |
+| `program-3031` | 3031 SessionVaultDataLenChanged | Blocked to protect your wallet | no |
+| `program-3032` | 3032 SessionTokenAuthorityChanged | Blocked to protect your wallet | no |
+| `program-3037` | 3037 ActionUnlistedSolOutflow | Needs your passkey | no |
+| `program-3038` | 3038 ActionUnlistedTokenOutflow | Needs your passkey | no |
+| `program-4005` | 4005 InsufficientFeeBalance | Couldn't cover the fee | no |
+| `v1-retired` | 4018 RetiredDeployment | Wallet needs an upgrade | no |
+
+Every other code of `ERROR_NAMES` (3001, 3003 to 3005, 3010 to 3013, 3015,
+3017 to 3020, 3028, 3033 to 3036, 4001 to 4017) is `program-<code>`, "Your
+wallet couldn't approve this", not retryable.
+
 ## Session keys
 
 `createSession` registers a session key that your app generates, and

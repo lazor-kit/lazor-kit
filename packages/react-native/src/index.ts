@@ -70,5 +70,9 @@ export {
 } from './core/wallet/policy';
 export type { PolicySigner } from './core/wallet/policy';
 export { PaymasterError } from './core/paymaster';
+// What to show a person, in plain English (`describeError`), and where a send
+// stands once it has ended (`sendStatusOf`): 'checking' is never 'failed'.
+export { describeError, sendStatusOf } from './core/describeError';
+export type { ErrorDescription, ErrorDescriptionCode, SendStatus } from './core/describeError';
 export * from './config';
 export * from './program';
