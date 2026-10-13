@@ -1,33 +1,11 @@
 # Security Policy
 
-## Supported Versions
+## Supported versions and reporting a vulnerability
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 1.2.x   | :white_check_mark: |
-| < 1.2   | :x:                |
-
-## Reporting a Vulnerability
-
-We take security vulnerabilities seriously. If you discover a security issue, please follow these steps:
-
-### 1. **DO NOT** create a public GitHub issue
-Creating a public issue could expose users to the vulnerability before it's fixed.
-
-### 2. Report privately
-Send an email to **security@lazor.sh** with the following information:
-
-- **Subject**: `[SECURITY] Vulnerability in @lazorkit/wallet-mobile-adapter`
-- **Description**: Detailed description of the vulnerability
-- **Steps to reproduce**: Clear steps to reproduce the issue
-- **Impact**: Potential impact on users
-- **Suggested fix**: If you have a suggested solution
-
-### 3. What happens next
-- We will acknowledge receipt within 24 hours
-- We will investigate and provide updates
-- We will work on a fix and coordinate disclosure
-- We will credit you in the security advisory (if desired)
+The repository's [SECURITY.md](https://github.com/lazor-kit/lazor-kit/blob/main/SECURITY.md)
+is the policy for this package: which versions are supported, how to report a vulnerability
+privately, what to expect, and the audit status of the LazorKit programs. Do not open a public
+GitHub issue for a security issue.
 
 ## Security Considerations
 
@@ -98,32 +76,8 @@ Before using this SDK in production:
 - **Storage**: AsyncStorage holds nothing secret; session keys stay with your app (see the README, "Session keys")
 - **HTTPS Enforcement**: WebAuthn operations require secure connections
 
-### Security Audits
-- Regular dependency updates
-- Automated security scanning
-- Manual code reviews
-- Third-party security assessments (planned)
-
-## Contact Information
-
-- **Security Email**: security@lazor.sh
-- **General Support**: support@lazor.sh
-- **Website**: https://lazor.sh
-- **GitHub**: https://github.com/lazorkit/wallet-mobile-adapter
-
-## Responsible Disclosure Timeline
-
-- **Day 0**: Vulnerability reported
-- **Day 1**: Acknowledgment and initial assessment
-- **Day 7**: Status update and timeline
-- **Day 30**: Fix development and testing
-- **Day 45**: Patch release and disclosure
-
-*Timeline may vary based on vulnerability complexity and severity.*
-
-## Bug Bounty
-
-We currently do not have a formal bug bounty program, but we do appreciate security researchers who responsibly disclose vulnerabilities. Contributors may be acknowledged in our security advisories and documentation.
+### Audit status
+See [SECURITY.md › Audit status](https://github.com/lazor-kit/lazor-kit/blob/main/SECURITY.md#audit-status).
 
 ---
 
