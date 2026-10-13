@@ -9,6 +9,11 @@
     "@lazorkit/wallet-mobile-adapter": "2.4.0"
   },
   "changesets": [
+    "describe-error",
+    "next-1-mobile",
+    "next-1-sends",
+    "next-1-wallet",
+    "sdk-legacy-2-1",
     "wallet-4",
     "wallet-mobile-adapter-3"
   ]
