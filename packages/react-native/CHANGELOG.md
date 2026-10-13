@@ -1,5 +1,39 @@
 # @lazorkit/wallet-mobile-adapter
 
+## 3.0.0-next.1
+
+### Minor Changes
+
+- [`2ab6dcb`](https://github.com/lazor-kit/lazor-kit/commit/2ab6dcbb36d604429b51900eefbd150ac7417c33) Thanks [@onspeedhp](https://github.com/onspeedhp)! - Plain-language errors, and a send status that never calls a transaction that may still land "failed".
+
+  - `describeError(error)` returns `{ title, message, action?, retryable, maybeSent, code, programError? }` in plain English for every error the SDK surfaces: user rejections, a transaction whose outcome is not known ("Still checking…", "Don't pay again"), expired and failed transactions, the LazorKit program's errors read from simulation logs, Kora's text or a landed TransactionError (`custom program error: 0xbc0` is 3008, `InvalidSessionDuration`, named from `ERROR_NAMES`; an inner program's code is not read as LazorKit's), the portal's refusals, typed-request errors, passkeys unavailable, pop-ups blocked, rate limits (429), timeouts, network and paymaster errors, wrong network and insufficient funds. `maybeSent` is true whenever the transaction may have been sent, whatever else the error carries, and `retryable` is then false.
+  - `sendStatusOf(error)`: `'cancelled'`, `'checking'` (the outcome is not known: it may still land) or `'failed'`. The `SendStatus` type names a send's whole course: `'idle'`, `'reviewing'`, `'signing'`, `'submitted'`, `'confirmed'`, `'checking'`, `'failed'`, `'cancelled'`.
+  - The same in both packages (the mobile adapter's tests check the source and the answers match); see "Showing errors to users" in each README.
+
+  **Fixed** (`@lazorkit/wallet`): `errorKind` is `'tx-unknown'` for a `PaymasterError` whose transaction may have been sent (`maybeSent`, or a signature the paymaster reported), whatever else it carries, so `userMessage` no longer says "Couldn't reach the network. Nothing was sent." about a transaction that may land.
+
+- [`2ab6dcb`](https://github.com/lazor-kit/lazor-kit/commit/2ab6dcbb36d604429b51900eefbd150ac7417c33) Thanks [@onspeedhp](https://github.com/onspeedhp)! - - **The browser trip is bounded:** `browserOptions.timeoutMs` (default 2 minutes; at least 10 for a typed approval). A trip that never comes back closes the browser and rejects with `PortalTimeoutError` (`describeError`: "Couldn't open the approval page"). Connect hung for over 4 minutes when iOS never opened the ownership-proof session: `expo-web-browser` ignores an `ASWebAuthenticationSession` that fails to start. The adapter also waits for the last session to be gone before it opens the next.
+
+  - **iOS: one trip to create a wallet.** A passkey the portal registered just now (`kind=created`), whose reply came back through the authentication session (which no other app can answer), gets its wallet with no second trip for an ownership proof. A deep-link reply (Android) is still proven first.
+  - **iOS: `browserOptions.preferEphemeralSession`, default `true`:** no "wants to use … to sign in" alert before each approval. The session shares no cookies with Safari, which the portal does not need. `false` restores a shared session.
+  - Docs: `rpId` must be set for a portal other than `portal.lazor.sh` (a local one); Xcode 27 with Expo 54 needs every pod at iOS 15.1 or later (a config plugin in the README) and `LANG=en_US.UTF-8` for `pod install`; `verifyWalletMessage` on a server comes from `@lazorkit/wallet/core`.
+
+- [`2ab6dcb`](https://github.com/lazor-kit/lazor-kit/commit/2ab6dcbb36d604429b51900eefbd150ac7417c33) Thanks [@onspeedhp](https://github.com/onspeedhp)! - Sends that end, retry only what can change, and never call "offline" "maybe sent".
+
+  - **Default devnet paymaster:** `https://kora-devnet-production.up.railway.app` (`DEFAULTS.PAYMASTER_URL`), the relayer that sponsors the v2 program. `kora.devnet.lazorkit.com`, the previous default, still serves the old relayer, which allows only v1 and refused every v2 transaction. `paymasterConfig` / `configPaymaster` still override it.
+  - **Retry policy:** a refusal that would come back the same is sent once (any program error, LazorKit's 3007, 3008, 3009, 3024 and 3025 included; a relayer's allowlist refusal; insufficient funds; a failed simulation; a 4xx). A 429 is waited out (`Retry-After`, capped at 10 s) for as long as the send's time allows. A network error, timeout or 5xx is sent again, the same bytes, only while the blockhash is still valid. One attempt waits at most 30 s and the whole send at most 60 s (a hung relayer held it for up to about 273 s). The mobile adapter, which never retried, now follows the same policy (the same source). `Paymaster.signAndSend` and `signAndSendVersionedTransaction` take `{ canResend, budgetMs }` as a fourth argument; `PaymasterError` has `retryAfterMs`.
+  - **Offline is not "maybe sent":** a device that says it is offline makes no request; the `PaymasterError` has `offline: true`, `describeError` says "Can't reach the network", and the passkey's next send does not wait on it. A new call after a send whose outcome is unknown waits at most 20 s for it, then rejects with `PreviousTransactionPendingError`, instead of holding the rest of that send's two minutes.
+  - **3007, approval too old:** `SignatureTooOldError` (`isSignatureTooOldError`, `SIGNATURE_TOO_OLD_CODE`): LazorKit accepts a passkey approval for 150 slots, about 35 s today. Never resent and never re-signed on its own; `describeError` says "Approval took too long", `retryable`, and calling the action again asks for a new approval (README: "Retry after 'Approval took too long'"). An untyped Execute now reads the slot for its challenge last, after the wallet, fee payer and preview reads, right before the portal opens. The full fix, the portal picking the slot at Approve for Execute as it does for typed requests, is next.
+  - **`transactionOptions.computeUnitLimit`** is honoured on web (it was ignored): `SetComputeUnitLimit` first, before the secp256r1 precompile. Validated (1 to 1,400,000) before the passkey is asked, on both. None by default.
+  - **Connect does not create a second wallet:** a creation whose paymaster answer was lost keeps its seed; the next connect for the same passkey uses it again (one wallet at most), and adopts that wallet when it finds it (proven, controlled by the passkey alone) instead of offering it or creating another.
+
+### Patch Changes
+
+- [`2ab6dcb`](https://github.com/lazor-kit/lazor-kit/commit/2ab6dcbb36d604429b51900eefbd150ac7417c33) Thanks [@onspeedhp](https://github.com/onspeedhp)! - `@lazorkit/sdk-legacy` ^2.1.0 (layout revision 2: authorities and sessions record the account that paid their rent).
+
+  - `revokeSession` and `removeAuthority` refund the closed account's rent to the payer it records, which the program now requires (3039 for any other destination). Neither package passes a refund destination of its own, so nothing changes for an app that leaves it out. In the mobile adapter, a `refundDestination` other than the recorded payer is refused before the passkey prompt with `RefundDestinationMismatchError`.
+  - `describeError`: 3039 `RefundDestinationMismatch` and `RefundDestinationMismatchError` are `program-3039`, "Refund can't go there", not retryable.
+
 ## 3.0.0-next.0
 
 ### Major Changes
