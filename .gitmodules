@@ -1,5 +1,5 @@
 
 [submodule "program"]
 	path = program
-	url = https://github.com/lazor-kit/program-v2
+	url = https://github.com/lazor-kit/lazorkit-public-good-program
 	branch = main

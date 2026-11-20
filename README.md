@@ -97,7 +97,7 @@ The parents only call APIs the newer versions keep: `uuid.v4()`, the postcss 8 p
 
 ## Working on the program
 
-The Anchor program is a submodule pointing at [`lazor-kit/program-v2`](https://github.com/lazor-kit/program-v2). Cd into it and follow its own `DEVELOPMENT.md`:
+The `program` submodule points to the [LazorKit Public Goods Program](https://github.com/lazor-kit/lazorkit-public-good-program), a Pinocchio implementation for local development and devnet. Cd into it and follow its own `DEVELOPMENT.md`:
 
 ```bash
 cd program
@@ -119,7 +119,7 @@ The release workflow opens a "version packages" PR; merging it publishes to npm 
 
 ## Contributing
 
-Fork → branch → PR against `main`. Add a changeset for any user-visible SDK change, skip it for refactors / CI / docs / examples. Protocol-level work goes against the upstream [`lazor-kit/program-v2`](https://github.com/lazor-kit/program-v2) repo, not the submodule here.
+Fork → branch → PR against `main`. Add a changeset for any user-visible SDK change, skip it for refactors / CI / docs / examples. Use [LazorKit Protocol](https://github.com/lazor-kit/lazorkit-protocol) for production protocol work and [LazorKit Public Goods Program](https://github.com/lazor-kit/lazorkit-public-good-program) for Public Goods contributions.
 
 ## Links
 
