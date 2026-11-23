@@ -218,7 +218,12 @@ async function run() {
       }
       assert.equal(store.getState().wallet.walletDevice, authorityPda.toBase58());
       assert.equal(store.getState().wallet.credentialId, passkey.credentialId);
-      const payload = { instructions: swap, transactionOptions: { txVersion: 'v1' } };
+      const payload = {
+        instructions: swap,
+        transactionOptions: label === 'react-native'
+          ? { txVersion: 'v1', allowV0Fallback: false }
+          : { txVersion: 'v1' },
+      };
       const signature = label === 'react'
         ? await store.getState().signAndSendTransaction(payload)
         : await store.getState().signAndExecuteTransaction(payload, { redirectUrl: REDIRECT });

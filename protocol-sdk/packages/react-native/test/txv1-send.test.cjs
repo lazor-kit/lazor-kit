@@ -113,6 +113,40 @@ test("'v1' with a paymaster that accepts it, on the Protocol devnet program, goe
   assert.equal(body.params.signer_key, w.feePayer.publicKey.toBase58());
 });
 
+test('requiring v1 stops before approval when a paymaster or fee token would cause fallback', async () => {
+  const options = { txVersion: 'v1', allowV0Fallback: false };
+  const noV1 = world();
+  const unavailable = await execute(noV1, [noV1.transfer()], options, false);
+  assert.ok(unavailable.error instanceof M.TxV1RequiredError);
+  assert.equal(unavailable.error.reason, 'paymaster');
+  assertNothingSent(noV1);
+
+  const token = world();
+  const incompatible = await execute(token, [token.transfer()], { ...options, feeToken: Keypair.generate().publicKey.toBase58() });
+  assert.ok(incompatible.error instanceof M.TxV1RequiredError);
+  assert.equal(incompatible.error.reason, 'fee-token');
+  assertNothingSent(token);
+});
+
+test('requiring v1 keeps a small Execute on v1 and never retries a refusal as v0', async () => {
+  const options = { txVersion: 'v1', allowV0Fallback: false };
+  const supported = world();
+  const result = await execute(supported, [supported.transfer()], options);
+  assert.equal(result.error, undefined);
+  assert.deepEqual(supported.sent().map(({ version }) => version), [1]);
+
+  const refusing = world();
+  refusing.script.send = () => ({ error: { code: -32051, message: 'transaction version 1 is not enabled' } });
+  const first = await execute(refusing, [refusing.transfer()], options);
+  assert.equal(first.error?.code, -32051);
+  const second = await execute(refusing, [refusing.transfer()], options);
+  assert.ok(second.error instanceof M.TxV1RequiredError);
+  assert.equal(second.error.reason, 'refused');
+  assert.equal(refusing.rec.portal.length, 1);
+  assert.equal(sends(refusing).length, 1);
+  assert.deepEqual(refusing.sent().map(({ version }) => version), [1]);
+});
+
 test('mainnet Protocol sends v1 only for an explicitly configured deployment', async () => {
   for (const deployment of [false, 'baseline', 'hardened']) {
     const w = world({ cluster: 'mainnet' });

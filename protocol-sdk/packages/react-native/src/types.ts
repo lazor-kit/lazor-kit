@@ -295,20 +295,16 @@ export interface TransactionOptions {
   readonly clusterSimulation?: 'devnet' | 'mainnet';
   /**
    * The transaction format. Default `'v0'`, as before. `'v1'` is SIMD-0385
-   * (up to 4096 bytes and 64 addresses, no lookup tables), experimental and
-   * devnet-only. It is used when the paymaster declares `acceptsTxV1`, no
-   * `feeToken` is set, and the wallet is on the devnet LazorKit v2 program.
-   * Otherwise the transaction is sent as v0, with the requests a `'v0'`
-   * request makes, and the reason is logged (the README lists what a 'v1'
-   * request still checks before the portal opens; the v1 limits are not
-   * checked then). A 'v1' request that cannot be sent in the format chosen
-   * throws `TransactionTooLargeError` (or `PayloadExceedsProgramLimitsError`)
-   * before anything is sent, and before the portal opens when that is already
-   * known. Honoured by signAndSendTransaction, transferSol,
-   * signAndSendWithSession, authorizeAndExecute, authorizeDeferred and
-   * executeDeferred.
+   * (up to 4096 bytes and 64 addresses, with inline keys). Direct Protocol
+   * Execute can use it when the paymaster declares `acceptsTxV1` and the
+   * caller omits `feeToken`. Other requests can fall back to v0.
    */
   readonly txVersion?: 'v0' | 'v1';
+  /**
+   * With `txVersion: 'v1'`, set to `false` to require v1. If it is unavailable,
+   * the SDK throws `TxV1RequiredError` before approval or submission.
+   */
+  readonly allowV0Fallback?: boolean;
   /**
    * v1 only (ignored when a 'v1' request goes out as v0): the loaded-accounts
    * data size limit, in bytes, 196,608 to 67,108,864. Default: measured. In a

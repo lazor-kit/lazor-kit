@@ -314,7 +314,7 @@ Only a payload over the 1232-byte limit is compiled with
 limit no longer fails `signAndSendTransaction`, `authorizeAndExecute` or
 `authorizeDeferred` before the portal opens.
 
-### Transaction v1 (experimental, devnet only)
+### Transaction v1
 
 A SIMD-0385 v1 transaction carries up to 4096 bytes and 64 addresses. v0 stops
 at 1232 bytes, and lookup tables do not lift its 64 account locks, which count
@@ -327,9 +327,7 @@ It is opt-in, per call: pass `transactionOptions.txVersion: 'v1'` to
 nothing changes: the adapter sends the same v0 transaction as before.
 Connecting, sessions and authorities always send v0.
 
-A `'v1'` request goes out as v1 only when all of these hold. Otherwise it goes
-out as v0, with the same bytes as a `'v0'` request, and the reason is logged
-once:
+A `'v1'` request goes out as v1 only when all of these hold:
 
 - the paymaster says it signs v1 transactions:
   `configPaymaster={{ paymasterUrl, acceptsTxV1: true }}`;
@@ -342,11 +340,8 @@ For Protocol v1, set the provider's `protocolV1Deployment` to `'baseline'` for
 the original binary and `'hardened'` after the in-place upgrade. Keep the
 same RPC and wallet address through cutover. Use the adapter's direct
 passkey send with `txVersion: 'v1'` and a paymaster that accepts v1 bytes.
-For a USDC reimbursement on v1, include the agreed token transfer in the
-passkey-approved instructions and use an existing sponsor token account.
-
-Do not set `acceptsTxV1` for `kora.devnet.lazorkit.com`: it cannot read v1
-transactions.
+Set `allowV0Fallback: false` to require v1. The adapter raises
+`TxV1RequiredError` before approving or submitting a v0 transaction.
 
 A `'v1'` request that goes out as v0 makes the paymaster requests and RPC
 calls a `'v0'` one makes. It differs only before the portal opens, where it
@@ -380,14 +375,43 @@ the program's limits (see below). It does not check the v1 limits.
 
 - **A paymaster that refuses v1.** It answers -32051 before signing anything.
   That call rejects with `PaymasterError` (`code: -32051`). It is not retried,
-  and it is not sent again as v0. Later `'v1'` requests to that paymaster go out
-  as v0 until the app restarts.
+  and it is not sent again as v0. Until the app restarts, later `'v1'` requests
+  to that paymaster follow the caller's `allowV0Fallback` preference.
 - **A session's actions.** A v1 `signAndSendWithSession` the program refuses
   with 3037 or 3038 rejects with `UnlistedSolOutflowError` or
   `UnlistedTokenOutflowError`, as a v0 one does (see
   [What a session's actions bound](#what-a-sessions-actions-bound)).
-- **The portal** still shows the payload as a v0 transaction, as before;
-  for a v1 request, without lookup tables.
+- **The portal.** For a v1 request, the preview encodes the payload in v1
+  with inline addresses.
+
+#### Reimburse a v1 paymaster in USDC
+
+Use existing USDC token accounts for the wallet vault and sponsor. Resolve the
+mint, amount and sponsor destination from your fee quote and show them to the
+user. Include the transfer in the payload before passkey approval so the swap
+and reimbursement run together in one Execute.
+
+```ts
+import { createTransferCheckedInstruction } from '@solana/spl-token';
+
+const reimbursement = createTransferCheckedInstruction(
+  vaultUsdcAta,
+  usdcMint,
+  sponsorUsdcAta,
+  vaultPda,
+  amountInUsdcBaseUnits,
+  6,
+);
+
+await signAndSendTransaction({
+  instructions: [...swapInstructions, reimbursement],
+  transactionOptions: { txVersion: 'v1', allowV0Fallback: false },
+}, { redirectUrl });
+```
+
+Use a Protocol-compatible relayer with transaction v1 support. The relayer
+provides SOL and verifies the quoted mint, amount and destination before it
+signs. The legacy paymaster flow uses the `feeToken` option.
 
 ## Session keys
 
@@ -689,7 +713,8 @@ Signs and sends transaction.
 | `transactionOptions.computeUnitLimit` | `number` | Max compute units. v0: a SetComputeUnitLimit instruction. v1: the transaction's config. |
 | `transactionOptions.addressLookupTableAccounts` | `AddressLookupTableAccount[]` | Lookup tables for v0 txs (the portal preview uses them too). |
 | `transactionOptions.clusterSimulation` | `'devnet' \| 'mainnet'` | Network for simulation. |
-| `transactionOptions.txVersion` | `'v0' \| 'v1'` | Default `'v0'`. `'v1'` is experimental and devnet only: see [Transaction v1](#transaction-v1-experimental-devnet-only). |
+| `transactionOptions.txVersion` | `'v0' \| 'v1'` | Default `'v0'`. See [Transaction v1](#transaction-v1). |
+| `transactionOptions.allowV0Fallback` | `boolean` | Set to `false` with `'v1'` to require v1. Default `true`. |
 | `transactionOptions.loadedAccountsDataSizeLimit` | `number` | v1 only: the loaded-accounts data size limit, in bytes. Default: measured. |
 
 | `options.redirectUrl` | `string` | Deep link URL |

@@ -94,8 +94,8 @@ const LAZORKIT_PROGRAM_IDS = [PROGRAM_ID_DEVNET, PROGRAM_ID_MAINNET];
 const UNAVAILABLE: Record<TxV1UnavailableReason, string> = {
   paymaster: 'the paymaster does not declare acceptsTxV1',
   refused: 'the paymaster refused a v1 transaction earlier in this session',
-  'fee-token': 'v1 is not used with a fee token',
-  'not-devnet-v2': 'v1 is used only with the devnet LazorKit v2 program',
+  'fee-token': 'the fee token option requires v0',
+  'not-devnet-v2': 'v1 requires direct Execute on the configured Protocol deployment',
 };
 
 const COMPUTE_BUDGET_INSTRUCTIONS = [
@@ -127,8 +127,17 @@ export type TxV1Decision =
   | { readonly v1: true; readonly protocolV1Program?: PublicKey }
   | { readonly v1: false; readonly reason: TxV1UnavailableReason };
 
+/** The caller required transaction v1 and the selected flow cannot use it. */
+export class TxV1RequiredError extends Error {
+  constructor(readonly reason: TxV1UnavailableReason) {
+    super(`Transaction v1 required: ${UNAVAILABLE[reason]}.`);
+    this.name = 'TxV1RequiredError';
+  }
+}
+
 /** What a send carries for a 'v1' request (`sendInstructionsViaPaymaster`'s `v1`). */
 export interface TxV1Request extends TxV1LimitOptions {
+  readonly allowV0Fallback?: boolean;
   /**
    * The decision taken before the portal opened, for the transactions the
    * passkey then approved (both of a deferred pair). Absent for a flow
@@ -314,7 +323,7 @@ function originOf(url: string): string {
 export async function planTxV1BeforePrompt(params: {
   protocolV1Program?: PublicKey;
   paymaster: TxV1Paymaster;
-  options: TxV1LimitOptions & { readonly feeToken?: string };
+  options: TxV1LimitOptions & { readonly feeToken?: string; readonly allowV0Fallback?: boolean };
   /** The caller's inner instructions. */
   payload: readonly TransactionInstruction[];
   /** The LazorKit instruction that runs `payload`, which decides what it allocates. */
@@ -342,6 +351,9 @@ export async function planTxV1BeforePrompt(params: {
     feeToken: params.options.feeToken,
     protocolV1Program: params.protocolV1Program,
   });
+  if (!decision.v1 && params.options.allowV0Fallback === false) {
+    throw new TxV1RequiredError(decision.reason);
+  }
   if (decision.v1) {
     assertTxV1LimitOptions({
       computeUnitLimit: params.options.computeUnitLimit,
@@ -471,6 +483,9 @@ export async function sendViaPaymasterTxV1(
     decision = gateTxV1({ paymaster: params.paymaster, instructions: params.instructions, feeToken: params.feeToken, protocolV1Program: request.protocolV1Program });
     // The limits are the v1 config's: a request that goes out as v0 ignores them, as a 'v0' request does.
     if (decision.v1) assertTxV1LimitOptions(callerLimits(request, stripComputeBudget(params.instructions)));
+  }
+  if (!decision.v1 && request.allowV0Fallback === false) {
+    throw new TxV1RequiredError(decision.reason);
   }
   // TX2 of a pair decided v0 before the prompt was not built then: it is left
   // to the v0 path, as a 'v0' request's TX2 is.

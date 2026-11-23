@@ -33,6 +33,7 @@ import { deferredExpiryOffset, executeBeforeExpiry } from './core/wallet/deferre
 import { toPolicyError } from './core/wallet/policy';
 import {
   type TxV1Decision,
+  type TxV1Request,
   placeholderFor,
   planTxV1BeforePrompt,
   withComputeUnitLimit,
@@ -265,11 +266,12 @@ async function withPasskey<T>(
 
 // ─── SIMD-0385 v1 ('v1' requests only; core/wallet/txv1-send) ──────
 
-/** The limits a 'v1' request passes on with a send. */
-function limitsOf(options: TransactionOptions): { computeUnitLimit?: number; loadedAccountsDataSizeLimit?: number } {
+/** The caller's limits and fallback preference for a v1 send. */
+function txV1SendOptions(options: TransactionOptions): TxV1Request {
   return {
     computeUnitLimit: options.computeUnitLimit,
     loadedAccountsDataSizeLimit: options.loadedAccountsDataSizeLimit,
+    allowV0Fallback: options.allowV0Fallback,
   };
 }
 
@@ -641,7 +643,7 @@ async function performPasskeyExecute(
       ...(v1 && txOptions
         ? {
             txVersion: 'v1' as const,
-            v1: { decision: v1, ...limitsOf(txOptions), minContextSlot: secp256r1.minContextSlot },
+            v1: { decision: v1, ...txV1SendOptions(txOptions), minContextSlot: secp256r1.minContextSlot },
           }
         : {}),
     });
@@ -870,7 +872,7 @@ export const signAndSendWithSessionAction = async (
           ? {
               txVersion: 'v1' as const,
               v1: {
-                ...limitsOf(txOptions),
+                ...txV1SendOptions(txOptions),
                 protocolV1Program: protocolV1DirectProgram(connection, version),
               },
             }
@@ -1152,7 +1154,7 @@ export const authorizeAndExecuteAction = async (
               ...(v1 && txOptions
                 ? {
                     txVersion: 'v1' as const,
-                    v1: { decision: v1, transaction: 'tx2' as const, ...limitsOf(txOptions), minContextSlot: tx2Floor },
+                    v1: { decision: v1, transaction: 'tx2' as const, ...txV1SendOptions(txOptions), minContextSlot: tx2Floor },
                   }
                 : {}),
             }),
@@ -1323,7 +1325,7 @@ export const executeDeferredAction = async (
             addressLookupTables: payload.transactionOptions?.addressLookupTableAccounts,
             feeToken: payload.transactionOptions?.feeToken,
             ...(txOptions?.txVersion === 'v1'
-              ? { txVersion: 'v1' as const, v1: { transaction: 'tx2' as const, ...limitsOf(txOptions) } }
+              ? { txVersion: 'v1' as const, v1: { transaction: 'tx2' as const, ...txV1SendOptions(txOptions) } }
               : {}),
           }),
       });
