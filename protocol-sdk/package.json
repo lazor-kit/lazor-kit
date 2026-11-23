@@ -12,6 +12,7 @@
     "dev": "pnpm -r dev",
     "clean": "pnpm -r clean",
     "typecheck": "pnpm -r typecheck",
+    "staging:kora": "bash scripts/test-kora-staging.sh",
     "prepublishOnly": "pnpm -r prepublishOnly",
     "changeset": "changeset",
     "version": "changeset version"
