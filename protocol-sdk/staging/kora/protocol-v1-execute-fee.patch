@@ -1,0 +1,303 @@
+diff --git a/crates/lib/src/config.rs b/crates/lib/src/config.rs
+index 9facc3f..84d2238 100644
+--- a/crates/lib/src/config.rs
++++ b/crates/lib/src/config.rs
+@@ -322,6 +322,9 @@ pub struct FeePayerPolicy {
+ pub struct SystemInstructionPolicy {
+     /// Allow fee payer to be the sender in System Transfer/TransferWithSeed instructions
+     pub allow_transfer: bool,
++    /// Program ID eligible for one validated Protocol v1 Execute treasury fee CPI.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub protocol_v1_execute_fee_program: Option<String>,
+     /// Allow fee payer to be the authority in System Assign/AssignWithSeed instructions
+     pub allow_assign: bool,
+     /// Allow fee payer to be the funder, the seeded base signer, or the account being created, in
+diff --git a/crates/lib/src/validator/config_validator.rs b/crates/lib/src/validator/config_validator.rs
+index 3c042a5..ae766ac 100644
+--- a/crates/lib/src/validator/config_validator.rs
++++ b/crates/lib/src/validator/config_validator.rs
+@@ -1782,6 +1782,7 @@ mod tests {
+                 fee_payer_policy: FeePayerPolicy {
+                     system: SystemInstructionPolicy {
+                         allow_transfer: true,
++                        protocol_v1_execute_fee_program: None,
+                         allow_assign: true,
+                         allow_create_account: true,
+                         allow_allocate: true,
+diff --git a/crates/lib/src/validator/transaction_validator.rs b/crates/lib/src/validator/transaction_validator.rs
+index 764a85d..5dd1aca 100644
+--- a/crates/lib/src/validator/transaction_validator.rs
++++ b/crates/lib/src/validator/transaction_validator.rs
+@@ -19,6 +19,7 @@ use crate::fee::price::PriceModel;
+ mod alt;
+ mod bpf_loader_upgradeable;
+ mod loader_v4;
++mod protocol_v1_fee;
+ mod spl_token;
+ mod system;
+ mod token_2022;
+@@ -94,7 +95,9 @@ impl TransactionValidator {
+         self.validate_priority_fee(transaction_resolved)?;
+         self.validate_transfer_amounts(config, transaction_resolved, rpc_client).await?;
+         self.validate_disallowed_accounts(transaction_resolved)?;
+-        self.validate_fee_payer_usage(config, transaction_resolved)?;
++        let verified_protocol_fee =
++            self.verify_protocol_v1_execute_fee(transaction_resolved, rpc_client).await?;
++        self.validate_fee_payer_usage(config, transaction_resolved, verified_protocol_fee)?;
+
+         Ok(())
+     }
+@@ -247,11 +250,13 @@ impl TransactionValidator {
+         &self,
+         config: &Config,
+         transaction_resolved: &mut VersionedTransactionResolved,
++        verified_protocol_fee: bool,
+     ) -> Result<(), KoraError> {
+         self.validate_ata_create_instructions(transaction_resolved)?;
+
+         self.validate_system_fee_payer_usage(
+             transaction_resolved.get_or_parse_system_instructions()?,
++            verified_protocol_fee,
+         )?;
+         self.validate_spl_token_fee_payer_usage(
+             transaction_resolved.get_or_parse_spl_instructions()?,
+diff --git a/crates/lib/src/validator/transaction_validator/fee_payer_policy_props/mod.rs b/crates/lib/src/validator/transaction_validator/fee_payer_policy_props/mod.rs
+index f435c4a..f1dadab 100644
+--- a/crates/lib/src/validator/transaction_validator/fee_payer_policy_props/mod.rs
++++ b/crates/lib/src/validator/transaction_validator/fee_payer_policy_props/mod.rs
+@@ -47,7 +47,7 @@ fn validate<R: DrainRole>(
+     let message = VersionedMessage::Legacy(Message::new(&[ix], Some(&fee_payer)));
+     let mut resolved =
+         TransactionUtil::new_unsigned_versioned_transaction_resolved(message).unwrap();
+-    validator.validate_fee_payer_usage(&config, &mut resolved)
++    validator.validate_fee_payer_usage(&config, &mut resolved, false)
+ }
+
+ fn assert_role_gated_iff_flag_off<R: DrainRole>(
+diff --git a/crates/lib/src/validator/transaction_validator/protocol_v1_fee.rs b/crates/lib/src/validator/transaction_validator/protocol_v1_fee.rs
+new file mode 100644
+index 0000000..9b0a7c3
+--- /dev/null
++++ b/crates/lib/src/validator/transaction_validator/protocol_v1_fee.rs
+@@ -0,0 +1,200 @@
++use super::TransactionValidator;
++use crate::{
++    error::KoraError,
++    transaction::{
++        InstructionOrigin, ParsedSystemInstructionData, ParsedSystemInstructionType,
++        VersionedTransactionResolved,
++    },
++};
++use solana_client::nonblocking::rpc_client::RpcClient;
++use solana_message::VersionedMessage;
++use solana_sdk::{account::Account, instruction::Instruction, pubkey::Pubkey};
++use solana_system_interface::program::ID as SYSTEM_PROGRAM_ID;
++
++const PASSKEY_PROGRAM: Pubkey = solana_sdk::pubkey!("Secp256r1SigVerify1111111111111111111111111");
++const EXECUTE: u8 = 4;
++
++impl TransactionValidator {
++    pub(super) async fn verify_protocol_v1_execute_fee(
++        &self,
++        resolved: &VersionedTransactionResolved,
++        rpc: &RpcClient,
++    ) -> Result<bool, KoraError> {
++        let policy = &self.fee_payer_policy.system;
++        let Some(program) = &policy.protocol_v1_execute_fee_program else {
++            return Ok(false);
++        };
++        if policy.allow_transfer {
++            return Err(KoraError::ConfigError(
++                "Protocol v1 fee policy requires system.allow_transfer=false".into(),
++            ));
++        }
++        let program: Pubkey = program
++            .parse()
++            .map_err(|_| KoraError::ConfigError("Invalid Protocol v1 fee program ID".into()))?;
++        let message = &resolved.transaction.message;
++        if !matches!(message, VersionedMessage::V1(_))
++            || message.instructions().len() != 2
++            || message.static_account_keys().first() != Some(&self.fee_payer_pubkey)
++        {
++            return Ok(false);
++        }
++
++        // The System parser groups all transfers, including TransferWithSeed. Require
++        // exactly one from this payer before exempting the group from the normal denial.
++        let payer_transfer_count = resolved
++            .get_or_parse_system_instructions()?
++            .get(&ParsedSystemInstructionType::SystemTransfer)
++            .into_iter()
++            .flatten()
++            .filter(|ix| {
++                matches!(ix, ParsedSystemInstructionData::SystemTransfer { sender, .. }
++                    if *sender == self.fee_payer_pubkey)
++            })
++            .count();
++        if payer_transfer_count != 1 {
++            return Ok(false);
++        }
++
++        let (config_key, config_bump) =
++            Pubkey::find_program_address(&[b"protocol_config"], &program);
++        let Some(config_index) =
++            message.static_account_keys().iter().position(|key| *key == config_key)
++        else {
++            return Ok(false);
++        };
++        if message.is_maybe_writable_with_reserved_addresses(
++            config_index,
++            None::<&std::collections::HashSet<Pubkey>>,
++        ) {
++            return Ok(false);
++        }
++
++        let mut instructions = resolved.instructions_with_origins();
++        let Some((approval, InstructionOrigin::TopLevel)) = instructions.next() else {
++            return Ok(false);
++        };
++        let Some((execute, InstructionOrigin::TopLevel)) = instructions.next() else {
++            return Ok(false);
++        };
++        if approval.program_id != PASSKEY_PROGRAM
++            || execute.program_id != program
++            || execute.data.first() != Some(&EXECUTE)
++            || execute.accounts.first().map(|account| account.pubkey) != Some(self.fee_payer_pubkey)
++            || execute.accounts.len() < 5
++        {
++            return Ok(false);
++        }
++
++        let tail = &execute.accounts[execute.accounts.len() - 4..];
++        let shard_key = tail[2].pubkey;
++        if tail[0].pubkey != config_key || tail[3].pubkey != SYSTEM_PROGRAM_ID {
++            return Ok(false);
++        }
++        // Protocol collects the fee before executing user instructions. Require its
++        // first direct CPI, with known ancestry from the RPC, and a plain transfer.
++        let Some((transfer, InstructionOrigin::Inner { parent_index: 1, caller_index: Some(1) })) =
++            instructions.next()
++        else {
++            return Ok(false);
++        };
++        let Some(amount) = transfer_amount(transfer, &self.fee_payer_pubkey, &shard_key) else {
++            return Ok(false);
++        };
++
++        let accounts = rpc
++            .get_multiple_accounts(&[config_key, shard_key])
++            .await
++            .map_err(|_| KoraError::RpcError("Failed to read Protocol v1 fee accounts".into()))?;
++        let [Some(config), Some(shard)] = accounts.as_slice() else {
++            return Ok(false);
++        };
++        Ok(matches_fee_accounts(&program, config_bump, config, &shard_key, shard, amount))
++    }
++}
++
++fn transfer_amount(transfer: &Instruction, payer: &Pubkey, shard: &Pubkey) -> Option<u64> {
++    let [source, destination] = transfer.accounts.as_slice() else { return None };
++    let [2, 0, 0, 0, amount @ ..] = transfer.data.as_slice() else { return None };
++    if transfer.program_id != SYSTEM_PROGRAM_ID
++        || source.pubkey != *payer
++        || destination.pubkey != *shard
++    {
++        return None;
++    }
++    Some(u64::from_le_bytes(amount.try_into().ok()?))
++}
++
++fn matches_fee_accounts(
++    program: &Pubkey,
++    config_bump: u8,
++    config: &Account,
++    shard_key: &Pubkey,
++    shard: &Account,
++    amount: u64,
++) -> bool {
++    if config.owner != *program || shard.owner != *program || config.executable || shard.executable
++    {
++        return false;
++    }
++    let [5, 1, bump, 1, shard_count, ..] = config.data.as_slice() else { return false };
++    let [7, shard_bump, shard_index, ..] = shard.data.as_slice() else { return false };
++    if config.data.len() != 88
++        || shard.data.len() != 8
++        || *bump != config_bump
++        || shard_index >= shard_count
++    {
++        return false;
++    }
++    let (expected_shard, expected_bump) =
++        Pubkey::find_program_address(&[b"treasury_shard", &[*shard_index]], program);
++    let fee = u64::from_le_bytes(config.data[80..88].try_into().expect("checked config length"));
++    *shard_key == expected_shard && *shard_bump == expected_bump && fee != 0 && amount == fee
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn requires_the_current_exact_fee_and_canonical_treasury_shard() {
++        let program = Pubkey::new_unique();
++        let (_, config_bump) = Pubkey::find_program_address(&[b"protocol_config"], &program);
++        let (shard_key, shard_bump) =
++            Pubkey::find_program_address(&[b"treasury_shard", &[2]], &program);
++        let mut config = Account { owner: program, data: vec![0; 88], ..Default::default() };
++        config.data[..5].copy_from_slice(&[5, 1, config_bump, 1, 3]);
++        config.data[80..].copy_from_slice(&2_000_u64.to_le_bytes());
++        let shard = Account {
++            owner: program,
++            data: vec![7, shard_bump, 2, 0, 0, 0, 0, 0],
++            ..Default::default()
++        };
++
++        assert!(matches_fee_accounts(&program, config_bump, &config, &shard_key, &shard, 2_000));
++        assert!(!matches_fee_accounts(&program, config_bump, &config, &shard_key, &shard, 1_999));
++        assert!(!matches_fee_accounts(&program, config_bump, &config, &shard_key, &shard, 2_001));
++        assert!(!matches_fee_accounts(
++            &program,
++            config_bump,
++            &config,
++            &Pubkey::new_unique(),
++            &shard,
++            2_000
++        ));
++        let other_owner = Account { owner: Pubkey::new_unique(), ..shard.clone() };
++        assert!(!matches_fee_accounts(
++            &program,
++            config_bump,
++            &config,
++            &shard_key,
++            &other_owner,
++            2_000
++        ));
++        config.data[4] = 2;
++        assert!(!matches_fee_accounts(&program, config_bump, &config, &shard_key, &shard, 2_000));
++        config.data[4] = 3;
++        config.data[3] = 0;
++        assert!(!matches_fee_accounts(&program, config_bump, &config, &shard_key, &shard, 2_000));
++    }
++}
+diff --git a/crates/lib/src/validator/transaction_validator/system.rs b/crates/lib/src/validator/transaction_validator/system.rs
+index 4f9e1de..9f7a5fd 100644
+--- a/crates/lib/src/validator/transaction_validator/system.rs
++++ b/crates/lib/src/validator/transaction_validator/system.rs
+@@ -13,6 +13,7 @@ impl TransactionValidator {
+             ParsedSystemInstructionType,
+             Vec<ParsedSystemInstructionData>,
+         >,
++        verified_protocol_fee: bool,
+     ) -> Result<(), KoraError> {
+         if !self.allow_durable_transactions
+             && system_instructions
+@@ -26,7 +27,7 @@ impl TransactionValidator {
+         deny_fee_payer!(system_instructions, ParsedSystemInstructionType::SystemTransfer,
+             ParsedSystemInstructionData::SystemTransfer { sender, .. } =>
+             *sender == self.fee_payer_pubkey,
+-            unless self.fee_payer_policy.system.allow_transfer,
++            unless self.fee_payer_policy.system.allow_transfer || verified_protocol_fee,
+             "Fee payer cannot be used for 'System Transfer'");
+
+         deny_fee_payer!(system_instructions, ParsedSystemInstructionType::SystemAssign,

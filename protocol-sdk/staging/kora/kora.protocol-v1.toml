@@ -1,0 +1,55 @@
+# Isolated Protocol v1 staging. Devnet identifiers and a deterministic test price.
+[kora]
+rate_limit = 10
+global_rate_limit = 10
+cors_allow_origins = ["http://localhost:3000"]
+
+[kora.auth]
+# Supply KORA_API_KEY through the environment.
+
+[kora.enabled_methods]
+liveness = true
+get_version = true
+get_payer_signer = true
+get_config = true
+get_blockhash = true
+get_supported_tokens = true
+estimate_transaction_fee = true
+sign_and_send_transaction = true
+sign_transaction = false
+transfer_transaction = false
+estimate_bundle_fee = false
+sign_and_send_bundle = false
+sign_bundle = false
+
+[validation]
+max_allowed_lamports = 100000
+max_priority_fee_lamports = 0
+max_signatures = 2
+price_source = "Mock"
+allow_durable_transactions = false
+cross_cluster_check = false
+allowed_transaction_versions = [1]
+allowed_programs = [
+  "4h3XoNReAgEcHVxcZ8sw2aufi9MTr7BbvYYjzjWDyDxS", # Protocol v1 Devnet
+  "Secp256r1SigVerify1111111111111111111111111", # Passkey verification
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", # SPL Token
+  "11111111111111111111111111111111", # System, subject to payer policy below
+]
+require_one_of_programs = ["4h3XoNReAgEcHVxcZ8sw2aufi9MTr7BbvYYjzjWDyDxS"]
+allowed_tokens = ["4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"]
+allowed_spl_paid_tokens = ["4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"]
+disallowed_accounts = []
+
+[validation.price]
+type = "fixed"
+amount = 250000 # 0.25 Devnet USDC, in base units
+token = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU" # Public Devnet mint (gitleaks:allow)
+strict = true
+
+[validation.fee_payer_policy.system]
+allow_transfer = false
+protocol_v1_execute_fee_program = "4h3XoNReAgEcHVxcZ8sw2aufi9MTr7BbvYYjzjWDyDxS"
+allow_create_account = false
+allow_assign = false
+allow_allocate = false

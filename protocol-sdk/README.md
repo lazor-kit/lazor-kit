@@ -34,14 +34,19 @@ pnpm staging:kora /path/to/v1-baseline.so /path/to/v1-hardened.so
 ```
 
 The runner fetches the pinned Kora upstream commit
-`938b9b26be9a991b0ca591d9b20a8a945843915f` and builds it with its lockfile
-and Rust toolchain. It starts a disposable validator and authenticated Kora
+`938b9b26be9a991b0ca591d9b20a8a945843915f`, applies the Protocol v1 fee policy
+patch, and builds it with its lockfile and Rust toolchain. It starts a
+disposable validator and authenticated Kora
 process. The test harness calls both over loopback with generated keys.
 
 The built React Native adapter uses a scripted passkey and a six-decimal USDC
 test mint. Both Protocol binaries run the test with the same wallet and 0 SOL.
 Kora must reject a missing fee, then confirm a transaction v1 with direct
 `Execute` and a `TransferChecked` CPI from the vault to the sponsor's ATA.
-The validator confirms that Kora paid the SOL network fee and received the
-expected token amount. Each process stops after the test and the runner prints
-the temporary log directory.
+The validator confirms that Kora paid both SOL fees, the configured treasury
+shard received the exact Protocol fee, and the sponsor received the expected
+token amount. Each process stops after the test and the runner prints the
+temporary log directory.
+
+The [Kora staging profile](staging/kora/README.md) lists the settings and
+the remaining gates for a fee-enabled environment.

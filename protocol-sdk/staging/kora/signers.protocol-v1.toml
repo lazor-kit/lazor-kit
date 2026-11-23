@@ -1,0 +1,7 @@
+[signer_pool]
+strategy = "round_robin"
+
+[[signers]]
+name = "protocol-v1-staging"
+type = "memory"
+private_key_env = "LK_PROTOCOL_STAGING_KORA_SIGNER"

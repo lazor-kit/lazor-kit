@@ -19,7 +19,7 @@ const sdkFetch = globalThis.fetch;
 const require = createRequire(import.meta.url);
 const { M, setPortalHandler, REDIRECT } = require('./support/txv1-cluster.cjs');
 const { p256 } = require('@noble/curves/p256');
-const { PROGRAM_ID_MAINNET } = require('@lazorkit/sdk-legacy');
+const { PROGRAM_ID_DEVNET, PROGRAM_ID_MAINNET } = require('@lazorkit/sdk-legacy');
 const { LazorKitClient } = require('lazorkit-sdk-v1');
 const spl = require('@solana/spl-token');
 const { Connection, Keypair, SystemProgram, Transaction, VersionedTransaction, sendAndConfirmTransaction } = web3;
@@ -33,8 +33,10 @@ const payer = Keypair.generate();
 const recipient = Keypair.generate();
 const upgradeKeyfile = join(stage, 'validator-upgrade.json');
 const program = PROGRAM_ID_MAINNET.toBase58();
-const tokenProgram = spl.TOKEN_PROGRAM_ID.toBase58();
 const approvalProgram = 'Secp256r1SigVerify1111111111111111111111111';
+const profile = new URL('../../../staging/kora/kora.protocol-v1.toml', import.meta.url);
+const signersProfile = new URL('../../../staging/kora/signers.protocol-v1.toml', import.meta.url);
+const devnetUsdc = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
 const sponsorFee = 250_000n;
 const transferAmount = 1_000_000n;
 const openingBalance = 10_000_000n;
@@ -69,6 +71,20 @@ async function rpcCall(method, params) {
   const { json } = await rpc(JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }));
   assert.equal(json.error, undefined, JSON.stringify(json.error));
   return json.result;
+}
+
+async function sendSetup(connection, signer, instructions) {
+  const latest = await connection.getLatestBlockhash();
+  const transaction = new Transaction({ ...latest, feePayer: signer.publicKey }).add(...instructions);
+  transaction.sign(signer);
+  const signature = await connection.sendRawTransaction(transaction.serialize());
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const { value: [status] } = await connection.getSignatureStatuses([signature]);
+    assert.equal(status?.err ?? null, null);
+    if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') return;
+    await delay(100);
+  }
+  throw new Error('Timed out confirming a local setup transaction: ' + signature);
 }
 
 async function koraRpc(method, params = []) {
@@ -127,58 +143,35 @@ async function run() {
   );
   await spl.mintTo(connection, payer, usdc, vaultAta.address, payer, openingBalance);
 
+  // Provision the fee record and ATAs outside Kora so it sponsors only the Execute.
+  const admin = upgradeAuthority.publicKey;
+  const creationFee = 5_000n;
+  let executionFee = 2_000n;
+  const { instructions: initializeProtocol } = legacy.initializeProtocol({
+    payer: admin, admin, treasury: admin, creationFee, executionFee, numShards: 1,
+  });
+  const { instructions: initializeShard, treasuryShardPda } = legacy.initializeTreasuryShard({
+    payer: admin, admin, shardId: 0,
+  });
+  await sendSetup(connection, upgradeAuthority, [...initializeProtocol, ...initializeShard]);
+  await sendSetup(connection, payer, legacy.registerPayer({ payer: payer.publicKey }).instructions);
+
   const mint = usdc.toBase58();
   const configPath = join(stage, 'kora.toml');
   const signersPath = join(stage, 'signers.toml');
-  writeFileSync(configPath, `
-[kora]
-rate_limit = 50
-cors_allow_origins = ["http://127.0.0.1:23713"]
-
-[kora.enabled_methods]
-get_version = true
-get_payer_signer = true
-get_config = true
-sign_and_send_transaction = true
-estimate_transaction_fee = true
-
-[validation]
-max_allowed_lamports = 100000
-max_priority_fee_lamports = 0
-max_signatures = 2
-price_source = "Mock"
-allow_durable_transactions = false
-cross_cluster_check = false
-allowed_transaction_versions = [1]
-allowed_programs = ["${program}", "${approvalProgram}", "${tokenProgram}"]
-require_one_of_programs = ["${program}"]
-allowed_tokens = ["${mint}"]
-allowed_spl_paid_tokens = ["${mint}"]
-disallowed_accounts = []
-
-[validation.price]
-type = "fixed"
-amount = ${sponsorFee}
-token = "${mint}"
-strict = true
-`.trimStart(), { mode: 0o600 });
-  writeFileSync(signersPath, `
-[signer_pool]
-strategy = "round_robin"
-
-[[signers]]
-name = "local-staging"
-type = "memory"
-private_key_env = "LK_KORA_LOCAL_SIGNER"
-weight = 1
-`.trimStart(), { mode: 0o600 });
+  // The disposable ledger loads the mainnet-identical program and mints its own USDC fixture.
+  const localProfile = readFileSync(profile, 'utf8')
+    .replaceAll(PROGRAM_ID_DEVNET.toBase58(), program)
+    .replaceAll(devnetUsdc, mint);
+  writeFileSync(configPath, localProfile, { mode: 0o600 });
+  writeFileSync(signersPath, readFileSync(signersProfile), { mode: 0o600 });
   const kora = launch('kora', koraBinary, [
     '--rpc-url', rpcUrl, '--config', configPath,
     'rpc', 'start', '--port', '23713', '--signers-config', signersPath,
   ], {
     PATH: process.env.PATH,
     KORA_API_KEY: koraApiKey,
-    LK_KORA_LOCAL_SIGNER: bs58.encode(payer.secretKey),
+    LK_PROTOCOL_STAGING_KORA_SIGNER: bs58.encode(payer.secretKey),
     RUST_LOG: 'info',
   });
   await waitReady(kora, async () => !!(await koraRpc('getVersion')).version, 'kora');
@@ -191,6 +184,11 @@ weight = 1
   assert.equal(deployedConfig.validation_config.price.amount, Number(sponsorFee));
   assert.equal(deployedConfig.validation_config.price.strict, true);
   assert.deepEqual(deployedConfig.validation_config.allowed_transaction_versions, [1]);
+  assert.deepEqual(deployedConfig.validation_config.require_one_of_programs, [program]);
+  assert.deepEqual(deployedConfig.validation_config.allowed_spl_paid_tokens, [mint]);
+  const systemPolicy = deployedConfig.validation_config.fee_payer_policy.system;
+  assert.equal(systemPolicy.allow_transfer, false);
+  assert.equal(systemPolicy.protocol_v1_execute_fee_program, program);
   console.log(JSON.stringify({ kora: version, mint, feeQuoteBaseUnits: Number(sponsorFee), feePayer: signer.signer_address }));
 
   setPortalHandler(async (url, redirectUrl) => {
@@ -240,6 +238,11 @@ weight = 1
       const slot = await connection.getSlot();
       while (await connection.getSlot() <= slot + 1) await delay(200);
       assert.deepEqual(await connection.getAccountInfo(walletPda), storedWallet);
+      executionFee = 5_000n;
+      const { instructions: updateProtocol } = legacy.updateProtocol({
+        admin, creationFee, executionFee, enabled: true, newTreasury: admin,
+      });
+      await sendSetup(connection, upgradeAuthority, updateProtocol);
     }
     M.useWalletStore.getState().setConfig({
       rpcUrl: RPC_URL, cluster: 'mainnet', protocolV1Deployment: deployment, portalUrl: PORTAL_URL,
@@ -249,6 +252,7 @@ weight = 1
     assert.equal(await connection.getBalance(vaultPda), 0);
 
     const payerBeforeRefusal = await connection.getBalance(payer.publicKey);
+    const treasuryBefore = await connection.getBalance(treasuryShardPda);
     await assert.rejects(send([recipientTransfer]), (error) => {
       const reply = httpCalls.at(-1);
       assert.equal(reply.request.method, 'signAndSendTransaction');
@@ -258,6 +262,7 @@ weight = 1
       return true;
     });
     assert.equal(await connection.getBalance(payer.publicKey), payerBeforeRefusal);
+    assert.equal(await connection.getBalance(treasuryShardPda), treasuryBefore);
     assert.equal((await spl.getAccount(connection, sponsorAta.address)).amount, sponsorFee * confirmed);
     assert.equal((await spl.getAccount(connection, recipientAta.address)).amount, transferAmount * confirmed);
 
@@ -284,8 +289,17 @@ weight = 1
     const message = landed.transaction.message;
     assert.deepEqual(message.instructions.map(({ programId }) => programId), [approvalProgram, program]);
     assert.equal(message.accountKeys[0].pubkey, payer.publicKey.toBase58());
-    assert.equal(landed.meta.preBalances[0] - landed.meta.postBalances[0], landed.meta.fee);
+    const paidByKora = landed.meta.fee + Number(executionFee);
+    assert.equal(landed.meta.preBalances[0] - landed.meta.postBalances[0], paidByKora);
+    assert.equal(payerBeforeRefusal - await connection.getBalance(payer.publicKey), paidByKora);
+    assert.equal(await connection.getBalance(treasuryShardPda) - treasuryBefore, Number(executionFee));
     const inner = landed.meta.innerInstructions.find(({ index }) => index === 1)?.instructions ?? [];
+    const [treasuryTransfer] = inner;
+    assert.equal(treasuryTransfer?.programId, SystemProgram.programId.toBase58());
+    assert.equal(treasuryTransfer?.parsed?.type, 'transfer');
+    assert.equal(treasuryTransfer.parsed.info.source, payer.publicKey.toBase58());
+    assert.equal(treasuryTransfer.parsed.info.destination, treasuryShardPda.toBase58());
+    assert.equal(treasuryTransfer.parsed.info.lamports, Number(executionFee));
     const reimbursement = inner.find(({ parsed }) => parsed?.info?.destination === sponsorAta.address.toBase58());
     assert.equal(reimbursement?.parsed?.type, 'transferChecked');
     assert.equal(reimbursement.parsed.info.source, vaultAta.address.toBase58());
@@ -300,6 +314,7 @@ weight = 1
     console.log(JSON.stringify({
       deployment, signature, bytes: wire.length, version: landed.version, topLevel: message.instructions.length,
       executeCpiReimbursementBaseUnits: Number(sponsorFee), koraNetworkFeeLamports: landed.meta.fee,
+      protocolFeeLamports: Number(executionFee), koraTotalLamports: paidByKora,
       vaultSolLamports: 0, sponsorCumulativeTokenBaseUnits: Number(sponsorFee * confirmed),
     }));
   }
