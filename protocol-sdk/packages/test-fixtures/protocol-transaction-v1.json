@@ -1,0 +1,136 @@
+{
+  "about": "Protocol session Execute on the local cutover validator, captured with LAZORKIT_CAPTURE_PROTOCOL_TX.",
+  "signature": "5b3gDHUkjZWLqSPSNVvWuScEEhdwefurArHdte2JgbnwB1aWRVfSyB1USL2hbevr79CzBkyvfZd1dFGbbggjGNNt",
+  "maxSupportedTransactionVersion1": {
+    "blockTime": 1795393983,
+    "meta": {
+      "computeUnitsConsumed": 7039,
+      "costUnits": 10064,
+      "err": null,
+      "fee": 10000,
+      "innerInstructions": [
+        {
+          "index": 0,
+          "instructions": [
+            {
+              "accounts": [
+                4,
+                9,
+                5,
+                3
+              ],
+              "data": "j4EYRhtmbmRQq",
+              "programIdIndex": 8,
+              "stackHeight": 2
+            }
+          ]
+        }
+      ],
+      "loadedAddresses": {
+        "readonly": [],
+        "writable": []
+      },
+      "logMessages": [
+        "Program LazorjRFNavitUaBu5m3WaNPjU1maipvSW2rZfAFAKi invoke [1]",
+        "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+        "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 105 of 14535 compute units",
+        "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+        "Program LazorjRFNavitUaBu5m3WaNPjU1maipvSW2rZfAFAKi consumed 7039 of 20000 compute units",
+        "Program LazorjRFNavitUaBu5m3WaNPjU1maipvSW2rZfAFAKi success"
+      ],
+      "postBalances": [
+        980268480,
+        0,
+        1802640,
+        0,
+        2039280,
+        2039280,
+        1141440,
+        946560,
+        1141440,
+        1461600
+      ],
+      "postTokenBalances": [
+        {
+          "accountIndex": 4,
+          "mint": "33AngKZDmTmTRzGWfxyEXiunf2FCdPu9fFZGGeT9Y7EJ",
+          "owner": "8CgsWmaAYBAETc8GVme8xKLRoNxMnSitJW6jjEaZE8dK",
+          "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "uiTokenAmount": {
+            "amount": "94998000",
+            "decimals": 6,
+            "uiAmount": 94.998,
+            "uiAmountString": "94.998"
+          }
+        },
+        {
+          "accountIndex": 5,
+          "mint": "33AngKZDmTmTRzGWfxyEXiunf2FCdPu9fFZGGeT9Y7EJ",
+          "owner": "77kSZNt1Sq7jgFmB3EgWWmPZtGDWy75tF8UQ7cdp4W43",
+          "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "uiTokenAmount": {
+            "amount": "1002000",
+            "decimals": 6,
+            "uiAmount": 1.002,
+            "uiAmountString": "1.002"
+          }
+        }
+      ],
+      "preBalances": [
+        980278480,
+        0,
+        1802640,
+        0,
+        2039280,
+        2039280,
+        1141440,
+        946560,
+        1141440,
+        1461600
+      ],
+      "preTokenBalances": [
+        {
+          "accountIndex": 4,
+          "mint": "33AngKZDmTmTRzGWfxyEXiunf2FCdPu9fFZGGeT9Y7EJ",
+          "owner": "8CgsWmaAYBAETc8GVme8xKLRoNxMnSitJW6jjEaZE8dK",
+          "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "uiTokenAmount": {
+            "amount": "94999000",
+            "decimals": 6,
+            "uiAmount": 94.999,
+            "uiAmountString": "94.999"
+          }
+        },
+        {
+          "accountIndex": 5,
+          "mint": "33AngKZDmTmTRzGWfxyEXiunf2FCdPu9fFZGGeT9Y7EJ",
+          "owner": "77kSZNt1Sq7jgFmB3EgWWmPZtGDWy75tF8UQ7cdp4W43",
+          "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "uiTokenAmount": {
+            "amount": "1001000",
+            "decimals": 6,
+            "uiAmount": 1.001,
+            "uiAmountString": "1.001"
+          }
+        }
+      ],
+      "rewards": [],
+      "status": {
+        "Ok": null
+      }
+    },
+    "slot": 37,
+    "transaction": [
+      "gQIBBAwAAACzi/zEUAXFXRWrN8lBQPBgJQhvXiRmK/cvOMCEnRfOLwEKWuC5lIPRcXPJu4Nrt8RbDfoEnkUC7+zS0DZvEgg9J2w5Ut1Rl1LAIH/HVYokFWX7RpFnauroSuWjksW9sni8jSvYYEuZgEXUe50pH2nvB542vzy/KXv3NtTRjZ/TUBGQawBHkjv+Q1YP/oIVEZX/vi1d0KRmu2i4wmlIv6EAJh5emBLnW2RWi6nLt+ifQSFDgzpRgiwA+NVdIx3ptQ7HB1TGWEXfoUZsFMbVGc/BaBP35cljJwXV+ZqxID0UhXWBBQR5vaEUaA/1W7eMyabI081mo9XzAeqd05dPw3D3LYEPW8tp0LnHHVbxrK3Q4CAtohtVU1FLWc+E8JEKVIGPbAbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpHkWaL6ULQqgLvhwHjc4TyzNOVJCvfgwaetQCoBlsEzMgTgAAAIAFAAYJFAAABwIDAQgECQUEAQUEBgcIAwoADOgDAAAAAAAABuVtl2enHrtBr0Qy4S/LdXajxMpRTHQNPLOAKkbSP4B8wMKKy23RAWqoTdvqRaPpnzBZCxbrM2qDWhTwusn1agGMRDB3GdK051/0pr43MfNm7OMsO+tFEddwf7Kazv6twQVU0lpLR7ZwVukj2pXmi5L9JIm82gbRDg3I/SEZciwD",
+      "base64"
+    ],
+    "transactionIndex": 1,
+    "version": 1
+  },
+  "maxSupportedTransactionVersion0": {
+    "error": {
+      "code": -32015,
+      "message": "Transaction version (1) is not supported by the requesting client. Please try the request again with the following configuration parameter: \"maxSupportedTransactionVersion\": 1"
+    }
+  }
+}

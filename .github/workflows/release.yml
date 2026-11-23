@@ -17,6 +17,13 @@ name: Release
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'protocol-sdk/**'
+      - '.github/workflows/protocol-sdk-staging.yml'
+      - '.github/workflows/release.yml'
+      - 'vercel.json'
+      - 'app/portal/vercel.json'
+      - 'app/migrate/vercel.json'
   workflow_dispatch:
 
 permissions: {}

@@ -1,0 +1,82 @@
+name: Protocol SDK staging
+
+on:
+  push:
+    branches: [staging/protocol-v1-sdk-rc]
+
+defaults:
+  run:
+    working-directory: protocol-sdk
+
+permissions:
+  contents: read
+
+concurrency:
+  group: protocol-sdk-staging
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    environment:
+      name: protocol-sdk-rc
+      deployment: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Restore the private Protocol SDK RC
+        env:
+          PROTOCOL_SDK_RC3_PART_1: ${{ secrets.PROTOCOL_SDK_RC3_PART_1 }}
+          PROTOCOL_SDK_RC3_PART_2: ${{ secrets.PROTOCOL_SDK_RC3_PART_2 }}
+        run: node scripts/restore-protocol-rc.mjs
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          package_json_file: protocol-sdk/package.json
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and test the adapters
+        run: |
+          node scripts/check-txv1-identical.mjs
+          pnpm --filter @lazorkit/wallet typecheck
+          pnpm --filter @lazorkit/wallet build
+          pnpm --filter @lazorkit/wallet-mobile-adapter build
+          pnpm --filter @lazorkit/wallet test
+          pnpm --filter @lazorkit/wallet-mobile-adapter test
+          pnpm --filter txv1-oracle test
+
+  public-workspace:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - name: Install and check the public checkout without the Protocol RC
+        run: |
+          test ! -e protocol-sdk/.ci/protocol-rc
+          pnpm install --frozen-lockfile
+          pnpm --filter @lazorkit/wallet typecheck
+          pnpm --filter @lazorkit/wallet build
+          pnpm --filter @lazorkit/wallet-mobile-adapter build
+          pnpm --filter @lazorkit/wallet test
+          pnpm --filter @lazorkit/wallet-mobile-adapter test

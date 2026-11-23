@@ -1,0 +1,180 @@
+/**
+ * LazorKit Web SDK - Main Entry Point
+ * Web SDK with React components, hooks, and core wallet functionality
+ */
+
+// React exports (main interface)
+export { LazorkitProvider } from './react/LazorkitProvider';
+export { useWallet } from './react/useWallet';
+export { useWalletStore } from './react/store';
+
+// Type exports
+export type { WalletInfo, WalletConfig } from '././core/storage';
+export type { WalletHookInterface, ConnectHookOptions, DeferredTxPayload } from './react/useWallet';
+export type { SpendingLimits, TokenSpendingLimit, ActionCallbacks, DisconnectOptions, RemoveAuthorityOptions, SignMessageOptions } from './core/types';
+// Signed messages: the challenge every signMessage signs (never the app's
+// bytes); the offline check for a message signature by a key; and the check
+// that a wallet signed one, with the key read from the chain.
+export {
+  SIGNED_MESSAGE_DOMAIN,
+  signedMessageChallenge,
+  verifySignedMessage,
+} from './core/message/signedMessage';
+export type {
+  SignMessageResult,
+  SignedMessageInput,
+  VerifySignedMessageParams,
+} from './core/message/signedMessage';
+export { verifyWalletMessage } from './core/message/verifyWalletMessage';
+export type { VerifyWalletMessageParams } from './core/message/verifyWalletMessage';
+
+// Core exports (for advanced usage)
+export { DialogManager, PortalCancelledError } from './core/portal';
+export { StorageManager } from '././core/storage';
+// Deletes the session and authority keys the SDK keeps (createSession,
+// addAuthority), e.g. at sign-out.
+export { forgetStoredKeys } from './core/keys';
+// A kept key signs only for the wallet it was made for: the refusal when
+// another wallet, or none, is connected.
+export { KeyWalletMismatchError, isKeyWalletMismatchError } from './core/wallet/keyBinding';
+export type { KeyWalletMismatchReason } from './core/wallet/keyBinding';
+
+// Configuration exports
+export * from './config';
+
+// Utility exports
+export * from './utils';
+// Passkey credential helper — exposed so UIs can derive authorityPda from
+// `wallet.credentialId` without reaching into private SDK paths.
+export { getCredentialHash } from './core/wallet/utils';
+
+// Re-export commonly used Solana types
+export {
+  PublicKey,
+  Transaction,
+  TransactionInstruction,
+  Connection,
+  Keypair
+} from '@solana/web3.js';
+
+export { Paymaster, PaymasterError } from './core/paymaster/paymaster';
+export * from './core/adapter';
+export { LazorKitClient } from './core/program';
+// Program helpers: PDAs, actions, serialize/deserialize, constants, etc.
+export {
+  findWalletPda,
+  findVaultPda,
+  findAuthorityPda,
+  findSessionPda,
+  findDeferredExecPda,
+  findProtocolConfigPda,
+  findFeeRecordPda,
+  findTreasuryShardPda,
+  readAuthorityPubkey,
+  readAuthorityCounter,
+  serializeDeferredPayload,
+  deserializeDeferredPayload,
+  Actions,
+  ROLE_OWNER,
+  ROLE_ADMIN,
+  ROLE_SPENDER,
+  AUTH_TYPE_ED25519,
+  AUTH_TYPE_SECP256R1,
+  PROGRAM_ID,
+  PROGRAM_ADDRESS,
+} from './core/program';
+// v1 and v2 side by side: which protocol a wallet is on, the program ids of
+// both, and the error a v1 wallet gets once LazorKit v1 is retired.
+export {
+  V1WalletRetiredError,
+  isRetiredDeploymentError,
+  RETIRED_DEPLOYMENT_CODE,
+  PROGRAM_ID_MAINNET,
+  PROGRAM_ID_DEVNET,
+  PROGRAM_ID_MAINNET_V1,
+  PROGRAM_ID_DEVNET_V1,
+} from './core/program';
+export type { ProtocolVersion } from './core/program';
+export {
+  V1WalletMigratedError,
+  registerCluster,
+} from './core/program';
+// A passkey signature over a counter already used (3006), and how a sent
+// transaction ended: every send resolves once it is confirmed.
+export {
+  SignatureReusedError,
+  isSignatureReusedError,
+  SIGNATURE_REUSED_CODE,
+} from './core/program';
+export {
+  TransactionFailedError,
+  TransactionExpiredError,
+  TransactionOutcomeUnknownError,
+  ConfirmationTimeoutError,
+  PreviousTransactionPendingError,
+} from './core/wallet/sequence';
+// A deferred execution whose authorization expired before TX2 ran (3014).
+export {
+  DeferredExpiredError,
+  isDeferredExpiredError,
+  DEFERRED_EXPIRED_CODE,
+  MIN_DEFERRED_EXPIRY_SLOTS,
+  MAX_DEFERRED_EXPIRY_SLOTS,
+} from './core/wallet/deferred';
+export type { DeferredFailureContext } from './core/wallet/deferred';
+// What a session or delegate key may spend: the actions a SpendingLimits
+// preset stands for, and the refusals for SOL (3037) or a token (3038) its
+// policy does not name.
+export {
+  spendingLimitsToActions,
+  UnlistedSolOutflowError,
+  UnlistedTokenOutflowError,
+  isUnlistedSolOutflowError,
+  isUnlistedTokenOutflowError,
+  UNLISTED_SOL_OUTFLOW_CODE,
+  UNLISTED_TOKEN_OUTFLOW_CODE,
+} from './core/wallet/policy';
+export type { PolicySigner } from './core/wallet/policy';
+// txVersion 'v1' (SIMD-0385, experimental, devnet only): a transaction over
+// the limit of the format it goes out in, and a payload the LazorKit program
+// cannot run. Only a 'v1' request throws them, and never after anything was sent.
+export {
+  TransactionTooLargeError,
+  PayloadExceedsProgramLimitsError,
+} from './core/wallet/txv1';
+// Which wallet is a passkey's own (the credential hash alone is public): what
+// connect asks the user when it will not adopt one on its own.
+export {
+  WalletNeedsConfirmationError,
+  WalletConfirmationDeclinedError,
+} from './core/wallet/confirmation';
+export type {
+  WalletChoice,
+  ConfirmWalletRequest,
+  ConfirmWalletHandler,
+  OnConfirmWallet,
+} from './core/wallet/confirmation';
+// The rule itself, from @lazorkit/sdk-legacy, for apps that find wallets on
+// their own.
+export {
+  createOwnershipChallenge,
+  OWNERSHIP_PROOF_DOMAIN,
+  verifyOwnershipProof,
+  pickOwnWallet,
+  selectWalletByAddress,
+} from './core/program';
+export type {
+  OwnershipProof,
+  PasskeyWalletCandidate,
+  WalletFacts,
+  AuthorityRoleName,
+} from './core/program';
+// Runtime error decoding helpers.
+export { errorFromCode, extractErrorCode, ERROR_NAMES } from './core/program';
+export type { DeferredPayload, SessionAction } from './core/program';
+
+// On-chain session-state helpers — read the cap/expiry/actions a session
+// was minted with, so clients can render "X SOL remaining, Y m until expiry"
+// without re-implementing the byte layout.
+export { SessionAccount, AuthorityAccount } from './core/program';
+export { SessionActionType, serializeActions } from './core/program';

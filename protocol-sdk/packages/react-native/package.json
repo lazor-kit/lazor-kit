@@ -1,0 +1,84 @@
+{
+  "name": "@lazorkit/wallet-mobile-adapter",
+  "private": true,
+  "version": "2.4.0",
+  "main": "dist/index.js",
+  "module": "dist/index.esm.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node --test test/deferred.test.cjs test/errors.test.cjs test/session-policy.test.cjs test/callbacks.test.cjs test/keys.test.cjs test/types.test.cjs test/sign-message.test.cjs test/challenge-domains.test.cjs test/txv1.test.mjs test/txv1-send.test.cjs test/flagoff.test.mjs",
+    "build": "rollup --bundleConfigAsCjs -c rollup.config.js",
+    "prepublishOnly": "node scripts/prepublish-check.js && npm run build",
+    "prepack": "npm run build",
+    "prepublish-check": "node scripts/prepublish-check.js"
+  },
+  "keywords": [
+    "lazorkit",
+    "wallet",
+    "mobile",
+    "adapter",
+    "sdk",
+    "solana",
+    "webauthn",
+    "passkey",
+    "smart-wallet",
+    "react-native",
+    "expo"
+  ],
+  "author": "LazorKit Team",
+  "license": "MIT",
+  "description": "React Native adapter for LazorKit smart wallet with WebAuthn/passkey authentication on Solana",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lazor-kit/lazor-kit.git",
+    "directory": "packages/react-native"
+  },
+  "homepage": "https://lazor.sh",
+  "bugs": {
+    "url": "https://github.com/lazor-kit/lazor-kit/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.33.0",
+    "@rollup/plugin-commonjs": "^29.0.3",
+    "@rollup/plugin-json": "^6.1.0",
+    "@rollup/plugin-node-resolve": "^16.0.3",
+    "@rollup/plugin-typescript": "^12.3.0",
+    "@solana/web3.js": "^1.99.0",
+    "@types/react": "^19.2.0",
+    "eslint": "^9.33.0",
+    "eslint-plugin-react": "^7.37.5",
+    "globals": "^16.3.0",
+    "react-native": ">=0.70.0",
+    "rollup": "^4.63.6",
+    "rollup-plugin-dts": "^6.5.1",
+    "rollup-plugin-peer-deps-external": "^2.2.4",
+    "tslib": "^2.8.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.39.1"
+  },
+  "dependencies": {
+    "@lazorkit/sdk-legacy": "file:../../.ci/protocol-rc/lazorkit-sdk-legacy-0.4.0-rc.3.tgz",
+    "@noble/curves": "^1.9.7",
+    "@react-native-async-storage/async-storage": "^2.2.0",
+    "buffer": "^6.0.3",
+    "expo-crypto": "^15.0.8",
+    "expo-web-browser": "^14.2.0 || ^15.0.0",
+    "js-sha256": "^0.11.1",
+    "react-native-get-random-values": "^1.11.0",
+    "zustand": "^5.0.7"
+  },
+  "peerDependencies": {
+    "@solana/web3.js": "^1.98.2",
+    "react": ">=18.0.0",
+    "react-native": ">=0.70.0"
+  }
+}
