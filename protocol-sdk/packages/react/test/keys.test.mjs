@@ -62,14 +62,14 @@ const accountData = new Map();
 const sent = [];
 /** The slot `getSlot` answers. */
 let chainSlot = 1000;
-/** `getLatestBlockhash` answers once this settles (see `holdBlockhash`). */
-let blockhashGate = Promise.resolve();
+/** Lets a test observe and hold the blockhash request before it is answered. */
+let waitForBlockhash = async () => {};
 
 const rpcFetch = async (_url, init) => {
     const { id, method, params } = JSON.parse(init.body);
     const reply = (result) => new Response(JSON.stringify({ jsonrpc: '2.0', id, result }), { status: 200 });
     if (method === 'getLatestBlockhash') {
-        await blockhashGate;
+        await waitForBlockhash();
         return reply({ context: { slot: 1 }, value: { blockhash: BLOCKHASH, lastValidBlockHeight: 1e9 } });
     }
     if (method === 'getSlot') return reply(chainSlot);
@@ -150,7 +150,7 @@ beforeEach(() => {
     sent.length = 0;
     warnings.length = 0;
     chainSlot = 1000;
-    blockhashGate = Promise.resolve();
+    waitForBlockhash = async () => {};
 });
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -887,21 +887,27 @@ test('an entry whose wallet cannot be confirmed is unbound: refused for every wa
 test('a wallet that disconnects while a send is being built: the key does not sign, and nothing is sent', async () => {
     const W = await page();
     plantAuthority(W, SEEDS[1]);
+    let markRequested;
     let release;
-    blockhashGate = new Promise((resolve) => (release = resolve));
+    const requested = new Promise((resolve) => { markRequested = resolve; });
+    const blocked = new Promise((resolve) => { release = resolve; });
+    waitForBlockhash = () => {
+        markRequested();
+        return blocked;
+    };
     const signatures = countSignatures();
     try {
-        const pending = W.useWalletStore.getState().signAndSendWithAuthority({ instructions: transfer() });
-        // Past the check, building the transaction.
-        for (let i = 0; i < 200 && !W.useWalletStore.getState().isSigning; i++) await new Promise((r) => setTimeout(r, 1));
-        await new Promise((r) => setTimeout(r, 20));
+        const outcome = W.useWalletStore.getState().signAndSendWithAuthority({ instructions: transfer() })
+            .then(() => null, (error) => error);
+        const building = await Promise.race([requested.then(() => true), outcome.then(() => false)]);
+        assert.equal(building, true, 'the send requests a blockhash before settling');
         await W.useWalletStore.getState().disconnect();
         release();
-        const error = await rejection(pending);
-        assert.equal(error.reason, 'no-wallet');
+        assert.equal((await outcome)?.reason, 'no-wallet');
         assert.equal(sent.length, 0);
         assert.equal(signatures.count, 0);
     } finally {
+        release();
         signatures.restore();
     }
 });
