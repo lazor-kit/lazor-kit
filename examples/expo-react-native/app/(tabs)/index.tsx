@@ -93,7 +93,7 @@ export default function WalletScreen() {
         <View style={styles.header}>
           <View style={styles.headerLeft}>
             <Image
-              source={require('../../assets/images/logo.jpg')}
+              source={require('../../assets/images/lazorkit-light.png')}
               style={styles.headerLogo}
             />
             <Text style={styles.headerTitle}>Lazor Wallet</Text>

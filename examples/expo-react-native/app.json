@@ -4,7 +4,7 @@
     "slug": "LazorExpo",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/logo.jpg",
+    "icon": "./assets/images/lazorkit-light.png",
     "scheme": "lazorkit",
     "platforms": ["ios", "android"],
     "userInterfaceStyle": "automatic",
@@ -18,14 +18,14 @@
     "web": {
       "bundler": "metro",
       "output": "static",
-      "favicon": "./assets/images/favlogo.jpg"
+      "favicon": "./assets/images/lazorkit-favicon.png"
     },
     "plugins": [
       "expo-router",
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-logo.jpg",
+          "image": "./assets/images/lazorkit-light.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
