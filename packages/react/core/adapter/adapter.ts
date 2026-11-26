@@ -20,6 +20,7 @@ import {
     AddressLookupTableAccount,
 } from '@solana/web3.js';
 import { sha256 } from 'js-sha256';
+import { lazorkitWalletIcon } from './icon';
 
 import { DialogManager, SignResult } from '../portal';
 import { StorageManager, WalletInfo } from '../storage';
@@ -149,7 +150,7 @@ function toBase64Url(bytes: Uint8Array): string {
 export class LazorkitWalletAdapter extends BaseWalletAdapter {
     name: WalletName<'Lazorkit Wallet'> = LazorkitWalletName;
     url = 'https://lazorkit.com';
-    icon = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGcAAABXCAAAAAA8UASIAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAACYktHRAD/h4/MvwAAAAlwSFlzAAALEgAACxIB0t1+/AAAAAd0SU1FB+kMEAUXDRWPYLQAAAB3dEVYdFJhdyBwcm9maWxlIHR5cGUgOGJpbQAKOGJpbQogICAgICA0MAozODQyNDk0ZDA0MDQwMDAwMDAwMDAwMDAzODQyNDk0ZDA0MjUwMDAwMDAwMDAwMTBkNDFkOGNkOThmMDBiMjA0ZTk4MDA5OTgKZWNmODQyN2UK';
+    icon = lazorkitWalletIcon;
     supportedTransactionVersions: ReadonlySet<any> = new Set(['legacy', 0]);
 
     private _publicKey: PublicKey | null = null;

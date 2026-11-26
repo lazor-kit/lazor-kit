@@ -55,7 +55,7 @@ export default function Index() {
         {/* Logo Section */}
         <View style={styles.logoContainer}>
           <Image
-            source={require('../assets/images/logo.jpg')}
+            source={require('../assets/images/lazorkit-light.png')}
             style={styles.logo}
           />
           <Text style={styles.appName}>Lazor Wallet</Text>
